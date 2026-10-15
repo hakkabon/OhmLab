@@ -1,20 +1,64 @@
 # db-Lab
 
-SwiftUI frontend for the **db-Engine** audio-electrical network simulator.
+**db-Lab** is a cross-platform (macOS and iPadOS) electronic circuit design and simulation application. It combines a native, high-performance Swift graphical frontend with a platform-agnostic Rust simulation core.
 
-## Architecture
+## Architecture: The Four-Layer Model
 
-```
-db-Engine (Rust)                      db-Lab (Swift)
-──────────────────────────────        ─────────────────────────────────────────
-  crates/core    ←── MNA SPICE        EngineClient.swift
-  crates/crossover ← XO design         └─ wraps real engine (UNIFFI_AVAILABLE)
-  crates/circuit   ← project fmt         or mock data (for UI-only development)
-  crates/ffi     ←── UniFFI bridge
-         │
-         ▼ build_xcframework.sh
-  XCFrameworks/DbEngineFFI.xcframework
-  Sources/DbEngineFFI/  ← generated Swift bindings
+Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `db-Lab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
+
+### Layer 1: The Schematic Model (Source of Truth)
+This layer represents the visual document that is saved to disk. It contains all geometric and visual context:
+*   **Symbols:** Component references, grid-aligned positions, rotations, and mirroring.
+*   **Wires:** Orthogonal, grid-aligned point arrays representing physical traces.
+*   **Junctions & Labels:** Explicit connection dots and named net labels (e.g., `VCC`, `IN`).
+*   **Parameters:** Raw user strings (e.g., `4.7k`, `10uF`) preserving the exact text the user typed.
+
+### Layer 2: The Connectivity Model (The Graph)
+Derived entirely from Layer 1, this layer answers the question: *"What is electrically connected to what?"*
+*   **Union-Find Engine:** Evaluates connectivity by spatially hashing pin endpoints and wire vertices onto a grid.
+*   **Nets:** Disjoint sets of pins that share the same electrical node.
+*   **Ground Detection:** Automatically identifies the `Node 0` reference based on Ground symbols.
+*   *Note: Visual wire crossings without an explicit junction or endpoint-to-wire connection are intentionally ignored, preventing accidental shorts.*
+
+### Layer 3: The Netlist Layer (The Projection)
+This layer acts as an emitter that translates the Connectivity Model into standard SPICE dialects (e.g., ngspice).
+*   **Node Mapping:** Assigns integer node IDs to Nets.
+*   **Value Parsing:** Converts user strings like `4.7k` or `10u` into floating-point values.
+*   **Round-Trip Preservation:** Unknown or vendor-specific SPICE directives are stored as opaque cards and written back verbatim to avoid destroying user data.
+
+### Layer 4: The Simulation Layer (The Engine)
+The actual numerical analysis is handled by **`audio-spice-core`**, a pure-Rust library exposed via UniFFI.
+*   **MNA Solver:** Builds and solves Modified Nodal Analysis matrices for linear AC networks.
+*   **Frequency Sweeps:** Calculates complex node voltages and source currents across logarithmic frequency decades.
+*   **Domain Agnostic:** The Rust core knows nothing about GUI coordinates, symbols, or layout—it only consumes the projected netlist.
+
+---
+
+## Key Frontend Features
+
+*   **Custom Native Canvas (`NSView` / `UIView`):** Bypasses SwiftUI `Canvas` limitations for large graphs. Uses native `CGContext` drawing for the grid, wires, and symbols, with hardware-accelerated pan and zoom.
+*   **Data-Driven Components:** Components are defined in a `ComponentRegistry` rather than a hardcoded class hierarchy. Adding a new symbol (like a custom op-amp or transformer) requires only data, not new code.
+*   **Constraints as Diagnostics:** Instead of blocking the user mid-gesture, the Rules Engine runs in the background to detect floating pins, missing grounds, or singular matrices, presenting them as inline diagnostics.
+
+## Crossover Mode (Domain Layer)
+
+The Loudspeaker Crossover Designer is built as a **Domain Layer** over the same schematic core. 
+*   Presets (e.g., 2nd Order Linkwitz-Riley) programmatically generate standard `SymbolInstance` objects (Inductors, Capacitors, Zobels) and place them into the schematic document.
+*   The standard Connectivity Builder and Netlist Emitter take over automatically.
+*   Users can seamlessly transition between "Crossover Mode" and "Schematic Mode" to tweak component values manually.
+
+## Project Structure
+
+```text
+Sources/db-Lab/
+├── Shared/                       # App state, engine client (UniFFI bindings)
+├── Schematic/                    # Four-layer architecture
+│   ├── Models.swift              # Layer 1: Schematic Document
+│   ├── ConnectivityBuilder.swift # Layer 2: Union-Find
+│   ├── ComponentRegistry.swift   # Data-driven descriptors
+│   └── Views/                    # Custom NSView/UIView Canvas
+├── Circuit/                      # General circuit simulator UI
+└── Crossover/                    # Loudspeaker domain UI
 ```
 
 ## Quick Start (UI development without Rust)
@@ -22,7 +66,6 @@ db-Engine (Rust)                      db-Lab (Swift)
 ```bash
 cd db-Lab
 swift run
-# or open in Xcode: File > Open > db-Lab (Package.swift)
 ```
 
 The app compiles and runs with mock data — no Rust build needed.
