@@ -1,21 +1,51 @@
 import SwiftUI
 
-public struct CircuitSimulatorView: View {
-    @StateObject private var document = SchematicDocument()
-    
-    public init() {}
-    
-    public var body: some View {
-        VStack {
+struct CircuitSimulatorView: View {
+    @ObservedObject var document: CircuitDocument
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Nets found: \(document.nets.count)")
+                TextField("Circuit name", text: $document.name)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 320)
+
                 Spacer()
+
+                Button {
+                    Task { await document.runSimulation() }
+                } label: {
+                    if document.isSimulating {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Run", systemImage: "play.fill")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(document.isSimulating)
             }
-            .padding()
-            
-            SchematicCanvasView(document: document)
-                .background(Color.white)
-                .border(Color.gray)
+
+            Text("SPICE Netlist")
+                .font(.headline)
+
+            TextEditor(text: $document.netlistText)
+                .font(.system(.body, design: .monospaced))
+                .border(Color.gray.opacity(0.4))
+
+            if let error = document.simulationError {
+                Text(error)
+                    .foregroundStyle(.red)
+            } else if let result = document.simulationResult {
+                Text("Simulation complete")
+                    .font(.headline)
+                if let ac = result.ac {
+                    Text("AC analysis: \(ac.frequencies.count) frequency points")
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
+        .padding()
+        .navigationTitle(document.name)
     }
 }

@@ -63,7 +63,7 @@ public enum ConnectivityBuilder {
         // 4. Build Net objects
         var result: [Net] = []
         var netId = 1
-        for (root, pins) in netGroups {
+        for pins in netGroups.values {
             let isGround = pins.contains { ref in
                 let sym = symbols.first { $0.id == ref.symbolId }
                 return sym?.descriptorId == "ground"

@@ -1,12 +1,12 @@
 import SwiftUI
 #if os(macOS)
 import AppKit
-typealias PlatformView = NSView
+public typealias PlatformView = NSView
 typealias PlatformColor = NSColor
 typealias PlatformBezierPath = NSBezierPath
 #else
 import UIKit
-typealias PlatformView = UIView
+public typealias PlatformView = UIView
 typealias PlatformColor = UIColor
 typealias PlatformBezierPath = UIBezierPath
 #endif
@@ -90,7 +90,11 @@ public class SchematicCanvas: PlatformView {
                     let p0 = wire.points[0].toCGPoint()
                     path.move(to: p0)
                     for i in 1..<wire.points.count {
+                        #if os(macOS)
+                        path.line(to: wire.points[i].toCGPoint())
+                        #else
                         path.addLine(to: wire.points[i].toCGPoint())
+                        #endif
                     }
                     #if os(macOS)
                     path.stroke()
