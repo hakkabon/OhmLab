@@ -9,31 +9,57 @@ struct FiltersPanel: View {
     @State private var selectedCompID: UUID?
 
     var body: some View {
+        Group {
+            #if os(macOS)
         HSplitView {
-            // ── Stages list ──────────────────────────────────────────────────
-            VStack(spacing: 0) {
-                stagesList
-                Divider()
-                stagesToolbar
+                stagesListPane
+                    .frame(minWidth: 220, maxWidth: 300)
+                stageEditorPane
             }
-            .frame(minWidth: 220, maxWidth: 300)
+            #else
+            GeometryReader { geometry in
+                let isWide = geometry.size.width >= 700
+                let layout = isWide
+                    ? AnyLayout(HStackLayout(spacing: 0))
+                    : AnyLayout(VStackLayout(spacing: 0))
+                layout {
+                    stagesListPane
+                        .frame(
+                            minWidth: isWide ? 220 : 0,
+                            maxWidth: isWide ? 300 : .infinity
+                        )
+                    Divider()
+                    stageEditorPane
+                }
+            }
+            #endif
+        }
+    }
 
-            // ── Stage editor ─────────────────────────────────────────────────
-            if let id = selectedFilterID,
-               let idx = document.filters.firstIndex(where: { $0.id == id }) {
-                FilterStageEditor(
-                    filter: $document.filters[idx],
-                    drivers: document.drivers,
-                    onSynthesize: { document.synthesizeFilter(at: idx) }
-                )
-                .id(id)
-            } else {
-                ContentUnavailableView(
-                    "No Stage Selected",
-                    systemImage: "slider.horizontal.3",
-                    description: Text("Select or add a filter stage.")
-                )
-            }
+    private var stagesListPane: some View {
+        VStack(spacing: 0) {
+            stagesList
+            Divider()
+            stagesToolbar
+        }
+    }
+
+    @ViewBuilder
+    private var stageEditorPane: some View {
+        if let id = selectedFilterID,
+           let idx = document.filters.firstIndex(where: { $0.id == id }) {
+            FilterStageEditor(
+                filter: $document.filters[idx],
+                drivers: document.drivers,
+                onSynthesize: { document.synthesizeFilter(at: idx) }
+            )
+            .id(id)
+        } else {
+            ContentUnavailableView(
+                "No Stage Selected",
+                systemImage: "slider.horizontal.3",
+                description: Text("Select or add a filter stage.")
+            )
         }
     }
 
@@ -101,7 +127,6 @@ struct FiltersPanel: View {
                     }
                 }
             }
-            .menuStyle(.borderedButton)
             .controlSize(.small)
 
             Spacer()

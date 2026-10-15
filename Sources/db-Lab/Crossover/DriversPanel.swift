@@ -16,27 +16,30 @@ struct DriversPanel: View {
     }
 
     var body: some View {
+        Group {
+            #if os(macOS)
         HSplitView {
-            // ── Driver list ──────────────────────────────────────────────────
-            VStack(spacing: 0) {
-                driverList
-                Divider()
-                listToolbar
+                driverListPane
+                    .frame(minWidth: 180, maxWidth: 240)
+                driverEditorPane
             }
-            .frame(minWidth: 180, maxWidth: 240)
-
-            // ── Editor ───────────────────────────────────────────────────────
-            if let binding = selectedDriver {
-                DriverEditorView(driver: binding)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .id(binding.wrappedValue.id)
-            } else {
-                ContentUnavailableView(
-                    "No Driver Selected",
-                    systemImage: "speaker.slash",
-                    description: Text("Select or add a driver to edit its parameters.")
-                )
+            #else
+            GeometryReader { geometry in
+                let isWide = geometry.size.width >= 600
+                let layout = isWide
+                    ? AnyLayout(HStackLayout(spacing: 0))
+                    : AnyLayout(VStackLayout(spacing: 0))
+                layout {
+                    driverListPane
+                        .frame(
+                            minWidth: isWide ? 180 : 0,
+                            maxWidth: isWide ? 240 : .infinity
+                        )
+                    Divider()
+                    driverEditorPane
+                }
             }
+            #endif
         }
         .sheet(isPresented: $showingAddSheet) {
             AddDriverSheet { role in
@@ -53,6 +56,29 @@ struct DriversPanel: View {
                 document.drivers.append(newDriver)
                 selectedDriverID = newDriver.id
             }
+        }
+    }
+
+    private var driverListPane: some View {
+        VStack(spacing: 0) {
+            driverList
+            Divider()
+            listToolbar
+        }
+    }
+
+    @ViewBuilder
+    private var driverEditorPane: some View {
+        if let binding = selectedDriver {
+            DriverEditorView(driver: binding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(binding.wrappedValue.id)
+        } else {
+            ContentUnavailableView(
+                "No Driver Selected",
+                systemImage: "speaker.slash",
+                description: Text("Select or add a driver to edit its parameters.")
+            )
         }
     }
 

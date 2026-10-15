@@ -3,22 +3,18 @@ import SwiftUI
 import AppKit
 public typealias PlatformView = NSView
 typealias PlatformColor = NSColor
-typealias PlatformBezierPath = NSBezierPath
 #else
 import UIKit
 public typealias PlatformView = UIView
 typealias PlatformColor = UIColor
-typealias PlatformBezierPath = UIBezierPath
 #endif
 
 public class SchematicCanvas: PlatformView {
     public var document: SchematicDocument? {
         didSet { redraw() }
     }
-    
     private var zoom: CGFloat = 1.0
     private var pan: CGPoint = .zero
-    private var isDragging = false
     private var dragStart: CGPoint = .zero
     private var panStart: CGPoint = .zero
     
@@ -55,9 +51,15 @@ public class SchematicCanvas: PlatformView {
     // --- DRAWING ---
     
     #if os(macOS)
-    public override func draw(_ dirtyRect: NSRect) { drawContent(context: NSGraphicsContext.current!.cgContext, rect: dirtyRect) }
+    public override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        drawContent(context: context, rect: dirtyRect)
+    }
     #else
-    public override func draw(_ rect: CGRect) { drawContent(context: UIGraphicsGetCurrentContext()!, rect: rect) }
+    public override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        drawContent(context: context, rect: rect)
+    }
     #endif
     
     private func drawContent(context: CGContext, rect: CGRect) {
@@ -85,24 +87,14 @@ public class SchematicCanvas: PlatformView {
         context.setLineWidth(2.0 / zoom)
         if let doc = document {
             for wire in doc.wires {
-                if wire.points.count > 1 {
-                    let path = PlatformBezierPath()
-                    let p0 = wire.points[0].toCGPoint()
-                    path.move(to: p0)
-                    for i in 1..<wire.points.count {
-                        #if os(macOS)
-                        path.line(to: wire.points[i].toCGPoint())
-                        #else
-                        path.addLine(to: wire.points[i].toCGPoint())
-                        #endif
-                    }
-                    #if os(macOS)
-                    path.stroke()
-                    #else
-                    context.addPath(path.cgPath)
-                    context.strokePath()
-                    #endif
+                guard let firstPoint = wire.points.first, wire.points.count > 1 else { continue }
+                let path = CGMutablePath()
+                path.move(to: firstPoint.toCGPoint())
+                for point in wire.points.dropFirst() {
+                    path.addLine(to: point.toCGPoint())
                 }
+                context.addPath(path)
+                context.strokePath()
             }
             
             // 3. Draw Symbols
@@ -112,12 +104,11 @@ public class SchematicCanvas: PlatformView {
                 context.setStrokeColor(PlatformColor.blue.cgColor)
                 context.setLineWidth(1.0 / zoom)
                 #if os(macOS)
-                let path = PlatformBezierPath(rect: box)
-                path.stroke()
+                context.stroke(box)
                 let text = NSAttributedString(string: sym.refDes, attributes: [.foregroundColor: PlatformColor.black])
                 text.draw(at: CGPoint(x: p.x - 10, y: p.y - 5))
                 #else
-                context.stroke(rect) // simplified for iOS
+                context.stroke(box)
                 let text = NSAttributedString(string: sym.refDes, attributes: [.foregroundColor: UIColor.black])
                 text.draw(at: CGPoint(x: p.x - 10, y: p.y - 5))
                 #endif
@@ -137,7 +128,6 @@ public class SchematicCanvas: PlatformView {
     #if os(macOS)
     public override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
-        isDragging = true
         dragStart = loc
         panStart = pan
     }
@@ -148,13 +138,8 @@ public class SchematicCanvas: PlatformView {
         redraw()
     }
     
-    public override func mouseUp(with event: NSEvent) {
-        isDragging = false
-    }
-    
     public override func magnify(with event: NSEvent) {
-        let factor = event.magnification + 1.0
-        zoom *= factor
+        zoom = min(max(zoom * (event.magnification + 1.0), 0.1), 8.0)
         redraw()
     }
     
@@ -172,7 +157,7 @@ public class SchematicCanvas: PlatformView {
     }
     
     @objc func handlePinch(_ sender: UIPinchGestureRecognizer) {
-        zoom *= sender.scale
+        zoom = min(max(zoom * sender.scale, 0.1), 8.0)
         sender.scale = 1.0
         redraw()
     }

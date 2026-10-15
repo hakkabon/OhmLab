@@ -78,7 +78,6 @@ struct CrossoverDesignerView: View {
                 Button("2-Way Crossover") { document.applyTwoWayTemplate() }
                 Button("3-Way Crossover") { document.applyThreeWayTemplate() }
             }
-            .menuStyle(.borderedButton)
 
             // Synthesize all
             Button {

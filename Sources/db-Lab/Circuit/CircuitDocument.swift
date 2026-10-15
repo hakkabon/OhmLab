@@ -28,6 +28,7 @@ final class CircuitDocument: ObservableObject, Identifiable {
     func runSimulation() async {
         isSimulating = true
         simulationError = nil
+        simulationResult = nil
         do {
             simulationResult = try await EngineClient.shared.simulateSpice(
                 netlist: netlistText,

@@ -51,7 +51,9 @@ struct ResultsPanel: View {
                 Spacer()
                 if selectedTab == .frequency {
                     Toggle("Show individual drivers", isOn: $showDriverCurves)
+                        #if os(macOS)
                         .toggleStyle(.checkbox)
+                        #endif
                         .font(.caption)
                 }
             }

@@ -21,6 +21,7 @@ let package = Package(
     // ── Supported platforms ──────────────────────────────────────────────────
     platforms: [
         .macOS(.v14),   // Charts, NavigationSplitView, Grid
+        .iOS(.v17),     // iPadOS SwiftUI app target
     ],
 
     // ── Products ─────────────────────────────────────────────────────────────

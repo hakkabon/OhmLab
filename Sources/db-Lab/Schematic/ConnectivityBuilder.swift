@@ -1,80 +1,131 @@
 import Foundation
 
-class UnionFind {
-    var parent: [GridPoint: GridPoint] = [:]
-    var rank: [GridPoint: Int] = [:]
-    
-    func find(_ i: GridPoint) -> GridPoint {
-        if parent[i] == nil { parent[i] = i; rank[i] = 0 }
-        if parent[i]! != i { parent[i] = find(parent[i]!) }
-        return parent[i]!
+private struct UnionFind {
+    private var parent: [GridPoint: GridPoint] = [:]
+    private var rank: [GridPoint: Int] = [:]
+
+    mutating func find(_ point: GridPoint) -> GridPoint {
+        guard let parentPoint = parent[point] else {
+            parent[point] = point
+            rank[point] = 0
+            return point
+        }
+
+        if parentPoint != point {
+            let root = find(parentPoint)
+            parent[point] = root
+            return root
+        }
+        return point
     }
-    
-    func union(_ i: GridPoint, _ j: GridPoint) {
-        let rootI = find(i)
-        let rootJ = find(j)
-        if rootI != rootJ {
-            if rank[rootI]! < rank[rootJ]! { parent[rootI] = rootJ }
-            else if rank[rootI]! > rank[rootJ]! { parent[rootJ] = rootI }
-            else { parent[rootJ] = rootI; rank[rootI]! += 1 }
+
+    mutating func union(_ first: GridPoint, _ second: GridPoint) {
+        let firstRoot = find(first)
+        let secondRoot = find(second)
+        guard firstRoot != secondRoot else { return }
+
+        let firstRank = rank[firstRoot, default: 0]
+        let secondRank = rank[secondRoot, default: 0]
+        if firstRank < secondRank {
+            parent[firstRoot] = secondRoot
+        } else if firstRank > secondRank {
+            parent[secondRoot] = firstRoot
+        } else {
+            parent[secondRoot] = firstRoot
+            rank[firstRoot] = firstRank + 1
         }
     }
 }
 
 public enum ConnectivityBuilder {
     public static func build(symbols: [SymbolInstance], wires: [WireSegment]) -> [Net] {
-        let uf = UnionFind()
-        let registry = ComponentRegistry.shared
-        
-        // 1. Union wire segments
-        for wire in wires {
-            for i in 0..<(wire.points.count - 1) {
-                uf.union(wire.points[i], wire.points[i+1])
+        var unionFind = UnionFind()
+        let segments = wires.flatMap { wire in
+            zip(wire.points, wire.points.dropFirst()).map { ($0, $1) }
+        }
+
+        for (start, end) in segments {
+            unionFind.union(start, end)
+        }
+
+        let wireVertices = Set(wires.flatMap(\.points))
+        for vertex in wireVertices {
+            for (start, end) in segments where liesOnSegment(vertex, start, end) {
+                unionFind.union(vertex, start)
             }
         }
-        
-        // 2. Union pins that touch wire endpoints or other pins
-        var pinLocations: [PinRef: GridPoint] = [:]
-        for sym in symbols {
-            let desc = registry.descriptor(for: sym.descriptorId)
-            for pin in (desc?.pins ?? []) {
-                // Simplified absolute position calculation (ignoring rotation for this basic patch)
-                let absPoint = GridPoint(sym.position.x + Int(pin.position.x / GridPoint.gridSize),
-                                         sym.position.y + Int(pin.position.y / GridPoint.gridSize))
-                let ref = PinRef(symbolId: sym.id, pinId: pin.id)
-                pinLocations[ref] = absPoint
-                
-                // Union with any wire point that matches
-                for wire in wires {
-                    if wire.points.contains(absPoint) {
-                        uf.union(absPoint, absPoint) // ensures it's in the UF tree
-                    }
+
+        let symbolsByID = Dictionary(uniqueKeysWithValues: symbols.map { ($0.id, $0) })
+        var pinLocations: [(ref: PinRef, location: GridPoint)] = []
+        for symbol in symbols {
+            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else {
+                continue
+            }
+
+            for pin in descriptor.pins {
+                let offset = rotatedOffset(for: pin.position, rotation: symbol.rotation)
+                let location = GridPoint(symbol.position.x + offset.x, symbol.position.y + offset.y)
+                pinLocations.append((PinRef(symbolId: symbol.id, pinId: pin.id), location))
+
+                for (start, end) in segments where liesOnSegment(location, start, end) {
+                    unionFind.union(location, start)
                 }
             }
         }
-        
-        // 3. Group into Nets
-        var netGroups: [GridPoint: [PinRef]] = [:]
-        for (ref, loc) in pinLocations {
-            let root = uf.find(loc)
-            netGroups[root, default: []].append(ref)
+
+        var pinsByRoot: [GridPoint: [PinRef]] = [:]
+        for pin in pinLocations {
+            let root = unionFind.find(pin.location)
+            pinsByRoot[root, default: []].append(pin.ref)
         }
-        
-        // 4. Build Net objects
-        var result: [Net] = []
-        var netId = 1
-        for pins in netGroups.values {
-            let isGround = pins.contains { ref in
-                let sym = symbols.first { $0.id == ref.symbolId }
-                return sym?.descriptorId == "ground"
-            }
-            let name = isGround ? "0" : "N\(netId)"
-            var net = Net(id: netId, name: name, connectedPins: pins)
-            net.isGround = isGround
-            result.append(net)
-            netId += 1
+
+        let sortedGroups = pinsByRoot.values.map { pins in
+            pins.sorted { pinSortKey($0, symbolsByID: symbolsByID) < pinSortKey($1, symbolsByID: symbolsByID) }
+        }.sorted {
+            guard let first = $0.first, let second = $1.first else { return $0.count < $1.count }
+            return pinSortKey(first, symbolsByID: symbolsByID) < pinSortKey(second, symbolsByID: symbolsByID)
         }
-        
-        return result
+
+        return sortedGroups.enumerated().map { index, pins in
+            let isGround = pins.contains { symbolsByID[$0.symbolId]?.descriptorId == "ground" }
+            return Net(
+                id: index + 1,
+                name: isGround ? "0" : "N\(index + 1)",
+                connectedPins: pins,
+                isGround: isGround
+            )
+        }
+    }
+
+    private static func rotatedOffset(for position: CGPoint, rotation: Int) -> (x: Int, y: Int) {
+        let x = Int((position.x / GridPoint.gridSize).rounded())
+        let y = Int((position.y / GridPoint.gridSize).rounded())
+        switch ((rotation % 360) + 360) % 360 {
+        case 90: return (-y, x)
+        case 180: return (-x, -y)
+        case 270: return (y, -x)
+        default: return (x, y)
+        }
+    }
+
+    private static func liesOnSegment(_ point: GridPoint, _ start: GridPoint, _ end: GridPoint) -> Bool {
+        if start.x == end.x {
+            return point.x == start.x && point.y >= min(start.y, end.y) && point.y <= max(start.y, end.y)
+        }
+        if start.y == end.y {
+            return point.y == start.y && point.x >= min(start.x, end.x) && point.x <= max(start.x, end.x)
+        }
+        return false
+    }
+
+    private static func pinSortKey(
+        _ pin: PinRef,
+        symbolsByID: [UUID: SymbolInstance]
+    ) -> (String, String, String) {
+        (
+            symbolsByID[pin.symbolId]?.refDes ?? "",
+            pin.symbolId.uuidString,
+            pin.pinId
+        )
     }
 }

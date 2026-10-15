@@ -1,6 +1,6 @@
 # db-Lab
 
-**db-Lab** is a cross-platform (macOS and iPadOS) electronic circuit design and simulation application. It combines a native, high-performance Swift graphical frontend with a platform-agnostic Rust simulation core.
+**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. It combines a native Swift graphical frontend with a platform-agnostic Rust simulation core.
 
 ## Architecture: The Four-Layer Model
 
@@ -36,7 +36,7 @@ The actual numerical analysis is handled by **`audio-spice-core`**, a pure-Rust 
 
 ## Key Frontend Features
 
-*   **Custom Native Canvas (`NSView` / `UIView`):** Bypasses SwiftUI `Canvas` limitations for large graphs. Uses native `CGContext` drawing for the grid, wires, and symbols, with hardware-accelerated pan and zoom.
+*   **Custom Native Canvas:** Uses native Core Graphics drawing for the grid, wires, and symbols, with pan and zoom on both macOS and iPadOS.
 *   **Data-Driven Components:** Components are defined in a `ComponentRegistry` rather than a hardcoded class hierarchy. Adding a new symbol (like a custom op-amp or transformer) requires only data, not new code.
 *   **Constraints as Diagnostics:** Instead of blocking the user mid-gesture, the Rules Engine runs in the background to detect floating pins, missing grounds, or singular matrices, presenting them as inline diagnostics.
 
@@ -68,7 +68,7 @@ cd db-Lab
 swift run
 ```
 
-The app compiles and runs with mock data — no Rust build needed.
+The app compiles and runs with demonstration data — no Rust build needed. Circuit analysis results are synthetic mock data and do not solve the entered SPICE netlist.
 
 ## Connecting the Real Engine
 
@@ -117,5 +117,8 @@ The app compiles and runs with mock data — no Rust build needed.
 
 ## Requirements
 - macOS 14+
+- iPadOS 17+
 - Xcode 15+ / Swift 6
 - For Rust build: Rust stable, `cargo install uniffi-bindgen`
+
+The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses SwiftUI's adaptive split navigation for tablet layouts.

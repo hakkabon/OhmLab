@@ -12,7 +12,9 @@ struct ContentView: View {
         } detail: {
             detailView
         }
+        #if os(macOS)
         .frame(minWidth: 1000, minHeight: 650)
+        #endif
     }
 
     @ViewBuilder
