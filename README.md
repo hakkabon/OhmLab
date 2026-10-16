@@ -41,12 +41,6 @@ The actual numerical analysis is handled by **`audio-spice-core`**, a pure-Rust 
 *   **Schematic Editor:** Place and rotate components, edit their values, draw orthogonal wires, and project connected components to a SPICE netlist.
 *   **Constraints as Diagnostics:** Instead of blocking the user mid-gesture, the Rules Engine runs in the background to detect floating pins, missing grounds, or singular matrices, presenting them as inline diagnostics.
 
-## Crossover Mode (Domain Layer)
-
-The Loudspeaker Crossover Designer remains a **domain model** containing drivers, filter stages, and compensation networks. It is intentionally not synchronized with the standalone schematic document while the crossover-to-circuit boundary is being evaluated. The current crossover results use demonstration data; the Rust engine is not yet connected.
-
-Supported low-pass and high-pass stages can be converted to a temporary passive SPICE ladder circuit for preview and analysis preparation. The generated netlist is not a second editable document. Band-pass stages, measured driver impedance/acoustic files, and real circuit solving are not yet supported by this adapter.
-
 ## Project Structure
 
 ```text
@@ -58,7 +52,6 @@ Sources/db-Lab/
 │   ├── ComponentRegistry.swift   # Data-driven descriptors
 │   └── Views/                    # Custom NSView/UIView Canvas
 ├── Circuit/                      # General circuit simulator UI
-└── Crossover/                    # Loudspeaker domain UI
 ```
 
 ## Quick Start (UI development without Rust)
@@ -91,18 +84,10 @@ The app compiles and runs with demonstration data — no Rust build needed. Circ
    .define("UNIFFI_AVAILABLE")
    ```
 
-4. **Wire up EngineClient.swift**: replace the `mock*` calls with the real
-   `CrossoverEngine` / `CircuitEngine` object calls under `#if UNIFFI_AVAILABLE`.
+4. **Wire up EngineClient.swift**: replace the mock calls with the real
+   `CircuitEngine` object calls under `#if UNIFFI_AVAILABLE`.
 
 ## Workflows
-
-### Crossover Designer
-1. Add drivers (woofer, tweeter, …) with electrical/Thiele-Small parameters
-2. Configure filter stages (type, topology, crossover frequency)
-3. Click **Synthesize** to calculate L/C/R values
-4. Add compensation networks (Zobel, L-Pad, Notch, Baffle Step)
-5. Click **Simulate** to run the full AC sweep
-6. View frequency response + impedance charts in the Results panel
 
 ### Circuit Simulator
 1. Choose **Netlist** to enter SPICE directly, or **Schematic** to place R, C, L, AC voltage/current sources, and ground.
@@ -112,11 +97,6 @@ The app compiles and runs with demonstration data — no Rust build needed. Circ
 5. View Bode plot, DC operating point, or transient waveforms.
 
 The schematic netlist projection validates reference designators and positive component values. Inductors with series resistance are emitted as a series resistor and inductor. Simulation results remain mock data until the Rust engine is connected.
-
-## Supported Filter Topologies
-- Butterworth 1st–4th order
-- Linkwitz-Riley 2nd, 4th, 6th, 8th order
-- Bessel 2nd, 3rd, 4th order
 
 ## Requirements
 - macOS 14+

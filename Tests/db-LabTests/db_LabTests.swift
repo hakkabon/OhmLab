@@ -213,44 +213,6 @@ import Testing
     #expect(document.simulationResult?.isMock == true)
 }
 
-@Test @MainActor func crossoverDomainGeneratesPassiveCircuitNetlist() throws {
-    let document = CrossoverDocument()
-    document.synthesizeAllFilters()
-
-    let netlist = try document.generateAnalysisCircuit()
-
-    #expect(netlist.contains("V1 IN 0 AC 1"))
-    #expect(netlist.contains("RLOAD_F1"))
-    #expect(netlist.contains("RLOAD_F2"))
-    #expect(netlist.contains(".AC DEC 200 20 20000"))
-    #expect(netlist.contains(".end"))
-}
-
-@Test @MainActor func crossoverSimulationStoresGeneratedCircuitAndMarksMockResult() async {
-    let document = CrossoverDocument()
-    document.synthesizeAllFilters()
-
-    await document.runSimulation()
-
-    #expect(document.simulationError == nil)
-    #expect(document.generatedAnalysisNetlist?.contains("V1 IN 0 AC 1") == true)
-    #expect(document.simulationResult != nil)
-}
-
-@Test @MainActor func crossoverCircuitRejectsCompensationItCannotRepresent() {
-    let document = CrossoverDocument()
-    document.synthesizeAllFilters()
-    document.compensations.append(CompensationSpec(kind: .zobel, driverName: "Woofer"))
-
-    do {
-        _ = try document.generateAnalysisCircuit()
-        Issue.record("Unsupported compensation must not be silently omitted.")
-    } catch CrossoverCircuitBuildError.unsupportedCompensation("Zobel") {
-    } catch {
-        Issue.record("Unexpected error: \(error.localizedDescription)")
-    }
-}
-
 @Test @MainActor func mockSimulationHonorsAnalysisSettings() async throws {
     let result = try await EngineClient.shared.simulateSpice(
         netlist: "R1 1 0 1k",

@@ -1,9 +1,7 @@
 // db_LabApp.swift
 // db-Lab — SwiftUI frontend for the db-Engine simulation backend.
 //
-// Two primary modes are accessible from the sidebar:
-//   • Crossover Designer  — passive loudspeaker crossover workflow
-//   • Circuit Simulator   — general SPICE netlist workflow
+// Circuit simulator entry point.
 //
 // Entry point: this file contains the @main App struct.
 // Swift requires exactly one file named "main.swift" OR one @main struct
@@ -22,15 +20,10 @@ struct DbLabApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Crossover Design") {
-                    appState.newCrossoverDesign()
-                }
-                .keyboardShortcut("n", modifiers: [.command])
-
                 Button("New Circuit") {
                     appState.newCircuit()
                 }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .keyboardShortcut("n", modifiers: [.command])
             }
         }
     }

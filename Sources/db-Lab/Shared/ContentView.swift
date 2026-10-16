@@ -20,12 +20,6 @@ struct ContentView: View {
     @ViewBuilder
     private var detailView: some View {
         switch appState.selectedSidebarItem {
-        case .crossoverDesign(let id):
-            if let doc = appState.crossoverDocument(id: id) {
-                CrossoverDesignerView(document: doc)
-            } else {
-                WelcomeView()
-            }
         case .circuit(let id):
             if let doc = appState.circuitDocument(id: id) {
                 CircuitSimulatorView(document: doc)
@@ -45,16 +39,6 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $appState.selectedSidebarItem) {
-            // ── Crossover designs ──
-            if !appState.crossoverDocuments.isEmpty {
-                Section("Crossover Designs") {
-                    ForEach(appState.crossoverDocuments) { doc in
-                        Label(doc.name, systemImage: "waveform.path")
-                            .tag(SidebarItem.crossoverDesign(doc.id))
-                    }
-                }
-            }
-
             // ── Circuit simulations ──
             if !appState.circuitDocuments.isEmpty {
                 Section("Circuits") {
@@ -70,7 +54,6 @@ struct SidebarView: View {
         .toolbar {
             ToolbarItemGroup {
                 Menu {
-                    Button("Crossover Design", action: appState.newCrossoverDesign)
                     Button("Circuit", action: appState.newCircuit)
                 } label: {
                     Label("New", systemImage: "plus")
@@ -87,7 +70,7 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(spacing: 32) {
-            Image(systemName: "waveform.badge.magnifyingglass")
+            Image(systemName: "cpu")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 80, height: 80)
@@ -97,24 +80,16 @@ struct WelcomeView: View {
                 .font(.largeTitle)
                 .bold()
 
-            Text("Audio-Electrical Network Simulator")
+            Text("Electronic Circuit Simulator")
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 24) {
-                WelcomeActionCard(
-                    title: "Crossover Designer",
-                    subtitle: "Design passive speaker crossovers",
-                    icon: "waveform.path",
-                    action: appState.newCrossoverDesign
-                )
-                WelcomeActionCard(
-                    title: "Circuit Simulator",
-                    subtitle: "Run SPICE netlist simulations",
-                    icon: "cpu",
-                    action: appState.newCircuit
-                )
-            }
+            WelcomeActionCard(
+                title: "Circuit Simulator",
+                subtitle: "Design circuits and run SPICE analyses",
+                icon: "cpu",
+                action: appState.newCircuit
+            )
         }
         .padding(48)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -146,7 +121,7 @@ struct WelcomeActionCard: View {
                     .multilineTextAlignment(.center)
             }
             .padding(24)
-            .frame(width: 200, height: 160)
+            .frame(width: 240, height: 160)
             .background(.regularMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
