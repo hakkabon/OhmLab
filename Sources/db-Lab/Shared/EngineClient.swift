@@ -1,37 +1,34 @@
-// Type-safe wrapper around the UniFFI-generated DbEngine circuit bindings.
+// EngineClient.swift
+// The Swift-side circuit engine.
 //
-// Without the framework, this file compiles with a lightweight Swift mock so
-// UI work can continue before the Rust build is finalized.
+// The first milestone requires that displayed plots come from an analysis of
+// the actual schematic, so this is a real solver: the schematic (or a parsed
+// netlist) is projected into a linear MNA circuit and solved for AC and DC.
+// There is no demonstration data on this path.
 
 import Foundation
 
-struct FreqPoint: Identifiable {
+struct FreqPoint: Identifiable, Sendable {
     var id: Double { freqHz }
     let freqHz: Double
     let magnitudeDb: Double
     let phaseDeg: Double
 }
 
-struct CircuitSimResult {
-    let isMock: Bool
+struct CircuitSimResult: Sendable {
     let dc: DCResult?
     let ac: ACResult?
-    let tran: TRANResult?
+    let warnings: [String]
 
-    struct DCResult {
+    struct DCResult: Sendable {
         let nodes: [(name: String, voltage: Double)]
         let sources: [(name: String, current: Double)]
         let converged: Bool
     }
 
-    struct ACResult {
+    struct ACResult: Sendable {
         let frequencies: [Double]
         let nodes: [(name: String, response: [FreqPoint])]
-    }
-
-    struct TRANResult {
-        let timePoints: [Double]
-        let nodes: [(name: String, waveform: [Double])]
     }
 }
 
@@ -39,140 +36,162 @@ enum CircuitSimulationError: LocalizedError {
     case emptyNetlist
     case noAnalysisSelected
     case invalidACSettings
-    case invalidTransientSettings
     case tooManySamples
+    case missingGround
 
     var errorDescription: String? {
         switch self {
         case .emptyNetlist:
             return "Enter a SPICE netlist before running the simulation."
         case .noAnalysisSelected:
-            return "Select at least one analysis type."
+            return "Select at least one analysis type (DC or AC)."
         case .invalidACSettings:
             return "AC start frequency, stop frequency, and points per decade must define a valid positive sweep."
-        case .invalidTransientSettings:
-            return "Transient stop time and step must be positive finite values."
         case .tooManySamples:
-            return "The requested analysis exceeds the 100,000-sample limit."
+            return "The requested analysis exceeds the 200,000-sample limit."
+        case .missingGround:
+            return "The circuit has no ground reference."
         }
     }
 }
 
-@MainActor
-class EngineClient: ObservableObject {
-    static let shared = EngineClient()
-    private init() {}
+enum SimulationEngine {
+    // MARK: - Schematic path
 
-    func simulateSpice(
+    static func solve(
+        snapshot: SchematicSnapshot,
+        settings: AnalysisSettings
+    ) throws -> CircuitSimResult {
+        let circuit = try CircuitCompiler.compile(
+            symbols: snapshot.symbols,
+            wires: snapshot.wires,
+            labels: snapshot.netLabels
+        )
+        return try solve(circuit: circuit, settings: settings)
+    }
+
+    // MARK: - Netlist path
+
+    static func solve(
         netlist: String,
-        runDC: Bool = true,
-        runAC: Bool = true,
-        acFStart: Double = 1,
-        acFStop: Double = 1e6,
-        acPointsPerDecade: Int = 10,
-        runTRAN: Bool = false,
-        tranTStop: Double = 1e-3,
-        tranTStep: Double = 1e-6
-    ) async throws -> CircuitSimResult {
+        settings: AnalysisSettings
+    ) throws -> CircuitSimResult {
         guard !netlist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CircuitSimulationError.emptyNetlist
         }
-        guard runDC || runAC || runTRAN else {
+        let parsed = try SpiceNetlistParser.parse(netlist)
+
+        // Prefer analysis settings entered in the UI; fall back to the `.ac`
+        // card when the UI settings are left at their defaults and none supplied.
+        var effective = settings
+        if parsed.analysis.hasAC {
+            effective.runAC = settings.runAC || parsed.analysis.hasAC
+            if settings.acStartFrequency == AnalysisSettings.default.acStartFrequency,
+               settings.acStopFrequency == AnalysisSettings.default.acStopFrequency {
+                effective.acStartFrequency = parsed.analysis.startFrequency
+                effective.acStopFrequency = parsed.analysis.stopFrequency
+                effective.acPointsPerDecade = parsed.analysis.pointsPerDecade
+            }
+        }
+        return try solve(circuit: parsed.circuit, settings: effective)
+    }
+
+    // MARK: - Common solve
+
+    private static func solve(circuit: LinearCircuit, settings: AnalysisSettings) throws -> CircuitSimResult {
+        guard settings.runDC || settings.runAC else {
             throw CircuitSimulationError.noAnalysisSelected
         }
-        if runAC {
-            guard acFStart.isFinite, acFStop.isFinite, acFStart > 0,
-                  acFStop > acFStart, acPointsPerDecade > 0 else {
-                throw CircuitSimulationError.invalidACSettings
-            }
-            let sampleCount = log10(acFStop / acFStart) * Double(acPointsPerDecade)
-            guard sampleCount.isFinite else { throw CircuitSimulationError.tooManySamples }
-            guard ceil(sampleCount) < 100_000 else { throw CircuitSimulationError.tooManySamples }
+
+        var warnings: [String] = []
+        let hasSource = circuit.elements.contains {
+            $0.kind == .voltageSource || $0.kind == .currentSource
         }
-        if runTRAN {
-            guard tranTStop.isFinite, tranTStep.isFinite, tranTStop > 0, tranTStep > 0 else {
-                throw CircuitSimulationError.invalidTransientSettings
-            }
-            let sampleCount = tranTStop / tranTStep
-            guard sampleCount.isFinite else { throw CircuitSimulationError.tooManySamples }
-            guard ceil(sampleCount) < 100_000 else { throw CircuitSimulationError.tooManySamples }
+        if !hasSource {
+            warnings.append("The circuit has no independent source, so the results are all zero.")
         }
 
-        return await Task.detached(priority: .userInitiated) {
-            self.mockCircuitResult(
-                runDC: runDC,
-                runAC: runAC,
-                acFStart: acFStart,
-                acFStop: acFStop,
-                acPointsPerDecade: acPointsPerDecade,
-                runTRAN: runTRAN,
-                tranTStop: tranTStop,
-                tranTStep: tranTStep
+        var dcResult: CircuitSimResult.DCResult?
+        if settings.runDC {
+            let solution = try circuit.solveDC()
+            dcResult = CircuitSimResult.DCResult(
+                nodes: (1..<circuit.nodeCount).map { node in
+                    (circuit.nodeNames[node], solution.nodeVoltages[node].re)
+                },
+                sources: solution.sourceCurrents.map { ($0.name, $0.current.re) },
+                converged: true
             )
+        }
+
+        var acResult: CircuitSimResult.ACResult?
+        if settings.runAC {
+            guard settings.acStartFrequency.isFinite,
+                  settings.acStopFrequency.isFinite,
+                  settings.acStartFrequency > 0,
+                  settings.acStopFrequency > settings.acStartFrequency,
+                  settings.acPointsPerDecade > 0 else {
+                throw CircuitSimulationError.invalidACSettings
+            }
+            let frequencies = logspace(
+                from: settings.acStartFrequency,
+                to: settings.acStopFrequency,
+                pointsPerDecade: settings.acPointsPerDecade
+            )
+            guard frequencies.count <= 200_000 else { throw CircuitSimulationError.tooManySamples }
+
+            var nodeResponses: [(name: String, response: [FreqPoint])] = []
+            for node in 1..<circuit.nodeCount {
+                var points: [FreqPoint] = []
+                points.reserveCapacity(frequencies.count)
+                for frequency in frequencies {
+                    let solution = try circuit.solveAC(frequencyHz: frequency)
+                    let voltage = solution.nodeVoltages[node]
+                    points.append(FreqPoint(
+                        freqHz: frequency,
+                        magnitudeDb: voltage.magnitudeDecibels,
+                        phaseDeg: voltage.phaseDegrees
+                    ))
+                }
+                nodeResponses.append((circuit.nodeNames[node], points))
+            }
+            acResult = CircuitSimResult.ACResult(frequencies: frequencies, nodes: nodeResponses)
+        }
+
+        return CircuitSimResult(dc: dcResult, ac: acResult, warnings: warnings)
+    }
+
+    static func logspace(from start: Double, to stop: Double, pointsPerDecade: Int) -> [Double] {
+        guard start > 0, stop > start, pointsPerDecade > 0 else { return [] }
+        let decades = log10(stop / start)
+        let intervals = Int(ceil(decades * Double(pointsPerDecade)))
+        var frequencies = (0...intervals).map { index in
+            min(start * pow(10, Double(index) / Double(pointsPerDecade)), stop)
+        }
+        if frequencies.last != stop { frequencies.append(stop) }
+        return frequencies
+    }
+}
+
+@MainActor
+final class EngineClient: ObservableObject {
+    static let shared = EngineClient()
+    private init() {}
+
+    func simulate(
+        snapshot: SchematicSnapshot,
+        settings: AnalysisSettings
+    ) async throws -> CircuitSimResult {
+        try await Task.detached(priority: .userInitiated) {
+            try SimulationEngine.solve(snapshot: snapshot, settings: settings)
         }.value
     }
 
-    private nonisolated func mockCircuitResult(
-        runDC: Bool,
-        runAC: Bool,
-        acFStart: Double,
-        acFStop: Double,
-        acPointsPerDecade: Int,
-        runTRAN: Bool,
-        tranTStop: Double,
-        tranTStep: Double
-    ) -> CircuitSimResult {
-        let dcResult = runDC ? CircuitSimResult.DCResult(
-            nodes: [("Node 1", 1.0), ("Node 2", 1.0)],
-            sources: [("V1", 0.0)],
-            converged: true
-        ) : nil
-
-        let frequencies = runAC
-            ? logspace(fMin: acFStart, fMax: acFStop, points: acPointsPerDecade)
-            : []
-        let acResult = runAC ? CircuitSimResult.ACResult(
-            frequencies: frequencies,
-            nodes: [
-                (name: "Node 1", response: frequencies.map {
-                    FreqPoint(freqHz: $0, magnitudeDb: 0, phaseDeg: 0)
-                }),
-                (name: "Node 2", response: frequencies.map { frequency in
-                    let ratio = frequency / 159.15
-                    return FreqPoint(
-                        freqHz: frequency,
-                        magnitudeDb: -10 * log10(1 + ratio * ratio),
-                        phaseDeg: -atan(ratio) * 180 / Double.pi
-                    )
-                })
-            ]
-        ) : nil
-
-        let transientResult: CircuitSimResult.TRANResult? = runTRAN ? {
-            let count = Int(ceil(tranTStop / tranTStep))
-            let times = (0...count).map { min(Double($0) * tranTStep, tranTStop) }
-            let tau = 1e-3
-            return CircuitSimResult.TRANResult(
-                timePoints: times,
-                nodes: [
-                    (name: "Node 1", waveform: times.map { _ in 1.0 }),
-                    (name: "Node 2", waveform: times.map { 1 - exp(-$0 / tau) })
-                ]
-            )
-        }() : nil
-
-        return CircuitSimResult(isMock: true, dc: dcResult, ac: acResult, tran: transientResult)
-    }
-
-    private nonisolated func logspace(fMin: Double, fMax: Double, points: Int) -> [Double] {
-        let decades = log10(fMax / fMin)
-        let intervals = Int(ceil(decades * Double(points)))
-        var frequencies = (0...intervals).map { index in
-            min(fMin * pow(10, Double(index) / Double(points)), fMax)
-        }
-        if frequencies.last != fMax {
-            frequencies.append(fMax)
-        }
-        return frequencies
+    func simulate(
+        netlist: String,
+        settings: AnalysisSettings
+    ) async throws -> CircuitSimResult {
+        try await Task.detached(priority: .userInitiated) {
+            try SimulationEngine.solve(netlist: netlist, settings: settings)
+        }.value
     }
 }

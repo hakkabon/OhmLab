@@ -24,6 +24,27 @@ struct DbLabApp: App {
                     appState.newCircuit()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
+
+                Button("Open…") {
+                    appState.openDocument()
+                }
+                .keyboardShortcut("o", modifiers: [.command])
+            }
+
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") {
+                    if let document = appState.selectedCircuitDocument {
+                        appState.save(document: document)
+                    }
+                }
+                .keyboardShortcut("s", modifiers: [.command])
+
+                Button("Save As…") {
+                    if let document = appState.selectedCircuitDocument {
+                        appState.saveAs(document: document)
+                    }
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
             }
         }
     }

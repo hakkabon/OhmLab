@@ -38,7 +38,11 @@ private struct UnionFind {
 }
 
 public enum ConnectivityBuilder {
-    public static func build(symbols: [SymbolInstance], wires: [WireSegment]) -> [Net] {
+    public static func build(
+        symbols: [SymbolInstance],
+        wires: [WireSegment],
+        labels: [NetLabel] = []
+    ) -> [Net] {
         var unionFind = UnionFind()
         let segments = wires.flatMap { wire in
             zip(wire.points, wire.points.dropFirst()).map { ($0, $1) }
@@ -52,6 +56,13 @@ public enum ConnectivityBuilder {
         for vertex in wireVertices {
             for (start, end) in segments where liesOnSegment(vertex, start, end) {
                 unionFind.union(vertex, start)
+            }
+        }
+
+        // Labels connect to wires they sit on, exactly like a wire vertex.
+        for label in labels {
+            for (start, end) in segments where liesOnSegment(label.position, start, end) {
+                unionFind.union(label.position, start)
             }
         }
 
@@ -79,22 +90,62 @@ public enum ConnectivityBuilder {
             pinsByRoot[root, default: []].append(pin.ref)
         }
 
-        let sortedGroups = pinsByRoot.values.map { pins in
-            pins.sorted { pinSortKey($0, symbolsByID: symbolsByID) < pinSortKey($1, symbolsByID: symbolsByID) }
+        // Attach a label name to each root, deterministically choosing the
+        // lexicographically smallest name when several labels share a net.
+        var labelNameByRoot: [GridPoint: String] = [:]
+        for label in labels {
+            let root = unionFind.find(label.position)
+            if let existing = labelNameByRoot[root] {
+                labelNameByRoot[root] = min(existing, label.name)
+            } else {
+                labelNameByRoot[root] = label.name
+            }
+        }
+
+        let sortedGroups = pinsByRoot.map { root, pins in
+            (root: root, pins: pins.sorted {
+                pinSortKey($0, symbolsByID: symbolsByID) < pinSortKey($1, symbolsByID: symbolsByID)
+            })
         }.sorted {
-            guard let first = $0.first, let second = $1.first else { return $0.count < $1.count }
+            guard let first = $0.pins.first, let second = $1.pins.first else { return $0.pins.count < $1.pins.count }
             return pinSortKey(first, symbolsByID: symbolsByID) < pinSortKey(second, symbolsByID: symbolsByID)
         }
 
-        return sortedGroups.enumerated().map { index, pins in
+        // Every net that has pins gets an entry; also include roots that carry a
+        // label but no pins so a label on a bare wire is still visible.
+        var netIDs: [GridPoint: Int] = [:]
+        var nextID = 1
+        for group in sortedGroups {
+            netIDs[group.root] = nextID
+            nextID += 1
+        }
+        var orderedRoots = sortedGroups.map(\.root)
+        for label in labels.sorted(by: { labelSortKey($0) < labelSortKey($1) }) {
+            let root = unionFind.find(label.position)
+            if netIDs[root] == nil {
+                netIDs[root] = nextID
+                nextID += 1
+                orderedRoots.append(root)
+            }
+        }
+
+        return orderedRoots.map { root in
+            let pins = pinsByRoot[root] ?? []
             let isGround = pins.contains { symbolsByID[$0.symbolId]?.descriptorId == "ground" }
+            let labelName = labelNameByRoot[root]
+            let id = netIDs[root] ?? 1
             return Net(
-                id: index + 1,
-                name: isGround ? "0" : "N\(index + 1)",
+                id: id,
+                name: isGround ? "0" : (labelName ?? "N\(id)"),
                 connectedPins: pins,
-                isGround: isGround
+                isGround: isGround,
+                isLabeled: labelName != nil
             )
         }
+    }
+
+    private static func labelSortKey(_ label: NetLabel) -> (String, Int, Int, String) {
+        (label.name, label.position.x, label.position.y, label.id.uuidString)
     }
 
     private static func rotatedOffset(for position: CGPoint, rotation: Int) -> (x: Int, y: Int) {
@@ -108,7 +159,7 @@ public enum ConnectivityBuilder {
         }
     }
 
-    private static func liesOnSegment(_ point: GridPoint, _ start: GridPoint, _ end: GridPoint) -> Bool {
+    static func liesOnSegment(_ point: GridPoint, _ start: GridPoint, _ end: GridPoint) -> Bool {
         if start.x == end.x {
             return point.x == start.x && point.y >= min(start.y, end.y) && point.y <= max(start.y, end.y)
         }

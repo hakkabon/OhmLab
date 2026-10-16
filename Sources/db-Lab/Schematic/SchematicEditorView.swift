@@ -1,9 +1,15 @@
 import SwiftUI
 
 struct SchematicEditorView: View {
+    enum Tool {
+        case select, wire, label
+    }
+
     @ObservedObject var document: SchematicDocument
     @State private var activeComponentDescriptorID: String?
-    @State private var wireToolEnabled = false
+    @State private var tool: Tool = .select
+    @State private var pendingLabelName = "NET"
+    @State private var referenceDraft = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,14 +19,16 @@ struct SchematicEditorView: View {
                 SchematicCanvasView(
                     document: document,
                     activeComponentDescriptorID: activeComponentDescriptorID,
-                    wireToolEnabled: wireToolEnabled
+                    wireToolEnabled: tool == .wire,
+                    labelToolEnabled: tool == .label,
+                    pendingLabelName: pendingLabelName
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Divider()
 
                 inspector
-                    .frame(width: 270)
+                    .frame(width: 280)
             }
         }
     }
@@ -29,24 +37,24 @@ struct SchematicEditorView: View {
         HStack(spacing: 10) {
             Button {
                 activeComponentDescriptorID = nil
-                wireToolEnabled = false
+                tool = .select
             } label: {
                 Label("Select", systemImage: "cursorarrow")
             }
             .buttonStyle(.bordered)
-            .tint(activeComponentDescriptorID == nil && !wireToolEnabled ? .accentColor : .secondary)
+            .tint(tool == .select && activeComponentDescriptorID == nil ? .accentColor : .secondary)
 
             Menu {
                 ForEach(ComponentRegistry.shared.allDescriptors.filter { $0.symbol != .ground }, id: \.id) { descriptor in
                     Button(descriptor.displayName) {
                         activeComponentDescriptorID = descriptor.id
-                        wireToolEnabled = false
+                        tool = .select
                     }
                 }
                 Divider()
                 Button("Ground") {
                     activeComponentDescriptorID = "ground"
-                    wireToolEnabled = false
+                    tool = .select
                 }
             } label: {
                 Label(
@@ -59,16 +67,69 @@ struct SchematicEditorView: View {
 
             Button {
                 activeComponentDescriptorID = nil
-                wireToolEnabled.toggle()
+                tool = tool == .wire ? .select : .wire
             } label: {
                 Label("Wire", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
             }
             .buttonStyle(.bordered)
-            .tint(wireToolEnabled ? .accentColor : .secondary)
+            .tint(tool == .wire ? .accentColor : .secondary)
+
+            Button {
+                activeComponentDescriptorID = nil
+                tool = tool == .label ? .select : .label
+            } label: {
+                Label("Label", systemImage: "tag")
+            }
+            .buttonStyle(.bordered)
+            .tint(tool == .label ? .accentColor : .secondary)
+
+            if tool == .label {
+                TextField("Net name", text: $pendingLabelName)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+            }
+
+            Divider().frame(height: 20)
+
+            Button {
+                document.undo()
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .buttonStyle(.bordered)
+            .disabled(!document.canUndo)
+            .help("Undo")
+
+            Button {
+                document.redo()
+            } label: {
+                Image(systemName: "arrow.uturn.forward")
+            }
+            .buttonStyle(.bordered)
+            .disabled(!document.canRedo)
+            .help("Redo")
+
+            Button {
+                document.rotateSelection(by: 90)
+            } label: {
+                Image(systemName: "rotate.right")
+            }
+            .buttonStyle(.bordered)
+            .disabled(document.selectedSymbolID == nil)
+            .help("Rotate (R)")
+
+            Button(role: .destructive) {
+                document.deleteSelection()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.bordered)
+            .disabled(document.selectedSymbolID == nil && document.selectedWireID == nil && document.selectedLabelID == nil)
+            .help("Delete")
 
             Spacer()
 
-            Text("\(document.symbols.count) components · \(document.wires.count) wires")
+            Text("\(document.symbols.count) components · \(document.wires.count) wires · \(document.netLabels.count) labels")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -79,78 +140,110 @@ struct SchematicEditorView: View {
     @ViewBuilder
     private var inspector: some View {
         if let id = document.selectedSymbolID,
-           let index = document.symbols.firstIndex(where: { $0.id == id }),
-           let descriptor = ComponentRegistry.shared.descriptor(for: document.symbols[index].descriptorId) {
+           let symbol = document.symbols.first(where: { $0.id == id }),
+           let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) {
+            symbolInspector(symbol: symbol, descriptor: descriptor)
+        } else if let id = document.selectedWireID,
+                  let wire = document.wires.first(where: { $0.id == id }) {
             Form {
-                Section(descriptor.displayName) {
-                    TextField("Reference", text: referenceBinding(at: index))
-                    Picker("Rotation", selection: rotationBinding(at: index)) {
-                        Text("0°").tag(0)
-                        Text("90°").tag(90)
-                        Text("180°").tag(180)
-                        Text("270°").tag(270)
-                    }
+                Section("Wire") {
+                    Text("\(wire.points.count) points")
+                    Button("Delete Wire", role: .destructive) { document.deleteWire(id: id) }
                 }
-
-                if !descriptor.parameters.isEmpty {
-                    Section("Parameters") {
-                        ForEach(descriptor.parameters, id: \.id) { parameter in
-                            LabeledContent(parameter.name) {
-                                HStack(spacing: 4) {
-                                    TextField(
-                                        parameter.name,
-                                        value: parameterBinding(parameter.id, defaultValue: parameter.defaultValue, at: index),
-                                        format: .number
-                                    )
-                                    .multilineTextAlignment(.trailing)
-                                    .frame(minWidth: 80)
-                                    Text(parameter.unit)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Section {
-                    Button("Delete Component", role: .destructive) {
-                        document.symbols.remove(at: index)
-                        document.selectedSymbolID = nil
-                        document.rebuildConnectivity()
-                    }
+            }
+            .formStyle(.grouped)
+        } else if let id = document.selectedLabelID,
+                  let label = document.netLabels.first(where: { $0.id == id }) {
+            Form {
+                Section("Net Label") {
+                    TextField("Name", text: labelNameBinding(id: id, current: label.name))
+                    Button("Delete Label", role: .destructive) { document.deleteNetLabel(id: id) }
                 }
             }
             .formStyle(.grouped)
         } else {
             ContentUnavailableView(
-                "No Component Selected",
+                "No Selection",
                 systemImage: "square.dashed",
-                description: Text("Place a component or select one on the canvas to edit its parameters.")
+                description: Text("Place a component or select one on the canvas to edit its values.")
             )
         }
     }
 
-    private func referenceBinding(at index: Int) -> Binding<String> {
-        Binding(
-            get: { document.symbols[index].refDes },
-            set: { document.symbols[index].refDes = $0 }
-        )
-    }
-
-    private func rotationBinding(at index: Int) -> Binding<Int> {
-        Binding(
-            get: { document.symbols[index].rotation },
-            set: {
-                document.symbols[index].rotation = $0
-                document.rebuildConnectivity()
+    private func symbolInspector(symbol: SymbolInstance, descriptor: ComponentDescriptor) -> some View {
+        Form {
+            Section(descriptor.displayName) {
+                TextField("Reference", text: $referenceDraft)
+                    .onSubmit { document.setReference(id: symbol.id, to: referenceDraft) }
+                Picker("Rotation", selection: rotationBinding(id: symbol.id, current: symbol.rotation)) {
+                    Text("0°").tag(0)
+                    Text("90°").tag(90)
+                    Text("180°").tag(180)
+                    Text("270°").tag(270)
+                }
             }
+            .onAppear { referenceDraft = symbol.refDes }
+            .onChange(of: document.selectedSymbolID) { _, _ in referenceDraft = symbol.refDes }
+
+            if !descriptor.parameters.isEmpty {
+                Section("Parameters") {
+                    ForEach(descriptor.parameters, id: \.id) { parameter in
+                        LabeledContent(parameter.name) {
+                            HStack(spacing: 4) {
+                                TextField(
+                                    parameter.name,
+                                    value: parameterBinding(
+                                        parameter.id,
+                                        defaultValue: parameter.defaultValue,
+                                        symbolID: symbol.id,
+                                        current: symbol.parameters[parameter.id]
+                                    ),
+                                    format: .number
+                                )
+                                .multilineTextAlignment(.trailing)
+                                .frame(minWidth: 80)
+                                Text(parameter.unit)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button("Delete Component", role: .destructive) {
+                    document.deleteSymbol(id: symbol.id)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func rotationBinding(id: UUID, current: Int) -> Binding<Int> {
+        Binding(
+            get: { current },
+            set: { document.setRotation(id: id, to: $0) }
         )
     }
 
-    private func parameterBinding(_ key: String, defaultValue: Double, at index: Int) -> Binding<Double> {
+    private func parameterBinding(_ key: String, defaultValue: Double, symbolID: UUID, current: Double?) -> Binding<Double> {
         Binding(
-            get: { document.symbols[index].parameters[key] ?? defaultValue },
-            set: { document.symbols[index].parameters[key] = $0 }
+            get: { current ?? defaultValue },
+            set: { document.setParameter(id: symbolID, key: key, value: $0) }
         )
+    }
+
+    private func labelNameBinding(id: UUID, current: String) -> Binding<String> {
+        Binding(
+            get: { current },
+            set: { document.renameNetLabel(id: id, to: $0) }
+        )
+    }
+}
+
+private extension SchematicDocument {
+    func rotateSelection(by degrees: Int) {
+        guard let id = selectedSymbolID else { return }
+        rotateSymbol(id: id, by: degrees)
     }
 }

@@ -3,48 +3,17 @@ import SwiftUI
 
 struct CircuitSimulatorView: View {
     @ObservedObject var document: CircuitDocument
+    @EnvironmentObject private var appState: AppState
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    TextField("Circuit name", text: $document.name)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 320)
-
-                    Spacer()
-
-                    Picker("Editor", selection: $document.usesSchematic) {
-                        Text("Netlist").tag(false)
-                        Text("Schematic").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 220)
-
-                    Button {
-                        Task { await document.runSimulation() }
-                    } label: {
-                        if document.isSimulating {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Label("Run", systemImage: "play.fill")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(document.isSimulating)
-                }
+                header
+                editor
 
                 if document.usesSchematic {
-                    SchematicEditorView(document: document.schematic)
-                        .frame(minHeight: 360)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
-                    GroupBox("SPICE Netlist") {
-                        TextEditor(text: $document.netlistText)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(minHeight: 180)
-                    }
+                    projectionPanel
+                    diagnosticsPanel
                 }
 
                 analysisSettings
@@ -55,22 +24,7 @@ struct CircuitSimulatorView: View {
                 }
 
                 if let result = document.simulationResult {
-                    if result.isMock {
-                        Label(
-                            "Demonstration data only — the SPICE netlist is not being solved yet.",
-                            systemImage: "info.circle"
-                        )
-                        .foregroundStyle(.secondary)
-                    }
-                    if let dc = result.dc {
-                        dcResults(dc)
-                    }
-                    if let ac = result.ac {
-                        acResults(ac)
-                    }
-                    if let transient = result.tran {
-                        transientResults(transient)
-                    }
+                    results(result)
                 }
             }
             .padding()
@@ -78,47 +32,189 @@ struct CircuitSimulatorView: View {
         .navigationTitle(document.name)
     }
 
+    // MARK: - Header
+
+    private var header: some View {
+        HStack {
+            TextField("Circuit name", text: $document.name)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 320)
+
+            if document.isDirty {
+                Text("Unsaved changes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            #if os(macOS)
+            Button {
+                appState.save(document: document)
+            } label: {
+                Label("Save", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+            #endif
+
+            Picker("Editor", selection: $document.usesSchematic) {
+                Text("Schematic").tag(true)
+                Text("Netlist").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 220)
+
+            Button {
+                Task { await document.runSimulation() }
+            } label: {
+                if document.isSimulating {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Run", systemImage: "play.fill")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(document.isSimulating)
+        }
+    }
+
+    @ViewBuilder
+    private var editor: some View {
+        if document.usesSchematic {
+            SchematicEditorView(document: document.schematic)
+                .frame(minHeight: 380)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            GroupBox("SPICE Netlist (R, C, L, V, I)") {
+                TextEditor(text: $document.netlistText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 200)
+            }
+        }
+    }
+
+    // MARK: - Netlist projection (export)
+
+    @ViewBuilder
+    private var projectionPanel: some View {
+        let projection = Result { try SpiceNetlistBuilder.build(from: document.schematic) }
+        GroupBox("Projected SPICE Netlist") {
+            switch projection {
+            case .success(let text):
+                VStack(alignment: .leading, spacing: 8) {
+                    ScrollView([.horizontal, .vertical]) {
+                        Text(text)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 120)
+
+                    Button("Use in Netlist editor") {
+                        document.netlistText = text
+                        document.usesSchematic = false
+                    }
+                    .buttonStyle(.bordered)
+                }
+            case .failure(let error):
+                Text(error.localizedDescription)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Diagnostics
+
+    @ViewBuilder
+    private var diagnosticsPanel: some View {
+        let diagnostics = document.diagnostics.filter { $0.severity != .info }
+        if !diagnostics.isEmpty {
+            GroupBox("Diagnostics") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(diagnostics) { diagnostic in
+                        Label {
+                            Text(diagnostic.message)
+                                .font(.callout)
+                        } icon: {
+                            Image(systemName: icon(for: diagnostic.severity))
+                                .foregroundStyle(color(for: diagnostic.severity))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func icon(for severity: Diagnostic.Severity) -> String {
+        switch severity {
+        case .error: return "xmark.octagon.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .info: return "info.circle"
+        }
+    }
+
+    private func color(for severity: Diagnostic.Severity) -> Color {
+        switch severity {
+        case .error: return .red
+        case .warning: return .orange
+        case .info: return .secondary
+        }
+    }
+
+    // MARK: - Analysis settings
+
     private var analysisSettings: some View {
         GroupBox("Analysis") {
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("DC operating point", isOn: $document.runDC)
-                Toggle("AC frequency sweep", isOn: $document.runAC)
-                if document.runAC {
+                Toggle("DC operating point", isOn: $document.settings.runDC)
+                Toggle("AC frequency sweep", isOn: $document.settings.runAC)
+                if document.settings.runAC {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         GridRow {
                             Text("Start frequency (Hz)")
-                            TextField("Start frequency", value: $document.acFStart, format: .number)
+                            TextField("Start frequency", value: $document.settings.acStartFrequency, format: .number)
                                 .frame(maxWidth: 160)
                         }
                         GridRow {
                             Text("Stop frequency (Hz)")
-                            TextField("Stop frequency", value: $document.acFStop, format: .number)
+                            TextField("Stop frequency", value: $document.settings.acStopFrequency, format: .number)
                                 .frame(maxWidth: 160)
                         }
                         GridRow {
                             Text("Points per decade")
-                            TextField("Points per decade", value: $document.acPointsPerDecade, format: .number)
-                                .frame(maxWidth: 160)
-                        }
-                    }
-                }
-                Toggle("Transient analysis", isOn: $document.runTRAN)
-                if document.runTRAN {
-                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                        GridRow {
-                            Text("Stop time (s)")
-                            TextField("Stop time", value: $document.tranTStop, format: .number)
-                                .frame(maxWidth: 160)
-                        }
-                        GridRow {
-                            Text("Time step (s)")
-                            TextField("Time step", value: $document.tranTStep, format: .number)
+                            TextField("Points per decade", value: $document.settings.acPointsPerDecade, format: .number)
                                 .frame(maxWidth: 160)
                         }
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Results
+
+    @ViewBuilder
+    private func results(_ result: CircuitSimResult) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Solved by the db-Lab linear engine.", systemImage: "checkmark.seal")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(result.warnings.enumerated()), id: \.offset) { entry in
+                Label(entry.element, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            if let dc = result.dc {
+                dcResults(dc)
+            }
+            if let ac = result.ac {
+                acResults(ac)
+            }
         }
     }
 
@@ -149,17 +245,24 @@ struct CircuitSimulatorView: View {
     }
 
     private func acResults(_ result: CircuitSimResult.ACResult) -> some View {
-        GroupBox("AC Frequency Response") {
-            VStack(alignment: .leading) {
-                Text("\(result.frequencies.count) frequency points")
+        let names = result.nodes.map(\.name)
+        let selected = document.settings.outputNetNames
+        let plotNames = selected.isEmpty ? names : selected
+
+        return GroupBox("AC Frequency Response") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("\(result.frequencies.count) frequency points from \(format(result.frequencies.first ?? 0)) Hz to \(format(result.frequencies.last ?? 0)) Hz")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                netSelectionControls(names)
+
                 Chart {
-                    ForEach(result.nodes, id: \.name) { node in
+                    ForEach(result.nodes.filter { plotNames.contains($0.name) }, id: \.name) { node in
                         ForEach(node.response) { point in
                             LineMark(
                                 x: .value("Frequency (Hz)", point.freqHz),
-                                y: .value("Magnitude (dB)", point.magnitudeDb)
+                                y: .value(magnitudeAxisLabel(result), magnitude(result, node: node.name, point: point))
                             )
                             .foregroundStyle(by: .value("Node", node.name))
                         }
@@ -167,15 +270,15 @@ struct CircuitSimulatorView: View {
                 }
                 .chartXScale(type: .log)
                 .chartXAxisLabel("Frequency (Hz)")
-                .chartYAxisLabel("Magnitude (dB)")
-                .frame(height: 260)
+                .chartYAxisLabel(magnitudeAxisLabel(result))
+                .frame(height: 240)
 
                 Chart {
-                    ForEach(result.nodes, id: \.name) { node in
+                    ForEach(result.nodes.filter { plotNames.contains($0.name) }, id: \.name) { node in
                         ForEach(node.response) { point in
                             LineMark(
                                 x: .value("Frequency (Hz)", point.freqHz),
-                                y: .value("Phase (degrees)", point.phaseDeg)
+                                y: .value("Phase (degrees)", phase(result, node: node.name, point: point))
                             )
                             .foregroundStyle(by: .value("Node", node.name))
                         }
@@ -184,29 +287,81 @@ struct CircuitSimulatorView: View {
                 .chartXScale(type: .log)
                 .chartXAxisLabel("Frequency (Hz)")
                 .chartYAxisLabel("Phase (degrees)")
-                .frame(height: 220)
+                .frame(height: 200)
             }
         }
     }
 
-    private func transientResults(_ result: CircuitSimResult.TRANResult) -> some View {
-        GroupBox("Transient Response") {
-            Chart {
-                ForEach(result.nodes, id: \.name) { node in
-                    ForEach(Array(result.timePoints.enumerated()), id: \.offset) { entry in
-                        if entry.offset < node.waveform.count {
-                            LineMark(
-                                x: .value("Time (s)", entry.element),
-                                y: .value("Voltage (V)", node.waveform[entry.offset])
-                            )
-                            .foregroundStyle(by: .value("Node", node.name))
-                        }
+    private func netSelectionControls(_ names: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Menu("Plotted nodes") {
+                    ForEach(names, id: \.self) { name in
+                        Toggle(name, isOn: outputBinding(name))
                     }
                 }
+                Button("All") { document.settings.outputNetNames = names }
+                Button("None") { document.settings.outputNetNames = [] }
+
+                Spacer()
+
+                Picker("Reference", selection: $document.settings.inputNetName) {
+                    Text("Absolute").tag(String?.none)
+                    ForEach(names, id: \.self) { name in
+                        Text(name).tag(String?.some(name))
+                    }
+                }
+                .frame(maxWidth: 240)
             }
-            .chartXAxisLabel("Time (s)")
-            .chartYAxisLabel("Voltage (V)")
-            .frame(height: 260)
+            .font(.caption)
         }
+    }
+
+    private func outputBinding(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: { document.settings.outputNetNames.contains(name) },
+            set: { isOn in
+                var names = document.settings.outputNetNames
+                if isOn {
+                    if !names.contains(name) { names.append(name) }
+                } else {
+                    names.removeAll { $0 == name }
+                }
+                document.settings.outputNetNames = names
+            }
+        )
+    }
+
+    // MARK: - Plot helpers
+
+    private func magnitudeAxisLabel(_ result: CircuitSimResult.ACResult) -> String {
+        document.settings.inputNetName == nil ? "Magnitude (dB)" : "Transfer (dB)"
+    }
+
+    private func magnitude(_ result: CircuitSimResult.ACResult, node: String, point: FreqPoint) -> Double {
+        guard let reference = document.settings.inputNetName,
+              reference != node,
+              let referenceNode = result.nodes.first(where: { $0.name == reference }),
+              let referencePoint = referenceNode.response.first(where: { $0.freqHz == point.freqHz }) else {
+            return point.magnitudeDb
+        }
+        return point.magnitudeDb - referencePoint.magnitudeDb
+    }
+
+    private func phase(_ result: CircuitSimResult.ACResult, node: String, point: FreqPoint) -> Double {
+        guard let reference = document.settings.inputNetName,
+              reference != node,
+              let referenceNode = result.nodes.first(where: { $0.name == reference }),
+              let referencePoint = referenceNode.response.first(where: { $0.freqHz == point.freqHz }) else {
+            return point.phaseDeg
+        }
+        var delta = point.phaseDeg - referencePoint.phaseDeg
+        while delta > 180 { delta -= 360 }
+        while delta < -180 { delta += 360 }
+        return delta
+    }
+
+    private func format(_ value: Double) -> String {
+        String(format: "%.4g", value)
     }
 }

@@ -15,6 +15,17 @@ struct ContentView: View {
         #if os(macOS)
         .frame(minWidth: 1000, minHeight: 650)
         #endif
+        .alert(
+            "db-Lab",
+            isPresented: Binding(
+                get: { appState.lastError != nil },
+                set: { if !$0 { appState.lastError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { appState.lastError = nil }
+        } message: {
+            Text(appState.lastError ?? "")
+        }
     }
 
     @ViewBuilder
@@ -43,8 +54,19 @@ struct SidebarView: View {
             if !appState.circuitDocuments.isEmpty {
                 Section("Circuits") {
                     ForEach(appState.circuitDocuments) { doc in
-                        Label(doc.name, systemImage: "cpu")
-                            .tag(SidebarItem.circuit(doc.id))
+                        Label {
+                            HStack {
+                                Text(doc.name)
+                                if doc.isDirty {
+                                    Circle()
+                                        .fill(.secondary)
+                                        .frame(width: 6, height: 6)
+                                }
+                            }
+                        } icon: {
+                            Image(systemName: "cpu")
+                        }
+                        .tag(SidebarItem.circuit(doc.id))
                     }
                 }
             }
@@ -55,6 +77,7 @@ struct SidebarView: View {
             ToolbarItemGroup {
                 Menu {
                     Button("Circuit", action: appState.newCircuit)
+                    Button("Open…", action: appState.openDocument)
                 } label: {
                     Label("New", systemImage: "plus")
                 }

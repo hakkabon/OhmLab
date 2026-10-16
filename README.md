@@ -1,6 +1,8 @@
 # db-Lab
 
-**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. It combines a native Swift graphical frontend with a platform-agnostic Rust simulation core.
+**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **passive linear circuit workflow**: draw a schematic, enter values, get feedback, run a real AC analysis, and trust that the plots came from the circuit you drew.
+
+The Swift package builds and runs by itself — no Rust toolchain required. A future `audio-spice-core` (Rust/UniFFI) engine can be linked in behind the same interface, but it is not needed for the milestone.
 
 ## Architecture: The Four-Layer Model
 
@@ -10,98 +12,102 @@ Unlike traditional tools where the SPICE netlist is the source of truth (which l
 This layer represents the visual document that is saved to disk. It contains all geometric and visual context:
 *   **Symbols:** Component references, grid-aligned positions, rotations, and mirroring.
 *   **Wires:** Orthogonal, grid-aligned point arrays representing physical traces.
-*   **Junctions & Labels:** Explicit connection dots and named net labels (e.g., `VCC`, `IN`).
+*   **Junctions & Labels:** Explicit connection dots and named net labels (e.g. `VCC`, `IN`).
 *   **Parameters:** Typed SI values stored on each component instance, with engineering-unit labels shown in the editor.
 
 ### Layer 2: The Connectivity Model (The Graph)
 Derived entirely from Layer 1, this layer answers the question: *"What is electrically connected to what?"*
-*   **Union-Find Engine:** Evaluates connectivity by spatially hashing pin endpoints and wire vertices onto a grid.
+*   **Union-Find Engine:** Evaluates connectivity by spatially hashing pin endpoints, wire vertices, and net labels onto a grid.
 *   **Nets:** Disjoint sets of pins that share the same electrical node.
-*   **Ground Detection:** Automatically identifies the `Node 0` reference based on Ground symbols.
+*   **Ground Detection:** Every ground symbol maps to SPICE node `0` reference.
 *   *Note: Visual wire crossings without an explicit junction or endpoint-to-wire connection are intentionally ignored, preventing accidental shorts.*
 
 ### Layer 3: The Netlist Layer (The Projection)
-This layer acts as an emitter that translates the Connectivity Model into standard SPICE dialects (e.g., ngspice).
-*   **Node Mapping:** Assigns integer node IDs to Nets.
-*   **Value Parsing:** Converts user strings like `4.7k` or `10u` into floating-point values.
-*   **Round-Trip Preservation:** Unknown or vendor-specific SPICE directives are stored as opaque cards and written back verbatim to avoid destroying user data.
+This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I).
+*   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets.
+*   **Value Parsing:** Converts strings like `4.7k` or `10u` into floating-point values.
+*   **Import/Export:** A `.ac`-aware netlist reader lets you edit SPICE directly; the schematic projects back to a readable SPICE netlist.
 
 ### Layer 4: The Simulation Layer (The Engine)
-The actual numerical analysis is handled by **`audio-spice-core`**, a pure-Rust library exposed via UniFFI.
-*   **MNA Solver:** Builds and solves Modified Nodal Analysis matrices for linear AC networks.
-*   **Frequency Sweeps:** Calculates complex node voltages and source currents across logarithmic frequency decades.
-*   **Domain Agnostic:** The Rust core knows nothing about GUI coordinates, symbols, or layout—it only consumes the projected netlist.
-
----
+The simulation layer is a **native Swift linear solver**:
+*   **MNA Solver:** Builds and solves Modified Nodal Analysis matrices (`Complex` + partial-pivot Gaussian elimination).
+*   **AC Analysis:** Log-swept complex node voltages → magnitude (dB) and phase over frequency.
+*   **DC Operating Point:** Capacitors open, inductors short (0 V branch).
+*   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
 ## Key Frontend Features
 
-*   **Custom Native Canvas:** Uses native Core Graphics drawing for the grid, wires, and symbols, with pan and zoom on both macOS and iPadOS.
+*   **Custom Native Canvas:** Native Core Graphics drawing for the grid, wires, symbols, pin endpoints, junctions, and net labels, with pan, zoom, drag-to-move, and selection.
 *   **Data-Driven Components:** Passive components and AC sources are defined in a `ComponentRegistry`, including pins, symbols, reference prefixes, and typed parameters.
-*   **Schematic Editor:** Place and rotate components, edit their values, draw orthogonal wires, and project connected components to a SPICE netlist.
-*   **Constraints as Diagnostics:** Instead of blocking the user mid-gesture, the Rules Engine runs in the background to detect floating pins, missing grounds, or singular matrices, presenting them as inline diagnostics.
+*   **Real Analysis, Real Results:** The AC/DC results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data.
+*   **Diagnostics as Guidance:** The document is validated continuously — missing ground, duplicate/invalid references, invalid values, floating pins, and shorts are reported inline with the affected component named.
+*   **Durable Documents:** Circuits serialize to versioned `.dblab` JSON, with open/save and crash recovery of unsaved edits.
+*   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
+
+## Supported elements (first milestone)
+
+| Element | Symbol | Notes |
+| --- | --- | --- |
+| Resistor | R | ≥ 0 Ω (0 Ω rejected by the schematic compiler) |
+| Capacitor | C | > 0 F |
+| Inductor | L | > 0 H |
+| Inductor + series resistance | L | Expanded to a series R and L |
+| AC voltage source | V | Magnitude (phase optional in netlists) |
+| AC current source | I | Magnitude |
+| Ground | GND | Maps to node 0 |
+
+Nonlinear devices (diode, BJT, MOSFET), switches, transformers, and SPICE subcircuits are intentionally out of scope for the first milestone and are reported rather than silently ignored.
 
 ## Project Structure
 
 ```text
 Sources/db-Lab/
-├── Shared/                       # App state, engine client (UniFFI bindings)
-├── Schematic/                    # Four-layer architecture
-│   ├── Models.swift              # Layer 1: Schematic Document
-│   ├── ConnectivityBuilder.swift # Layer 2: Union-Find
+├── Shared/                       # App state, navigation, EngineClient facade
+├── Schematic/                    # Layer 1 + Layer 2 + Layer 3
+│   ├── Models.swift              # Schematic document, net labels, undo/redo
+│   ├── ConnectivityBuilder.swift # Union-Find connectivity
 │   ├── ComponentRegistry.swift   # Data-driven descriptors
-│   └── Views/                    # Custom NSView/UIView Canvas
-├── Circuit/                      # General circuit simulator UI
+│   ├── SpiceNetlistBuilder.swift # Schematic -> SPICE projection
+│   └── Views/                    # Custom NSView/UIView canvas
+├── Engine/                       # Layer 4 (native Swift)
+│   ├── Complex.swift
+│   ├── ComplexLinearSolver.swift
+│   ├── LinearCircuit.swift       # MNA assembly + AC/DC solve
+│   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
+│   └── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
+├── Diagnostics/                  # Pre-simulation validation
+├── Persistence/                  # Versioned .dblab file format + recovery
+└── Circuit/                      # Simulator UI and document model
 ```
 
-## Quick Start (UI development without Rust)
+## Quick Start
 
 ```bash
 cd db-Lab
 swift run
 ```
 
-The app compiles and runs with demonstration data — no Rust build needed. Circuit analysis results are synthetic mock data and do not solve the entered SPICE netlist.
-
-## Connecting the Real Engine
-
-1. **Build the XCFramework**
-   ```bash
-   cd db-Engine
-   ./scripts/build_xcframework.sh
-   ```
-   This produces `db-Lab/XCFrameworks/DbEngineFFI.xcframework` and the
-   generated Swift source files in `db-Lab/Sources/DbEngineFFI/`.
-
-2. **Uncomment the binary target** in `db-Lab/Package.swift`:
-   ```swift
-   .target(name: "DbEngineFFI", …)
-   .binaryTarget(name: "DbEngineFFIBinary", path: "XCFrameworks/…")
-   ```
-
-3. **Enable the UNIFFI_AVAILABLE flag** in Package.swift swiftSettings:
-   ```swift
-   .define("UNIFFI_AVAILABLE")
-   ```
-
-4. **Wire up EngineClient.swift**: replace the mock calls with the real
-   `CircuitEngine` object calls under `#if UNIFFI_AVAILABLE`.
+Create a circuit, place components (R, C, L, V, I, ground), draw wires, and press **Run**. The AC magnitude/phase plots come from the built-in solver.
 
 ## Workflows
 
-### Circuit Simulator
-1. Choose **Netlist** to enter SPICE directly, or **Schematic** to place R, C, L, AC voltage/current sources, and ground.
-2. In schematic mode, choose a component and click the canvas to place it. Choose **Wire** and click two grid locations to connect them; component pins connect when they share a grid location.
-3. Select a placed component to edit its parameters or rotation.
-4. Configure analysis types (DC, AC, TRAN) and click **Run**.
-5. View Bode plot, DC operating point, or transient waveforms.
+### Schematic
+1. Choose **Schematic**, pick a component from **Place Component**, and click the canvas to drop it.
+2. Choose **Wire** and click two grid locations to connect them; component pins connect when they share a grid location. Use **Label** to name a net (e.g. `OUT`).
+3. Select a placed component to edit its parameters or rotation. Drag a component to move it.
+4. Review the **Diagnostics** and **Projected SPICE Netlist** panels.
+5. Configure DC/AC settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view.
 
-The schematic netlist projection validates reference designators and positive component values. Inductors with series resistance are emitted as a series resistor and inductor. Simulation results remain mock data until the Rust engine is connected.
+### Netlist
+Enter or paste SPICE (R, C, L, V, I with `.ac`), then **Run**. Unsupported cards are reported rather than ignored.
+
+## Document format
+
+`.dblab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. The store also mirrors unsaved edits to a recovery slot that is offered on the next launch. `CircuitFileStore.migrate` is where future schema upgrades belong.
 
 ## Requirements
 - macOS 14+
 - iPadOS 17+
 - Xcode 15+ / Swift 6
-- For Rust build: Rust stable, `cargo install uniffi-bindgen`
 
 The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses SwiftUI's adaptive split navigation for tablet layouts.

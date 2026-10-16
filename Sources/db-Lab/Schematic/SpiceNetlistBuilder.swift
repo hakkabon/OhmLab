@@ -32,14 +32,18 @@ public enum SpiceNetlistBuildError: LocalizedError {
 @MainActor
 public enum SpiceNetlistBuilder {
     public static func build(from document: SchematicDocument) throws -> String {
-        let nets = ConnectivityBuilder.build(symbols: document.symbols, wires: document.wires)
+        let nets = ConnectivityBuilder.build(
+            symbols: document.symbols,
+            wires: document.wires,
+            labels: document.netLabels
+        )
         guard nets.contains(where: \.isGround) else {
             throw SpiceNetlistBuildError.missingGround
         }
 
         var nodeByPin: [PinRef: String] = [:]
         for net in nets {
-            let node = net.isGround ? "0" : "N\(net.id)"
+            let node = net.isGround ? "0" : net.name
             for pin in net.connectedPins {
                 nodeByPin[pin] = node
             }
