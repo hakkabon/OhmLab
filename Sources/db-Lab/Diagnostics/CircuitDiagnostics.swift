@@ -152,6 +152,14 @@ public enum CircuitDiagnostics {
                             symbolID: symbol.id
                         ))
                     }
+                case "acMagnitude":
+                    if value < 0 {
+                        diagnostics.append(Diagnostic(
+                            severity: .error,
+                            message: "\(symbol.refDes) AC magnitude must be zero or greater.",
+                            symbolID: symbol.id
+                        ))
+                    }
                 case "resistance", "capacitance", "inductance":
                     if value <= 0 {
                         diagnostics.append(Diagnostic(

@@ -541,6 +541,130 @@ import Testing
     })
 }
 
+// MARK: - Phase 1: complete the passive workflow
+
+@Test func compilerMapsSourceDcAndAcParameters() throws {
+    let source = SymbolInstance(
+        descriptorId: "voltage-source",
+        refDes: "V1",
+        position: GridPoint(0, 0),
+        parameters: ["dcVoltage": 5, "acMagnitude": 1, "acPhaseDegrees": 90]
+    )
+    let resistor = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R1",
+        position: GridPoint(4, 0),
+        parameters: ["resistance": 1_000]
+    )
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let circuit = try CircuitCompiler.compile(symbols: [source, resistor, ground], wires: [], labels: [])
+    let v1 = try #require(circuit.elements.first { $0.name == "V1" })
+    #expect(v1.dcValue == 5)
+    #expect(v1.acValue == 1)
+    #expect(v1.phaseDegrees == 90)
+}
+
+@Test func circuitFileMigratesLegacySourceParameters() throws {
+    let symbol = SymbolInstance(
+        descriptorId: "voltage-source",
+        refDes: "V1",
+        position: GridPoint(0, 0),
+        parameters: ["voltage": 2]
+    )
+    let file = CircuitFile(
+        schemaVersion: 1,
+        name: "Legacy",
+        schematic: SchematicSnapshot(symbols: [symbol]),
+        analysis: .default
+    )
+    let decoded = try CircuitFileStore.decode(CircuitFileStore.encode(file))
+
+    #expect(decoded.schemaVersion == 2)
+    let migrated = try #require(decoded.schematic.symbols.first)
+    #expect(migrated.parameters["voltage"] == nil)
+    #expect(migrated.parameters["dcVoltage"] == 2)
+    #expect(migrated.parameters["acMagnitude"] == 2)
+}
+
+@Test @MainActor func netlistBuilderEmitsDcAndAcSourceValues() throws {
+    let document = SchematicDocument()
+    let source = try #require(document.addComponent(descriptorId: "voltage-source", at: GridPoint(0, 0)))
+    document.setParameter(id: source.id, key: "dcVoltage", value: 5)
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+    #expect(netlist.contains("DC 5 AC 1"))
+}
+
+@Test func dcResultsIncludeComponentCurrents() throws {
+    let netlist = """
+    V1 1 0 DC 10
+    R1 1 0 1k
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let dc = try #require(result.dc)
+
+    let resistor = try #require(dc.components.first { $0.name == "R1" })
+    #expect(abs(resistor.voltage - 10) < 1e-9)
+    #expect(abs(resistor.current - 0.01) < 1e-9)
+
+    let source = try #require(dc.components.first { $0.name == "V1" })
+    #expect(abs(abs(source.current) - 0.01) < 1e-9)
+}
+
+@Test func dcResultsIncludeInductorBranchCurrent() throws {
+    let netlist = """
+    V1 1 0 DC 1
+    R1 1 2 100
+    L1 2 0 1e-3
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let dc = try #require(result.dc)
+    let inductor = try #require(dc.components.first { $0.name == "L1" })
+    #expect(abs(abs(inductor.current) - 0.01) < 1e-9)
+}
+
+@Test func acResultsIncludeComponentCurrents() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = true
+    settings.acStartFrequency = 10
+    settings.acStopFrequency = 1_000
+    settings.acPointsPerDecade = 2
+
+    let netlist = "V1 1 0 AC 1\nR1 1 0 1k\n.end"
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let ac = try #require(result.ac)
+    let resistor = try #require(ac.components.first { $0.name == "R1" })
+    #expect(resistor.response.count == ac.frequencies.count)
+    #expect(abs((resistor.response.first?.magnitudeDb ?? 0) - 20 * log10(0.001)) < 1e-6)
+}
+
+@Test func csvExportContainsDcAndAcRows() throws {
+    let netlist = "V1 1 0 DC 5 AC 1\nR1 1 0 1k\n.end"
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let csv = CircuitResultExport.csv(result)
+
+    #expect(csv.hasPrefix("analysis,frequency_hz,signal,quantity,value"))
+    #expect(csv.contains("dc,,R1,current,0.005"))
+    #expect(csv.contains(",1,voltage_mag_db,"))
+}
+
+@Test func diagnosticsRejectNegativeAcMagnitude() {
+    var source = SymbolInstance(descriptorId: "voltage-source", refDes: "V1", position: GridPoint(0, 0))
+    source.parameters = ComponentRegistry.shared.descriptor(for: "voltage-source")!.defaultParameterValues
+    source.parameters["acMagnitude"] = -1
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let diagnostics = CircuitDiagnostics.analyze(symbols: [source, ground], wires: [], labels: [])
+    #expect(diagnostics.contains {
+        $0.severity == .error && $0.message.localizedCaseInsensitiveContains("AC magnitude")
+    })
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

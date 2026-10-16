@@ -306,11 +306,28 @@ public class SchematicCanvas: PlatformView {
             return value >= 1
                 ? String(format: "%.3g H", value)
                 : String(format: "%.3g mH", value * 1e3)
-        case .voltageSource, .currentSource:
-            return "\(String(format: "%.3g", value)) \(parameter.unit)"
+        case .voltageSource:
+            return sourceValueLabel(
+                dc: symbol.parameters["dcVoltage"] ?? 0,
+                ac: symbol.parameters["acMagnitude"] ?? 0,
+                unit: "V"
+            )
+        case .currentSource:
+            return sourceValueLabel(
+                dc: symbol.parameters["dcCurrent"] ?? 0,
+                ac: symbol.parameters["acMagnitude"] ?? 0,
+                unit: "A"
+            )
         case .ground:
             return nil
         }
+    }
+
+    private func sourceValueLabel(dc: Double, ac: Double, unit: String) -> String {
+        var parts: [String] = []
+        if dc != 0 { parts.append("\(String(format: "%.3g", dc)) \(unit) DC") }
+        if ac != 0 { parts.append("\(String(format: "%.3g", ac)) \(unit) AC") }
+        return parts.isEmpty ? "0 \(unit)" : parts.joined(separator: " / ")
     }
 
     // MARK: - Junctions

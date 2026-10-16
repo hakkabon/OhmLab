@@ -146,6 +146,9 @@ public struct LinearCircuit: Sendable {
 
     private struct Branch {
         var element: Element
+        /// Index into `elements`, so the solved branch current can be attached
+        /// to the originating element.
+        var elementIndex: Int
         var voltage: Complex
     }
 
@@ -156,18 +159,19 @@ public struct LinearCircuit: Sendable {
         // Collect voltage-source-like branches. At DC an inductor behaves as a
         // zero-volt source (an ideal short); in AC it is stamped as an admittance.
         var branches: [Branch] = []
-        for element in elements {
+        for (index, element) in elements.enumerated() {
             switch element.kind {
             case .voltageSource:
                 branches.append(Branch(
                     element: element,
+                    elementIndex: index,
                     voltage: Complex.fromPolar(
                         magnitude: element.magnitude(isDC: isDC),
                         phaseDegrees: isDC ? 0 : element.phaseDegrees
                     )
                 ))
             case .inductor where isDC:
-                branches.append(Branch(element: element, voltage: .zero))
+                branches.append(Branch(element: element, elementIndex: index, voltage: .zero))
             default:
                 break
             }
@@ -242,14 +246,18 @@ public struct LinearCircuit: Sendable {
             nodeVoltages[node] = x[node - 1]
         }
 
+        // Branch currents are only known after the solve, so attach them to the
+        // elements that own each branch (voltage sources, plus DC inductor
+        // shorts). Passives are computed from the node voltages below.
+        var elementCurrents = computeElementCurrents(nodeVoltages: nodeVoltages, omega: omega, isDC: isDC)
         var sourceCurrents: [(name: String, current: Complex)] = []
         for (offset, branch) in branches.enumerated() {
+            elementCurrents[branch.elementIndex] = x[nodeRows + offset]
             // Only report true voltage sources; DC inductor shorts are internal.
-            guard branch.element.kind == .voltageSource else { continue }
-            sourceCurrents.append((branch.element.name, x[nodeRows + offset]))
+            if branch.element.kind == .voltageSource {
+                sourceCurrents.append((branch.element.name, x[nodeRows + offset]))
+            }
         }
-
-        let elementCurrents = computeElementCurrents(nodeVoltages: nodeVoltages, omega: omega, isDC: isDC)
 
         return Solution(
             nodeVoltages: nodeVoltages,
@@ -274,7 +282,14 @@ public struct LinearCircuit: Sendable {
             case .inductor:
                 guard !isDC, let omega else { return .zero }
                 return v / Complex(0, omega * element.value)
-            case .voltageSource, .currentSource:
+            case .currentSource:
+                // The current through an ideal current source is its own value.
+                return Complex.fromPolar(
+                    magnitude: element.magnitude(isDC: isDC),
+                    phaseDegrees: isDC ? 0 : element.phaseDegrees
+                )
+            case .voltageSource:
+                // Overwritten in `assemble` from the solved branch current.
                 return .zero
             }
         }

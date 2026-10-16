@@ -119,21 +119,25 @@ public final class ComponentRegistry: Sendable {
             "voltage-source": ComponentDescriptor(
                 id: "voltage-source",
                 prefix: "V",
-                displayName: "AC Voltage Source",
+                displayName: "Voltage Source",
                 symbol: .voltageSource,
                 pins: twoTerminalPins,
                 parameters: [
-                    ComponentParameterDescriptor(id: "voltage", name: "AC magnitude", unit: "V", defaultValue: 1)
+                    ComponentParameterDescriptor(id: "dcVoltage", name: "DC voltage", unit: "V", defaultValue: 0),
+                    ComponentParameterDescriptor(id: "acMagnitude", name: "AC magnitude", unit: "V", defaultValue: 1),
+                    ComponentParameterDescriptor(id: "acPhaseDegrees", name: "AC phase", unit: "°", defaultValue: 0)
                 ]
             ),
             "current-source": ComponentDescriptor(
                 id: "current-source",
                 prefix: "I",
-                displayName: "AC Current Source",
+                displayName: "Current Source",
                 symbol: .currentSource,
                 pins: twoTerminalPins,
                 parameters: [
-                    ComponentParameterDescriptor(id: "current", name: "AC magnitude", unit: "A", defaultValue: 1)
+                    ComponentParameterDescriptor(id: "dcCurrent", name: "DC current", unit: "A", defaultValue: 0),
+                    ComponentParameterDescriptor(id: "acMagnitude", name: "AC magnitude", unit: "A", defaultValue: 1),
+                    ComponentParameterDescriptor(id: "acPhaseDegrees", name: "AC phase", unit: "°", defaultValue: 0)
                 ]
             ),
             "ground": ComponentDescriptor(

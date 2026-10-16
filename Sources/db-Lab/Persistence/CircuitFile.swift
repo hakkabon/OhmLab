@@ -78,7 +78,7 @@ public struct CircuitFile: Codable, Equatable, Sendable {
     public var schematic: SchematicSnapshot
     public var analysis: AnalysisSettings
 
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public init(
         schemaVersion: Int = CircuitFile.currentSchemaVersion,
@@ -130,13 +130,35 @@ public enum CircuitFileStore {
     }
 
     private static func migrate(_ file: CircuitFile) throws -> CircuitFile {
-        // Only version 1 exists today; this switch is where future upgrades go.
+        var file = file
         switch file.schemaVersion {
         case 1:
+            // v1 stored a single `voltage`/`current` magnitude on sources. Split
+            // it into the v2 DC/AC parameters, preserving the old behaviour
+            // (the single value drove both DC and AC).
+            file.schematic.symbols = file.schematic.symbols.map(migrateSourceParameters)
+            file.schemaVersion = 2
+            return file
+        case 2:
             return file
         default:
             throw CircuitFileError.unsupportedVersion(file.schemaVersion)
         }
+    }
+
+    private static func migrateSourceParameters(_ symbol: SymbolInstance) -> SymbolInstance {
+        var symbol = symbol
+        if let legacy = symbol.parameters.removeValue(forKey: "voltage") {
+            symbol.parameters["dcVoltage"] = symbol.parameters["dcVoltage"] ?? legacy
+            symbol.parameters["acMagnitude"] = symbol.parameters["acMagnitude"] ?? legacy
+            symbol.parameters["acPhaseDegrees"] = symbol.parameters["acPhaseDegrees"] ?? 0
+        }
+        if let legacy = symbol.parameters.removeValue(forKey: "current") {
+            symbol.parameters["dcCurrent"] = symbol.parameters["dcCurrent"] ?? legacy
+            symbol.parameters["acMagnitude"] = symbol.parameters["acMagnitude"] ?? legacy
+            symbol.parameters["acPhaseDegrees"] = symbol.parameters["acPhaseDegrees"] ?? 0
+        }
+        return symbol
     }
 
     public static func write(_ file: CircuitFile, to url: URL) throws {

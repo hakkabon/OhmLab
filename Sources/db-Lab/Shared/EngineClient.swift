@@ -22,6 +22,9 @@ struct CircuitSimResult: Sendable {
 
     struct DCResult: Sendable {
         let nodes: [(name: String, voltage: Double)]
+        /// Per-element operating point: voltage drop (nodeA - nodeB) and current
+        /// flowing from nodeA to nodeB.
+        let components: [(name: String, voltage: Double, current: Double)]
         let sources: [(name: String, current: Double)]
         let converged: Bool
     }
@@ -29,6 +32,8 @@ struct CircuitSimResult: Sendable {
     struct ACResult: Sendable {
         let frequencies: [Double]
         let nodes: [(name: String, response: [FreqPoint])]
+        /// Per-element current sweep, in the same units as the element.
+        let components: [(name: String, response: [FreqPoint])]
     }
 }
 
@@ -126,6 +131,10 @@ enum SimulationEngine {
                 nodes: (1..<circuit.nodeCount).map { node in
                     (circuit.nodeNames[node], solution.nodeVoltages[node].re)
                 },
+                components: circuit.elements.enumerated().map { index, element in
+                    let voltage = solution.nodeVoltages[element.nodeA] - solution.nodeVoltages[element.nodeB]
+                    return (element.name, voltage.re, solution.elementCurrents[index].re)
+                },
                 sources: solution.sourceCurrents.map { ($0.name, $0.current.re) },
                 converged: true
             )
@@ -134,9 +143,10 @@ enum SimulationEngine {
         var acResult: CircuitSimResult.ACResult?
         if settings.runAC {
             let frequencies = try makeFrequencies(settings)
-            // Solve once per frequency and read every node from that solution,
-            // rather than re-solving for each node.
+            // Solve once per frequency and read every node and element current
+            // from that solution, rather than re-solving for each signal.
             var nodePoints = [[FreqPoint]](repeating: [], count: circuit.nodeCount)
+            var elementPoints = [[FreqPoint]](repeating: [], count: circuit.elements.count)
             var maxMagnitude = 0.0
             for frequency in frequencies {
                 let solution: LinearCircuit.Solution
@@ -158,6 +168,14 @@ enum SimulationEngine {
                         phaseDeg: voltage.phaseDegrees
                     ))
                 }
+                for index in circuit.elements.indices {
+                    let current = solution.elementCurrents[index]
+                    elementPoints[index].append(FreqPoint(
+                        freqHz: frequency,
+                        magnitudeDb: current.magnitudeDecibels,
+                        phaseDeg: current.phaseDegrees
+                    ))
+                }
             }
             if maxMagnitude > 1e15 {
                 warnings.append(
@@ -168,7 +186,14 @@ enum SimulationEngine {
             let nodeResponses = (1..<circuit.nodeCount).map { node in
                 (circuit.nodeNames[node], nodePoints[node])
             }
-            acResult = CircuitSimResult.ACResult(frequencies: frequencies, nodes: nodeResponses)
+            let componentResponses = circuit.elements.enumerated().map { index, element in
+                (element.name, elementPoints[index])
+            }
+            acResult = CircuitSimResult.ACResult(
+                frequencies: frequencies,
+                nodes: nodeResponses,
+                components: componentResponses
+            )
         }
 
         return CircuitSimResult(dc: dcResult, ac: acResult, warnings: warnings)

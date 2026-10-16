@@ -107,13 +107,17 @@ public enum SpiceNetlistBuilder {
                     lines.append("\(symbol.refDes) \(firstNode) \(secondNode) \(spiceNumber(inductance))")
                 }
             case .voltageSource:
-                let value = try parameter("voltage", descriptor: descriptor, symbol: symbol)
-                try validate(value, parameter: "voltage", symbol: symbol)
-                lines.append("\(symbol.refDes) \(firstNode) \(secondNode) AC \(spiceNumber(value))")
+                let (dc, ac, phase) = try sourceValues(descriptor: descriptor, symbol: symbol, dcKey: "dcVoltage")
+                lines.append(
+                    "\(symbol.refDes) \(firstNode) \(secondNode) "
+                    + "DC \(spiceNumber(dc)) AC \(spiceNumber(ac)) \(spiceNumber(phase))"
+                )
             case .currentSource:
-                let value = try parameter("current", descriptor: descriptor, symbol: symbol)
-                try validate(value, parameter: "current", symbol: symbol)
-                lines.append("\(symbol.refDes) \(firstNode) \(secondNode) AC \(spiceNumber(value))")
+                let (dc, ac, phase) = try sourceValues(descriptor: descriptor, symbol: symbol, dcKey: "dcCurrent")
+                lines.append(
+                    "\(symbol.refDes) \(firstNode) \(secondNode) "
+                    + "DC \(spiceNumber(dc)) AC \(spiceNumber(ac)) \(spiceNumber(phase))"
+                )
             case .ground:
                 break
             }
@@ -132,6 +136,28 @@ public enum SpiceNetlistBuilder {
             throw SpiceNetlistBuildError.missingParameter(reference: symbol.refDes, parameter: name)
         }
         return value
+    }
+
+    /// Reads a source's DC magnitude, AC magnitude, and AC phase, rejecting any
+    /// non-finite entry. Negative DC values and phases are valid.
+    private static func sourceValues(
+        descriptor: ComponentDescriptor,
+        symbol: SymbolInstance,
+        dcKey: String
+    ) throws -> (dc: Double, ac: Double, phase: Double) {
+        func value(_ key: String) throws -> Double {
+            let raw = try parameter(key, descriptor: descriptor, symbol: symbol)
+            guard raw.isFinite else {
+                throw SpiceNetlistBuildError.invalidParameter(reference: symbol.refDes, parameter: key)
+            }
+            return raw
+        }
+        let dc = try value(dcKey)
+        let ac = try value("acMagnitude")
+        guard ac >= 0 else {
+            throw SpiceNetlistBuildError.invalidParameter(reference: symbol.refDes, parameter: "acMagnitude")
+        }
+        return (dc, ac, try value("acPhaseDegrees"))
     }
 
     private static func validate(

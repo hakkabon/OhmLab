@@ -1,9 +1,25 @@
 import Charts
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct CircuitSimulatorView: View {
     @ObservedObject var document: CircuitDocument
     @EnvironmentObject private var appState: AppState
+
+    private enum ACQuantity: String, CaseIterable, Identifiable {
+        case voltage
+        case current
+
+        var id: Self { self }
+        var title: String { self == .voltage ? "Voltages" : "Currents" }
+        var axisLabel: String { self == .voltage ? "Magnitude (dB)" : "Current (dB)" }
+    }
+
+    @State private var acQuantity: ACQuantity = .voltage
 
     var body: some View {
         ScrollView {
@@ -25,6 +41,7 @@ struct CircuitSimulatorView: View {
 
                 if let result = document.simulationResult {
                     results(result)
+                    exportPanel(result)
                 }
             }
             .padding()
@@ -238,23 +255,51 @@ struct CircuitSimulatorView: View {
 
     private func dcResults(_ result: CircuitSimResult.DCResult) -> some View {
         GroupBox("DC Operating Point\(result.converged ? "" : " — not converged")") {
-            Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 6) {
-                GridRow {
-                    Text("Node").fontWeight(.semibold)
-                    Text("Voltage").fontWeight(.semibold)
-                }
-                ForEach(Array(result.nodes.enumerated()), id: \.offset) { entry in
+            VStack(alignment: .leading, spacing: 12) {
+                Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 6) {
                     GridRow {
-                        Text(entry.element.name)
-                        Text(String(format: "%.6g V", entry.element.voltage))
-                            .monospacedDigit()
+                        Text("Node").fontWeight(.semibold)
+                        Text("Voltage").fontWeight(.semibold)
+                    }
+                    ForEach(Array(result.nodes.enumerated()), id: \.offset) { entry in
+                        GridRow {
+                            Text(entry.element.name)
+                            Text(String(format: "%.6g V", entry.element.voltage))
+                                .monospacedDigit()
+                        }
                     }
                 }
-                ForEach(Array(result.sources.enumerated()), id: \.offset) { entry in
-                    GridRow {
-                        Text("\(entry.element.name) current")
-                        Text(String(format: "%.6g A", entry.element.current))
-                            .monospacedDigit()
+
+                if !result.components.isEmpty {
+                    Divider()
+                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 6) {
+                        GridRow {
+                            Text("Component").fontWeight(.semibold)
+                            Text("Voltage").fontWeight(.semibold)
+                            Text("Current").fontWeight(.semibold)
+                        }
+                        ForEach(Array(result.components.enumerated()), id: \.offset) { entry in
+                            GridRow {
+                                Text(entry.element.name)
+                                Text(String(format: "%.6g V", entry.element.voltage))
+                                    .monospacedDigit()
+                                Text(String(format: "%.6g A", entry.element.current))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+
+                if !result.sources.isEmpty {
+                    Divider()
+                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 6) {
+                        ForEach(Array(result.sources.enumerated()), id: \.offset) { entry in
+                            GridRow {
+                                Text("\(entry.element.name) current")
+                                Text(String(format: "%.6g A", entry.element.current))
+                                    .monospacedDigit()
+                            }
+                        }
                     }
                 }
             }
@@ -263,42 +308,56 @@ struct CircuitSimulatorView: View {
     }
 
     private func acResults(_ result: CircuitSimResult.ACResult) -> some View {
-        let names = result.nodes.map(\.name)
-        let selected = document.settings.outputNetNames
-        let plotNames = selected.isEmpty ? names : selected
+        let activeSeries = series(result)
+        let names = activeSeries.map(\.name)
+        let selected = Set(document.settings.outputNetNames)
+        let plotNames = selected.isEmpty ? Set(names) : selected.intersection(names)
+        let yLabel = document.settings.inputNetName == nil ? acQuantity.axisLabel : "Transfer (dB)"
 
         return GroupBox("AC Frequency Response") {
             VStack(alignment: .leading, spacing: 12) {
-                Text("\(result.frequencies.count) frequency points from \(format(result.frequencies.first ?? 0)) Hz to \(format(result.frequencies.last ?? 0)) Hz")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Picker("Quantity", selection: $acQuantity) {
+                        ForEach(ACQuantity.allCases) { quantity in
+                            Text(quantity.title).tag(quantity)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
+
+                    Spacer()
+
+                    Text("\(result.frequencies.count) points from \(format(result.frequencies.first ?? 0)) Hz to \(format(result.frequencies.last ?? 0)) Hz")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 netSelectionControls(names)
 
                 Chart {
-                    ForEach(result.nodes.filter { plotNames.contains($0.name) }, id: \.name) { node in
-                        ForEach(node.response) { point in
+                    ForEach(activeSeries.filter { plotNames.contains($0.name) }, id: \.name) { item in
+                        ForEach(item.response) { point in
                             LineMark(
                                 x: .value("Frequency (Hz)", point.freqHz),
-                                y: .value(magnitudeAxisLabel(result), magnitude(result, node: node.name, point: point))
+                                y: .value(yLabel, magnitude(activeSeries, signal: item.name, point: point))
                             )
-                            .foregroundStyle(by: .value("Node", node.name))
+                            .foregroundStyle(by: .value("Signal", item.name))
                         }
                     }
                 }
                 .chartXScale(type: document.settings.acSweepType == .lin ? .linear : .log)
                 .chartXAxisLabel("Frequency (Hz)")
-                .chartYAxisLabel(magnitudeAxisLabel(result))
+                .chartYAxisLabel(yLabel)
                 .frame(height: 240)
 
                 Chart {
-                    ForEach(result.nodes.filter { plotNames.contains($0.name) }, id: \.name) { node in
-                        ForEach(node.response) { point in
+                    ForEach(activeSeries.filter { plotNames.contains($0.name) }, id: \.name) { item in
+                        ForEach(item.response) { point in
                             LineMark(
                                 x: .value("Frequency (Hz)", point.freqHz),
-                                y: .value("Phase (degrees)", phase(result, node: node.name, point: point))
+                                y: .value("Phase (degrees)", phase(activeSeries, signal: item.name, point: point))
                             )
-                            .foregroundStyle(by: .value("Node", node.name))
+                            .foregroundStyle(by: .value("Signal", item.name))
                         }
                     }
                 }
@@ -308,6 +367,46 @@ struct CircuitSimulatorView: View {
                 .frame(height: 200)
             }
         }
+    }
+
+    private func series(_ result: CircuitSimResult.ACResult) -> [(name: String, response: [FreqPoint])] {
+        switch acQuantity {
+        case .voltage:
+            return result.nodes.map { ($0.name, $0.response) }
+        case .current:
+            return result.components.map { ($0.name, $0.response) }
+        }
+    }
+
+    @ViewBuilder
+    private func exportPanel(_ result: CircuitSimResult) -> some View {
+        let csv = CircuitResultExport.csv(result)
+        GroupBox("Export") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button("Copy CSV") { copyToPasteboard(csv) }
+                    Text("\(max(0, csv.split(separator: "\n").count - 1)) data rows")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ScrollView([.horizontal, .vertical]) {
+                    Text(csv)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 120)
+            }
+        }
+    }
+
+    private func copyToPasteboard(_ string: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+        #else
+        UIPasteboard.general.string = string
+        #endif
     }
 
     private func netSelectionControls(_ names: [String]) -> some View {
@@ -352,31 +451,41 @@ struct CircuitSimulatorView: View {
 
     // MARK: - Plot helpers
 
-    private func magnitudeAxisLabel(_ result: CircuitSimResult.ACResult) -> String {
-        document.settings.inputNetName == nil ? "Magnitude (dB)" : "Transfer (dB)"
-    }
-
-    private func magnitude(_ result: CircuitSimResult.ACResult, node: String, point: FreqPoint) -> Double {
+    private func magnitude(
+        _ series: [(name: String, response: [FreqPoint])],
+        signal: String,
+        point: FreqPoint
+    ) -> Double {
         guard let reference = document.settings.inputNetName,
-              reference != node,
-              let referenceNode = result.nodes.first(where: { $0.name == reference }),
-              let referencePoint = referenceNode.response.first(where: { $0.freqHz == point.freqHz }) else {
+              reference != signal,
+              let referencePoint = referencePoint(in: series, named: reference, at: point.freqHz) else {
             return point.magnitudeDb
         }
         return point.magnitudeDb - referencePoint.magnitudeDb
     }
 
-    private func phase(_ result: CircuitSimResult.ACResult, node: String, point: FreqPoint) -> Double {
+    private func phase(
+        _ series: [(name: String, response: [FreqPoint])],
+        signal: String,
+        point: FreqPoint
+    ) -> Double {
         guard let reference = document.settings.inputNetName,
-              reference != node,
-              let referenceNode = result.nodes.first(where: { $0.name == reference }),
-              let referencePoint = referenceNode.response.first(where: { $0.freqHz == point.freqHz }) else {
+              reference != signal,
+              let referencePoint = referencePoint(in: series, named: reference, at: point.freqHz) else {
             return point.phaseDeg
         }
         var delta = point.phaseDeg - referencePoint.phaseDeg
         while delta > 180 { delta -= 360 }
         while delta < -180 { delta += 360 }
         return delta
+    }
+
+    private func referencePoint(
+        in series: [(name: String, response: [FreqPoint])],
+        named name: String,
+        at frequency: Double
+    ) -> FreqPoint? {
+        series.first { $0.name == name }?.response.first { $0.freqHz == frequency }
     }
 
     private func format(_ value: Double) -> String {

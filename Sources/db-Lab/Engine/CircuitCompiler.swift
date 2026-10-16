@@ -162,12 +162,34 @@ public enum CircuitCompiler {
                 }
             case .voltageSource:
                 let (a, b) = try twoTerminalNodes(for: symbol, descriptor: descriptor)
-                let magnitude = try parameter("voltage", descriptor: descriptor, symbol: symbol)
-                elements.append(.init(kind: .voltageSource, nodeA: a, nodeB: b, value: magnitude, name: symbol.refDes))
+                let dc = try parameter("dcVoltage", descriptor: descriptor, symbol: symbol)
+                let ac = try parameter("acMagnitude", descriptor: descriptor, symbol: symbol)
+                let phase = try parameter("acPhaseDegrees", descriptor: descriptor, symbol: symbol)
+                elements.append(.init(
+                    kind: .voltageSource,
+                    nodeA: a,
+                    nodeB: b,
+                    value: ac,
+                    phaseDegrees: phase,
+                    dcValue: dc,
+                    acValue: ac,
+                    name: symbol.refDes
+                ))
             case .currentSource:
                 let (a, b) = try twoTerminalNodes(for: symbol, descriptor: descriptor)
-                let magnitude = try parameter("current", descriptor: descriptor, symbol: symbol)
-                elements.append(.init(kind: .currentSource, nodeA: a, nodeB: b, value: magnitude, name: symbol.refDes))
+                let dc = try parameter("dcCurrent", descriptor: descriptor, symbol: symbol)
+                let ac = try parameter("acMagnitude", descriptor: descriptor, symbol: symbol)
+                let phase = try parameter("acPhaseDegrees", descriptor: descriptor, symbol: symbol)
+                elements.append(.init(
+                    kind: .currentSource,
+                    nodeA: a,
+                    nodeB: b,
+                    value: ac,
+                    phaseDegrees: phase,
+                    dcValue: dc,
+                    acValue: ac,
+                    name: symbol.refDes
+                ))
             }
         }
 

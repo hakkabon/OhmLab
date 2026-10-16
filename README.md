@@ -31,20 +31,20 @@ This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I
 ### Layer 4: The Simulation Layer (The Engine)
 The simulation layer is a **native Swift linear solver**:
 *   **MNA Solver:** Builds and solves Modified Nodal Analysis matrices (`Complex` + partial-pivot Gaussian elimination).
-*   **AC Analysis:** Log-swept complex node voltages → magnitude (dB) and phase over frequency.
-*   **DC Operating Point:** Capacitors open, inductors short (0 V branch).
+*   **AC Analysis:** Decade, octave, or linear sweeps of complex node voltages and element currents → magnitude (dB) and phase over frequency.
+*   **DC Operating Point:** Capacitors open, inductors short (0 V branch); node voltages plus per-element voltage and current.
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
 ## Key Frontend Features
 
 *   **Custom Native Canvas:** Native Core Graphics drawing for the grid, wires, symbols, pin endpoints, junctions, and net labels, with pan, zoom, drag-to-move, and selection.
 *   **Data-Driven Components:** Passive components and AC sources are defined in a `ComponentRegistry`, including pins, symbols, reference prefixes, and typed parameters.
-*   **Real Analysis, Real Results:** The AC/DC results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data.
+*   **Real Analysis, Real Results:** The AC/DC results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data. Node voltages and element currents are both plottable, and results can be copied out as CSV.
 *   **Diagnostics as Guidance:** The document is validated continuously — missing ground, duplicate/invalid references, invalid values, floating pins, and shorts are reported inline with the affected component named.
 *   **Durable Documents:** Circuits serialize to versioned `.dblab` JSON, with open/save and crash recovery of unsaved edits.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
 
-## Supported elements (first milestone)
+## Supported elements (passive)
 
 | Element | Symbol | Notes |
 | --- | --- | --- |
@@ -52,8 +52,8 @@ The simulation layer is a **native Swift linear solver**:
 | Capacitor | C | > 0 F |
 | Inductor | L | > 0 H |
 | Inductor + series resistance | L | Expanded to a series R and L |
-| AC voltage source | V | Magnitude (phase optional in netlists) |
-| AC current source | I | Magnitude |
+| Voltage source | V | Independent DC magnitude, AC magnitude, and AC phase |
+| Current source | I | Independent DC magnitude, AC magnitude, and AC phase |
 | Ground | GND | Maps to node 0 |
 
 Nonlinear devices (diode, BJT, MOSFET), switches, transformers, and SPICE subcircuits are intentionally out of scope for the first milestone and are reported rather than silently ignored.
@@ -103,7 +103,7 @@ Enter or paste SPICE (R, C, L, V, I with `.ac dec|oct|lin`), then **Run**. Sourc
 
 ## Document format
 
-`.dblab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. Each open document mirrors its unsaved edits to its own recovery slot, so several drafts survive a crash and are offered on the next launch. `CircuitFileStore.migrate` is where future schema upgrades belong.
+`.dblab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. Each open document mirrors its unsaved edits to its own recovery slot, so several drafts survive a crash and are offered on the next launch. `CircuitFileStore.migrate` upgrades older files in place — schema v2 splits a legacy source's single magnitude into separate DC and AC parameters. Future schema upgrades belong there too.
 
 ## Requirements
 - macOS 14+
