@@ -18,6 +18,7 @@ struct FreqPoint: Identifiable, Sendable {
 struct CircuitSimResult: Sendable {
     let dc: DCResult?
     let ac: ACResult?
+    let transient: TransientResult?
     let warnings: [String]
 
     struct DCResult: Sendable {
@@ -35,12 +36,21 @@ struct CircuitSimResult: Sendable {
         /// Per-element current sweep, in the same units as the element.
         let components: [(name: String, response: [FreqPoint])]
     }
+
+    struct TransientResult: Sendable {
+        let times: [Double]
+        /// Node voltage waveform, sharing the `times` axis.
+        let nodes: [(name: String, values: [Double])]
+        /// Per-element current waveform, sharing the `times` axis.
+        let components: [(name: String, values: [Double])]
+    }
 }
 
 enum CircuitSimulationError: LocalizedError {
     case emptyNetlist
     case noAnalysisSelected
     case invalidACSettings
+    case invalidTransientSettings
     case tooManySamples
     case missingGround
     case acSolveFailed(frequency: Double, reason: String)
@@ -51,9 +61,11 @@ enum CircuitSimulationError: LocalizedError {
         case .emptyNetlist:
             return "Enter a SPICE netlist before running the simulation."
         case .noAnalysisSelected:
-            return "Select at least one analysis type (DC or AC)."
+            return "Select at least one analysis type (DC, AC, or transient)."
         case .invalidACSettings:
             return "AC start frequency, stop frequency, and sweep points must define a valid positive sweep."
+        case .invalidTransientSettings:
+            return "Transient step, stop time, and start time must define a valid, sufficiently small run."
         case .tooManySamples:
             return "The requested analysis exceeds the 200,000-sample limit."
         case .missingGround:
@@ -105,13 +117,22 @@ enum SimulationEngine {
                 effective.acSweepType = parsed.analysis.sweep
             }
         }
+        if parsed.analysis.hasTransient {
+            effective.runTransient = settings.runTransient || parsed.analysis.hasTransient
+            if settings.tranStep == AnalysisSettings.default.tranStep,
+               settings.tranStop == AnalysisSettings.default.tranStop {
+                effective.tranStep = parsed.analysis.tranStep
+                effective.tranStop = parsed.analysis.tranStop
+                effective.tranStart = parsed.analysis.tranStart
+            }
+        }
         return try solve(circuit: parsed.circuit, settings: effective)
     }
 
     // MARK: - Common solve
 
     private static func solve(circuit: LinearCircuit, settings: AnalysisSettings) throws -> CircuitSimResult {
-        guard settings.runDC || settings.runAC else {
+        guard settings.runDC || settings.runAC || settings.runTransient else {
             throw CircuitSimulationError.noAnalysisSelected
         }
 
@@ -196,7 +217,42 @@ enum SimulationEngine {
             )
         }
 
-        return CircuitSimResult(dc: dcResult, ac: acResult, warnings: warnings)
+        var transientResult: CircuitSimResult.TransientResult?
+        if settings.runTransient {
+            guard settings.tranStep > 0,
+                  settings.tranStep.isFinite,
+                  settings.tranStop > settings.tranStart,
+                  settings.tranStart >= 0 else {
+                throw CircuitSimulationError.invalidTransientSettings
+            }
+            let solver = TransientSolver(circuit: circuit, timestep: settings.tranStep)
+            let raw: TransientSolver.Result
+            do {
+                raw = try solver.run(
+                    startTime: settings.tranStart,
+                    stopTime: settings.tranStop,
+                    maxSteps: FrequencySweep.maxPointCount
+                )
+            } catch {
+                throw CircuitSimulationError.invalidTransientSettings
+            }
+            for series in raw.nodeSeries {
+                for value in series where !value.isFinite {
+                    throw CircuitSimulationError.unstableResult
+                }
+            }
+            transientResult = CircuitSimResult.TransientResult(
+                times: raw.times,
+                nodes: (1..<circuit.nodeCount).map { node in
+                    (circuit.nodeNames[node], raw.nodeSeries[node])
+                },
+                components: circuit.elements.enumerated().map { index, element in
+                    (element.name, raw.componentSeries[index])
+                }
+            )
+        }
+
+        return CircuitSimResult(dc: dcResult, ac: acResult, transient: transientResult, warnings: warnings)
     }
 
     private static func makeFrequencies(_ settings: AnalysisSettings) throws -> [Double] {

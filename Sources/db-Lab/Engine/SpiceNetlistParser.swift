@@ -45,6 +45,10 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
     public var startFrequency: Double
     public var stopFrequency: Double
     public var hasOperatingPoint: Bool
+    public var hasTransient: Bool
+    public var tranStep: Double
+    public var tranStop: Double
+    public var tranStart: Double
 
     public static let none = SpiceAnalysisCard(
         hasAC: false,
@@ -52,7 +56,11 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
         points: 20,
         startFrequency: 1,
         stopFrequency: 1e6,
-        hasOperatingPoint: false
+        hasOperatingPoint: false,
+        hasTransient: false,
+        tranStep: 1e-4,
+        tranStop: 1e-2,
+        tranStart: 0
     )
 }
 
@@ -95,9 +103,12 @@ public enum SpiceNetlistParser {
                     try parseAC(tokens: tokens, line: lineNumber, text: stripped, into: &analysis)
                 case ".op":
                     analysis.hasOperatingPoint = true
+                case ".tran":
+                    analysis.hasTransient = true
+                    try parseTran(tokens: tokens, line: lineNumber, text: stripped, into: &analysis)
                 case ".end", ".ends":
                     break
-                case ".dc", ".tran", ".noise", ".disto", ".four", ".print", ".plot", ".save", ".param", ".include", ".lib", ".model", ".subckt", ".options":
+                case ".dc", ".noise", ".disto", ".four", ".print", ".plot", ".save", ".param", ".include", ".lib", ".model", ".subckt", ".options":
                     throw SpiceParseError.unsupportedCard(line: lineNumber, text: stripped)
                 default:
                     throw SpiceParseError.unsupportedCard(line: lineNumber, text: stripped)
@@ -125,7 +136,8 @@ public enum SpiceNetlistParser {
                 elements.append(.init(kind: kind, nodeA: a, nodeB: b, value: value, name: name))
             case "V", "I":
                 guard tokens.count >= 4 else { throw SpiceParseError.malformed(line: lineNumber, text: stripped) }
-                let source = try parseSource(Array(tokens.dropFirst(3)), line: lineNumber, text: stripped)
+                let spec = tokens.dropFirst(3).joined(separator: " ")
+                let source = try parseSource(spec, line: lineNumber, text: stripped)
                 let kind: LinearCircuit.ElementKind = kindLetter == "V" ? .voltageSource : .currentSource
                 elements.append(.init(
                     kind: kind,
@@ -135,6 +147,7 @@ public enum SpiceNetlistParser {
                     phaseDegrees: source.phaseDegrees,
                     dcValue: source.dc,
                     acValue: source.ac,
+                    transient: source.waveform,
                     name: name
                 ))
             default:
@@ -186,16 +199,58 @@ public enum SpiceNetlistParser {
         analysis.stopFrequency = stop
     }
 
-    /// Parses a source's magnitude specification, keeping DC and AC separate:
-    /// `DC 5`, `AC 1 90`, `5 AC 1`, `5`, etc. Phase only applies to AC.
+    private static func parseTran(
+        tokens: [String],
+        line: Int,
+        text: String,
+        into analysis: inout SpiceAnalysisCard
+    ) throws {
+        // .tran <tstep> <tstop> [tstart [tmax]]
+        guard tokens.count >= 3 else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
+        let step = try parseNumber(tokens[1], line: line)
+        let stop = try parseNumber(tokens[2], line: line)
+        let start = tokens.count > 3 ? try parseNumber(tokens[3], line: line) : 0
+        guard step > 0, stop > start, start >= 0 else {
+            throw SpiceParseError.invalidAnalysis(line: line, text: text)
+        }
+        analysis.tranStep = step
+        analysis.tranStop = stop
+        analysis.tranStart = start
+    }
+
+    private struct SourceSpec {
+        var dc: Double?
+        var ac: Double?
+        var phaseDegrees: Double
+        var waveform: Waveform?
+    }
+
+    /// Parses a source's specification, keeping DC, AC, and transient shapes
+    /// separate: `DC 5`, `AC 1 90`, `5 AC 1`, `PULSE(0 5 0 1n 1n 1 2)`, etc.
+    /// Phase only applies to AC.
     private static func parseSource(
-        _ tokens: [String],
+        _ spec: String,
         line: Int,
         text: String
-    ) throws -> (dc: Double?, ac: Double?, phaseDegrees: Double) {
+    ) throws -> SourceSpec {
         var dc: Double?
         var ac: Double?
         var phase: Double = 0
+        var waveform: Waveform?
+
+        var working = spec
+        if let match = waveformPattern.firstMatch(in: spec, range: NSRange(spec.startIndex..., in: spec)),
+           let nameRange = Range(match.range(at: 1), in: spec),
+           let argsRange = Range(match.range(at: 2), in: spec) {
+            let name = spec[nameRange].uppercased()
+            let args = splitArguments(String(spec[argsRange]))
+            waveform = try parseWaveform(name: name, args: args, line: line, text: text)
+            if let wholeRange = Range(match.range(at: 0), in: spec) {
+                working = spec.replacingCharacters(in: wholeRange, with: " ")
+            }
+        }
+
+        let tokens = working.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "," }).map(String.init)
         var index = 0
         while index < tokens.count {
             let token = tokens[index].uppercased()
@@ -222,8 +277,65 @@ public enum SpiceNetlistParser {
                 index += 1
             }
         }
-        guard dc != nil || ac != nil else { throw SpiceParseError.malformed(line: line, text: text) }
-        return (dc, ac, phase)
+        guard dc != nil || ac != nil || waveform != nil else {
+            throw SpiceParseError.malformed(line: line, text: text)
+        }
+        return SourceSpec(dc: dc, ac: ac, phaseDegrees: phase, waveform: waveform)
+    }
+
+    private static func splitArguments(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "," || $0 == "\n" })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func parseWaveform(
+        name: String,
+        args: [String],
+        line: Int,
+        text: String
+    ) throws -> Waveform {
+        func numbers() throws -> [Double] {
+            try args.map { try parseNumber($0, line: line) }
+        }
+        switch name {
+        case "PULSE":
+            let v = try numbers()
+            guard v.count >= 2 else { throw SpiceParseError.malformed(line: line, text: text) }
+            return .pulse(
+                initial: v[0],
+                pulsed: v[1],
+                delay: v.count > 2 ? v[2] : 0,
+                riseTime: v.count > 3 ? v[3] : 0,
+                fallTime: v.count > 4 ? v[4] : 0,
+                pulseWidth: v.count > 5 ? v[5] : .infinity,
+                period: v.count > 6 ? v[6] : 0
+            )
+        case "SIN":
+            let v = try numbers()
+            guard v.count >= 3 else { throw SpiceParseError.malformed(line: line, text: text) }
+            return .sine(
+                offset: v[0],
+                amplitude: v[1],
+                frequency: v[2],
+                delay: v.count > 3 ? v[3] : 0,
+                damping: v.count > 4 ? v[4] : 0,
+                phaseDegrees: v.count > 5 ? v[5] : 0
+            )
+        case "PWL":
+            let v = try numbers()
+            guard v.count >= 2 else { throw SpiceParseError.malformed(line: line, text: text) }
+            var points: [WaveformPoint] = []
+            var index = 0
+            while index + 1 < v.count {
+                points.append(WaveformPoint(time: v[index], value: v[index + 1]))
+                index += 2
+            }
+            guard !points.isEmpty else { throw SpiceParseError.malformed(line: line, text: text) }
+            return .pwl(points: points)
+        default:
+            throw SpiceParseError.unsupportedCard(line: line, text: text)
+        }
     }
 
     /// Parse a SPICE-style value with optional engineering suffix, e.g. `4.7k`,
@@ -260,6 +372,11 @@ public enum SpiceNetlistParser {
         }
         return value * multiplier
     }
+
+    private static let waveformPattern: NSRegularExpression = {
+        // Groups: 1 = function name, 2 = parenthesised argument list.
+        try! NSRegularExpression(pattern: "(?i)\\b(PULSE|SIN|PWL)\\s*\\(([^)]*)\\)")
+    }()
 
     private static let numberPattern: NSRegularExpression = {
         // Groups: 1 = numeric mantissa/exponent, 2 = trailing suffix letters.

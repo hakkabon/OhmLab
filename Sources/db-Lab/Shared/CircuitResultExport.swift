@@ -6,7 +6,7 @@ import Foundation
 
 enum CircuitResultExport {
     static func csv(_ result: CircuitSimResult) -> String {
-        var rows = ["analysis,frequency_hz,signal,quantity,value"]
+        var rows = ["analysis,frequency_hz,signal,quantity,value,time_s"]
 
         if let dc = result.dc {
             for node in dc.nodes {
@@ -33,12 +33,33 @@ enum CircuitResultExport {
             }
         }
 
+        if let transient = result.transient {
+            for node in transient.nodes {
+                for (index, time) in transient.times.enumerated() where index < node.values.count {
+                    rows.append(row(analysis: "tran", frequency: nil, signal: node.name, quantity: "voltage", value: node.values[index], time: time))
+                }
+            }
+            for component in transient.components {
+                for (index, time) in transient.times.enumerated() where index < component.values.count {
+                    rows.append(row(analysis: "tran", frequency: nil, signal: component.name, quantity: "current", value: component.values[index], time: time))
+                }
+            }
+        }
+
         return rows.joined(separator: "\n")
     }
 
-    private static func row(analysis: String, frequency: Double?, signal: String, quantity: String, value: Double) -> String {
+    private static func row(
+        analysis: String,
+        frequency: Double?,
+        signal: String,
+        quantity: String,
+        value: Double,
+        time: Double? = nil
+    ) -> String {
         let frequencyField = frequency.map { number($0) } ?? ""
-        return "\(analysis),\(frequencyField),\(escape(signal)),\(quantity),\(number(value))"
+        let timeField = time.map { number($0) } ?? ""
+        return "\(analysis),\(frequencyField),\(escape(signal)),\(quantity),\(number(value)),\(timeField)"
     }
 
     private static func number(_ value: Double) -> String {

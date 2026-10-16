@@ -11,11 +11,16 @@ import Foundation
 public struct AnalysisSettings: Codable, Equatable, Sendable {
     public var runDC: Bool
     public var runAC: Bool
+    public var runTransient: Bool
     public var acSweepType: FrequencySweepType
     public var acStartFrequency: Double
     public var acStopFrequency: Double
     /// Points per decade/octave, or the total point count for a linear sweep.
     public var acPointsPerDecade: Int
+    /// Transient step size, stop time, and start time (for delayed output).
+    public var tranStep: Double
+    public var tranStop: Double
+    public var tranStart: Double
     /// Net name the source is measured against (nil = all sources).
     public var inputNetName: String?
     /// Nets selected for plotting in the results panel.
@@ -24,10 +29,14 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
     public static let `default` = AnalysisSettings(
         runDC: true,
         runAC: true,
+        runTransient: false,
         acStartFrequency: 1,
         acStopFrequency: 1_000_000,
         acPointsPerDecade: 20,
         acSweepType: .dec,
+        tranStep: 1e-4,
+        tranStop: 1e-2,
+        tranStart: 0,
         inputNetName: nil,
         outputNetNames: []
     )
@@ -35,38 +44,50 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
     public init(
         runDC: Bool,
         runAC: Bool,
+        runTransient: Bool = false,
         acStartFrequency: Double,
         acStopFrequency: Double,
         acPointsPerDecade: Int,
         acSweepType: FrequencySweepType = .dec,
+        tranStep: Double = 1e-4,
+        tranStop: Double = 1e-2,
+        tranStart: Double = 0,
         inputNetName: String? = nil,
         outputNetNames: [String] = []
     ) {
         self.runDC = runDC
         self.runAC = runAC
+        self.runTransient = runTransient
         self.acSweepType = acSweepType
         self.acStartFrequency = acStartFrequency
         self.acStopFrequency = acStopFrequency
         self.acPointsPerDecade = acPointsPerDecade
+        self.tranStep = tranStep
+        self.tranStop = tranStop
+        self.tranStart = tranStart
         self.inputNetName = inputNetName
         self.outputNetNames = outputNetNames
     }
 
     private enum CodingKeys: String, CodingKey {
-        case runDC, runAC, acSweepType, acStartFrequency, acStopFrequency
-        case acPointsPerDecade, inputNetName, outputNetNames
+        case runDC, runAC, runTransient, acSweepType, acStartFrequency, acStopFrequency
+        case acPointsPerDecade, tranStep, tranStop, tranStart, inputNetName, outputNetNames
     }
 
-    /// Custom decoding so documents written before `acSweepType` existed still
-    /// load, defaulting to a decade sweep.
+    /// Custom decoding so documents written before `acSweepType` or the
+    /// transient settings existed still load with sensible defaults.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         runDC = try container.decode(Bool.self, forKey: .runDC)
         runAC = try container.decode(Bool.self, forKey: .runAC)
+        runTransient = try container.decodeIfPresent(Bool.self, forKey: .runTransient) ?? false
         acSweepType = try container.decodeIfPresent(FrequencySweepType.self, forKey: .acSweepType) ?? .dec
         acStartFrequency = try container.decode(Double.self, forKey: .acStartFrequency)
         acStopFrequency = try container.decode(Double.self, forKey: .acStopFrequency)
         acPointsPerDecade = try container.decode(Int.self, forKey: .acPointsPerDecade)
+        tranStep = try container.decodeIfPresent(Double.self, forKey: .tranStep) ?? 1e-4
+        tranStop = try container.decodeIfPresent(Double.self, forKey: .tranStop) ?? 1e-2
+        tranStart = try container.decodeIfPresent(Double.self, forKey: .tranStart) ?? 0
         inputNetName = try container.decodeIfPresent(String.self, forKey: .inputNetName)
         outputNetNames = try container.decodeIfPresent([String].self, forKey: .outputNetNames) ?? []
     }

@@ -1,6 +1,6 @@
 # db-Lab
 
-**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **passive linear circuit workflow**: draw a schematic, enter values, get feedback, run a real AC analysis, and trust that the plots came from the circuit you drew.
+**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **passive linear circuit workflow**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
 The Swift package builds and runs by itself — no Rust toolchain required. A future `audio-spice-core` (Rust/UniFFI) engine can be linked in behind the same interface, but it is not needed for the milestone.
 
@@ -33,13 +33,14 @@ The simulation layer is a **native Swift linear solver**:
 *   **MNA Solver:** Builds and solves Modified Nodal Analysis matrices (`Complex` + partial-pivot Gaussian elimination).
 *   **AC Analysis:** Decade, octave, or linear sweeps of complex node voltages and element currents → magnitude (dB) and phase over frequency.
 *   **DC Operating Point:** Capacitors open, inductors short (0 V branch); node voltages plus per-element voltage and current.
+*   **Transient Analysis:** Backward-Euler time stepping with companion models for C and L, seeded by the operating point at the start time. Sources support `PULSE`, `SIN`, and `PWL` shapes.
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
 ## Key Frontend Features
 
 *   **Custom Native Canvas:** Native Core Graphics drawing for the grid, wires, symbols, pin endpoints, junctions, and net labels, with pan, zoom, drag-to-move, and selection.
 *   **Data-Driven Components:** Passive components and AC sources are defined in a `ComponentRegistry`, including pins, symbols, reference prefixes, and typed parameters.
-*   **Real Analysis, Real Results:** The AC/DC results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data. Node voltages and element currents are both plottable, and results can be copied out as CSV.
+*   **Real Analysis, Real Results:** The DC/AC/transient results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data. Node voltages and element currents are both plottable as Bode plots or time-domain waveforms, and results can be copied out as CSV.
 *   **Diagnostics as Guidance:** The document is validated continuously — missing ground, duplicate/invalid references, invalid values, floating pins, and shorts are reported inline with the affected component named.
 *   **Durable Documents:** Circuits serialize to versioned `.dblab` JSON, with open/save and crash recovery of unsaved edits.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
@@ -52,8 +53,8 @@ The simulation layer is a **native Swift linear solver**:
 | Capacitor | C | > 0 F |
 | Inductor | L | > 0 H |
 | Inductor + series resistance | L | Expanded to a series R and L |
-| Voltage source | V | Independent DC magnitude, AC magnitude, and AC phase |
-| Current source | I | Independent DC magnitude, AC magnitude, and AC phase |
+| Voltage source | V | Independent DC magnitude, AC magnitude/phase, and optional transient shape (`PULSE`, `SIN`, `PWL`) |
+| Current source | I | Independent DC magnitude, AC magnitude/phase, and optional transient shape (`PULSE`, `SIN`, `PWL`) |
 | Ground | GND | Maps to node 0 |
 
 Nonlinear devices (diode, BJT, MOSFET), switches, transformers, and SPICE subcircuits are intentionally out of scope for the first milestone and are reported rather than silently ignored.
@@ -72,7 +73,9 @@ Sources/db-Lab/
 ├── Engine/                       # Layer 4 (native Swift)
 │   ├── Complex.swift
 │   ├── ComplexLinearSolver.swift
-│   ├── LinearCircuit.swift       # MNA assembly + AC/DC solve
+│   ├── LinearCircuit.swift       # MNA assembly + DC/AC/transient-step solve
+│   ├── TransientSolver.swift     # Backward-Euler time stepping
+│   ├── Waveform.swift            # PULSE / SIN / PWL source shapes
 │   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
 │   └── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
 ├── Diagnostics/                  # Pre-simulation validation
@@ -87,7 +90,7 @@ cd db-Lab
 swift run
 ```
 
-Create a circuit, place components (R, C, L, V, I, ground), draw wires, and press **Run**. The AC magnitude/phase plots come from the built-in solver.
+Create a circuit, place components (R, C, L, V, I, ground), draw wires, and press **Run**. The DC operating point, AC magnitude/phase plots, and transient waveforms all come from the built-in solver.
 
 ## Workflows
 
@@ -96,10 +99,10 @@ Create a circuit, place components (R, C, L, V, I, ground), draw wires, and pres
 2. Choose **Wire** and click two grid locations to connect them; component pins connect when they share a grid location. Use **Label** to name a net (e.g. `OUT`).
 3. Select a placed component to edit its parameters or rotation. Drag a component to move it.
 4. Review the **Diagnostics** and **Projected SPICE Netlist** panels.
-5. Configure DC/AC settings (decade, octave, or linear sweep) and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view.
+5. Configure DC/AC/transient settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view. Transient runs plot selected node voltages and element currents over time.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I with `.ac dec|oct|lin`), then **Run**. Sources keep separate `DC` and `AC` values (`V1 1 0 DC 5 AC 1`). Unsupported cards are reported rather than ignored.
+Enter or paste SPICE (R, C, L, V, I with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Unsupported cards are reported rather than ignored.
 
 ## Document format
 

@@ -665,6 +665,172 @@ import Testing
     })
 }
 
+// MARK: - Phase 2: transient analysis
+
+@Test func transientRCStepChargesTowardSource() throws {
+    let circuit = LinearCircuit(
+        nodeNames: ["0", "in", "out"],
+        elements: [
+            .init(
+                kind: .voltageSource,
+                nodeA: 1,
+                nodeB: 0,
+                value: 0,
+                transient: .pulse(
+                    initial: 0, pulsed: 5, delay: 0, riseTime: 1e-9,
+                    fallTime: 0, pulseWidth: .infinity, period: 0
+                ),
+                name: "V1"
+            ),
+            .init(kind: .resistor, nodeA: 1, nodeB: 2, value: 1_000, name: "R1"),
+            .init(kind: .capacitor, nodeA: 2, nodeB: 0, value: 1e-6, name: "C1")
+        ]
+    )
+    // tau = RC = 1 ms.
+    let solver = TransientSolver(circuit: circuit, timestep: 1e-5)
+    let result = try solver.run(startTime: 0, stopTime: 5e-3, maxSteps: 100_000)
+
+    let output = result.nodeSeries[2]
+    #expect(abs((output.first ?? 1)) < 1e-6)
+    #expect(abs((output.last ?? 0) - 5) < 0.05)
+    // One time constant: 5·(1 − e⁻¹) ≈ 3.16 V at index 100.
+    #expect(abs(output[100] - 3.161) < 0.05)
+    // The capacitor current decays to zero in steady state.
+    #expect(abs(result.componentSeries[2].last ?? 1) < 1e-4)
+}
+
+@Test func transientRLStepRampsTowardSteadyCurrent() throws {
+    let circuit = LinearCircuit(
+        nodeNames: ["0", "in", "out"],
+        elements: [
+            .init(
+                kind: .voltageSource,
+                nodeA: 1,
+                nodeB: 0,
+                value: 0,
+                transient: .pulse(
+                    initial: 0, pulsed: 5, delay: 0, riseTime: 1e-12,
+                    fallTime: 0, pulseWidth: .infinity, period: 0
+                ),
+                name: "V1"
+            ),
+            .init(kind: .resistor, nodeA: 1, nodeB: 2, value: 100, name: "R1"),
+            .init(kind: .inductor, nodeA: 2, nodeB: 0, value: 1e-3, name: "L1")
+        ]
+    )
+    // tau = L/R = 10 us.
+    let solver = TransientSolver(circuit: circuit, timestep: 1e-7)
+    let result = try solver.run(startTime: 0, stopTime: 1e-4, maxSteps: 100_000)
+
+    let current = result.componentSeries[2]
+    #expect(abs(current.first ?? 1) < 1e-9)
+    #expect(abs((current.last ?? 0) - 0.05) < 1e-3)
+    // One time constant: 0.05·(1 − e⁻¹) ≈ 0.0316 A at index 100.
+    #expect(abs(current[100] - 0.0315) < 5e-3)
+}
+
+@Test func waveformSineAndPWLInterpolate() {
+    let sine = Waveform.sine(offset: 1, amplitude: 2, frequency: 1_000, delay: 0, damping: 0, phaseDegrees: 90)
+    #expect(abs(sine.value(at: 0) - 3) < 1e-9)
+    #expect(abs(sine.value(at: 0.00025) - 1) < 1e-6)
+
+    let pwl = Waveform.pwl(points: [
+        WaveformPoint(time: 0, value: 0),
+        WaveformPoint(time: 1, value: 10)
+    ])
+    #expect(pwl.value(at: 0.5) == 5)
+    #expect(pwl.value(at: -1) == 0)
+    #expect(pwl.value(at: 5) == 10)
+}
+
+@Test func netlistParserReadsPulseSourceAndTranCard() throws {
+    let netlist = """
+    V1 in 0 PULSE(0 5 0 1n 1n 1 2)
+    R1 in out 1k
+    C1 out 0 1u
+    .tran 1u 5m
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let source = try #require(parsed.circuit.elements.first { $0.name == "V1" })
+    let waveform = try #require(source.transient)
+    #expect(abs(waveform.value(at: 0)) < 1e-9)
+    #expect(abs(waveform.value(at: 1e-6) - 5) < 1e-9)
+    #expect(abs(waveform.value(at: 1.5)) < 1e-9)
+    #expect(parsed.analysis.hasTransient)
+    #expect(parsed.analysis.tranStep == 1e-6)
+    #expect(parsed.analysis.tranStop == 5e-3)
+}
+
+@Test func netlistParserReadsSineSource() throws {
+    let parsed = try SpiceNetlistParser.parse("V1 1 0 SIN(0 1 1k)\nR1 1 0 1k\n.end")
+    let source = try #require(parsed.circuit.elements.first)
+    let waveform = try #require(source.transient)
+    #expect(abs(waveform.value(at: 0)) < 1e-9)
+    #expect(abs(waveform.value(at: 0.00025) - 1) < 1e-6)
+}
+
+@Test func transientResultsExposedByEngine() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    settings.runTransient = true
+    settings.tranStep = 1e-5
+    settings.tranStop = 1e-3
+
+    let netlist = """
+    V1 in 0 PULSE(0 5 0 1n 1n 1 2)
+    R1 in out 1k
+    C1 out 0 1u
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let transient = try #require(result.transient)
+    #expect(transient.times.first == 0)
+    #expect(transient.times.count == 101)
+    #expect(transient.nodes.contains { $0.name == "out" })
+    #expect(transient.components.contains { $0.name == "C1" })
+}
+
+@Test func transientHonorsNetlistTranCard() throws {
+    let settings = AnalysisSettings.default
+    let netlist = """
+    V1 1 0 PULSE(0 1 0 1n 1n 1 2)
+    R1 1 0 1k
+    .tran 2u 20u
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let transient = try #require(result.transient)
+    #expect(transient.times.count == 11)
+    #expect(abs((transient.times.last ?? 0) - 20e-6) < 1e-12)
+}
+
+@Test func csvExportContainsTransientRows() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    settings.runTransient = true
+    settings.tranStep = 1e-4
+    settings.tranStop = 1e-3
+
+    let netlist = "V1 1 0 PULSE(0 5 0 1n 1n 1 2)\nR1 1 0 1k\n.end"
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let csv = CircuitResultExport.csv(result)
+
+    #expect(csv.hasPrefix("analysis,frequency_hz,signal,quantity,value,time_s"))
+    #expect(csv.contains("tran,,"))
+}
+
+@Test func analysisSettingsDecodeLegacyJSONWithoutTransient() throws {
+    let json = #"{"runDC":true,"runAC":true,"acStartFrequency":1,"acStopFrequency":1000,"acPointsPerDecade":10}"#
+    let settings = try JSONDecoder().decode(AnalysisSettings.self, from: Data(json.utf8))
+    #expect(settings.runTransient == false)
+    #expect(settings.tranStep == 1e-4)
+    #expect(settings.tranStop == 1e-2)
+    #expect(settings.tranStart == 0)
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

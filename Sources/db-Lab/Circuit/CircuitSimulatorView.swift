@@ -187,6 +187,26 @@ struct CircuitSimulatorView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle("DC operating point", isOn: $document.settings.runDC)
                 Toggle("AC frequency sweep", isOn: $document.settings.runAC)
+                Toggle("Transient", isOn: $document.settings.runTransient)
+                if document.settings.runTransient {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Step (s)")
+                            TextField("Step", value: $document.settings.tranStep, format: .number)
+                                .frame(maxWidth: 160)
+                        }
+                        GridRow {
+                            Text("Stop (s)")
+                            TextField("Stop", value: $document.settings.tranStop, format: .number)
+                                .frame(maxWidth: 160)
+                        }
+                        GridRow {
+                            Text("Start (s)")
+                            TextField("Start", value: $document.settings.tranStart, format: .number)
+                                .frame(maxWidth: 160)
+                        }
+                    }
+                }
                 if document.settings.runAC {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         GridRow {
@@ -250,6 +270,63 @@ struct CircuitSimulatorView: View {
             if let ac = result.ac {
                 acResults(ac)
             }
+            if let transient = result.transient {
+                transientResults(transient)
+            }
+        }
+    }
+
+    private func transientResults(_ result: CircuitSimResult.TransientResult) -> some View {
+        let activeSeries = transientSeries(result)
+        let names = activeSeries.map(\.name)
+        let selected = Set(document.settings.outputNetNames)
+        let plotNames = selected.isEmpty ? Set(names) : selected.intersection(names)
+        let yLabel = acQuantity == .voltage ? "Voltage (V)" : "Current (A)"
+
+        return GroupBox("Transient Response") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Picker("Quantity", selection: $acQuantity) {
+                        ForEach(ACQuantity.allCases) { quantity in
+                            Text(quantity.title).tag(quantity)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
+
+                    Spacer()
+
+                    Text("\(result.times.count) points from \(format(result.times.first ?? 0)) s to \(format(result.times.last ?? 0)) s")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                netSelectionControls(names, showReference: false)
+
+                Chart {
+                    ForEach(activeSeries.filter { plotNames.contains($0.name) }, id: \.name) { item in
+                        ForEach(Array(item.values.enumerated()), id: \.offset) { entry in
+                            LineMark(
+                                x: .value("Time (s)", result.times[entry.offset]),
+                                y: .value(yLabel, entry.element)
+                            )
+                            .foregroundStyle(by: .value("Signal", item.name))
+                        }
+                    }
+                }
+                .chartXAxisLabel("Time (s)")
+                .chartYAxisLabel(yLabel)
+                .frame(height: 240)
+            }
+        }
+    }
+
+    private func transientSeries(_ result: CircuitSimResult.TransientResult) -> [(name: String, values: [Double])] {
+        switch acQuantity {
+        case .voltage:
+            return result.nodes.map { ($0.name, $0.values) }
+        case .current:
+            return result.components.map { ($0.name, $0.values) }
         }
     }
 
@@ -409,7 +486,7 @@ struct CircuitSimulatorView: View {
         #endif
     }
 
-    private func netSelectionControls(_ names: [String]) -> some View {
+    private func netSelectionControls(_ names: [String], showReference: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Menu("Plotted nodes") {
@@ -422,13 +499,15 @@ struct CircuitSimulatorView: View {
 
                 Spacer()
 
-                Picker("Reference", selection: $document.settings.inputNetName) {
-                    Text("Absolute").tag(String?.none)
-                    ForEach(names, id: \.self) { name in
-                        Text(name).tag(String?.some(name))
+                if showReference {
+                    Picker("Reference", selection: $document.settings.inputNetName) {
+                        Text("Absolute").tag(String?.none)
+                        ForEach(names, id: \.self) { name in
+                            Text(name).tag(String?.some(name))
+                        }
                     }
+                    .frame(maxWidth: 240)
                 }
-                .frame(maxWidth: 240)
             }
             .font(.caption)
         }
