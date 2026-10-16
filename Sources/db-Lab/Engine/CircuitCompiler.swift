@@ -45,7 +45,7 @@ public enum CircuitCompiler {
     ) throws -> LinearCircuit {
         let nets = ConnectivityBuilder.build(symbols: symbols, wires: wires, labels: labels)
 
-        guard let groundNet = nets.first(where: \.isGround) else {
+        guard nets.contains(where: \.isGround) else {
             throw CircuitCompileError.missingGround
         }
         guard symbols.contains(where: {
@@ -54,16 +54,11 @@ public enum CircuitCompiler {
             throw CircuitCompileError.emptyCircuit
         }
 
-        var nodeNames = ["0"]
-        var nodeIndexByNet: [Int: Int] = [:]
-        // Every ground symbol is the same reference node, matching SPICE's node 0.
-        for net in nets where net.isGround {
-            nodeIndexByNet[net.id] = 0
-        }
-        for net in nets.filter({ !$0.isGround }).sorted(by: { $0.id < $1.id }) {
-            nodeIndexByNet[net.id] = nodeNames.count
-            nodeNames.append(net.name)
-        }
+        // One shared, deterministic node mapping. Every ground symbol collapses
+        // to node 0, matching SPICE.
+        let nodeMap = NodeMap.build(from: nets)
+        var nodeNames = nodeMap.nodeNames
+        let nodeIndexByNet = nodeMap.nodeIndexByNetID
 
         var nodeByPin: [PinRef: Int] = [:]
         for net in nets {

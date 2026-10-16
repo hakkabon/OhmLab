@@ -44,8 +44,13 @@ public struct LinearCircuit: Sendable {
         public var kind: ElementKind
         public var nodeA: Int
         public var nodeB: Int
+        /// Resistance, capacitance, inductance, or a source's fallback magnitude.
         public var value: Double
         public var phaseDegrees: Double
+        /// DC magnitude for a source. When nil the source uses `value` for DC.
+        public var dcValue: Double?
+        /// AC magnitude for a source. When nil the source uses `value` for AC.
+        public var acValue: Double?
         public var name: String
 
         public init(
@@ -54,6 +59,8 @@ public struct LinearCircuit: Sendable {
             nodeB: Int,
             value: Double,
             phaseDegrees: Double = 0,
+            dcValue: Double? = nil,
+            acValue: Double? = nil,
             name: String
         ) {
             self.kind = kind
@@ -61,7 +68,15 @@ public struct LinearCircuit: Sendable {
             self.nodeB = nodeB
             self.value = value
             self.phaseDegrees = phaseDegrees
+            self.dcValue = dcValue
+            self.acValue = acValue
             self.name = name
+        }
+
+        /// Magnitude used for the given analysis. A source with a single value
+        /// (the common case) uses that value for both DC and AC.
+        func magnitude(isDC: Bool) -> Double {
+            isDC ? (dcValue ?? value) : (acValue ?? value)
         }
     }
 
@@ -118,7 +133,9 @@ public struct LinearCircuit: Sendable {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             case .voltageSource, .currentSource:
-                guard element.value.isFinite else {
+                guard element.value.isFinite,
+                      element.dcValue?.isFinite ?? true,
+                      element.acValue?.isFinite ?? true else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             }
@@ -144,7 +161,10 @@ public struct LinearCircuit: Sendable {
             case .voltageSource:
                 branches.append(Branch(
                     element: element,
-                    voltage: Complex.fromPolar(magnitude: element.value, phaseDegrees: isDC ? 0 : element.phaseDegrees)
+                    voltage: Complex.fromPolar(
+                        magnitude: element.magnitude(isDC: isDC),
+                        phaseDegrees: isDC ? 0 : element.phaseDegrees
+                    )
                 ))
             case .inductor where isDC:
                 branches.append(Branch(element: element, voltage: .zero))
@@ -194,7 +214,10 @@ public struct LinearCircuit: Sendable {
                 stampCurrentSource(
                     a: element.nodeA,
                     b: element.nodeB,
-                    current: Complex.fromPolar(magnitude: element.value, phaseDegrees: isDC ? 0 : element.phaseDegrees)
+                    current: Complex.fromPolar(
+                        magnitude: element.magnitude(isDC: isDC),
+                        phaseDegrees: isDC ? 0 : element.phaseDegrees
+                    )
                 )
             }
         }

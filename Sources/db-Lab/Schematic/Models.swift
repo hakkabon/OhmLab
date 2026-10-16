@@ -124,6 +124,12 @@ public class SchematicDocument: ObservableObject {
     @Published public private(set) var canUndo = false
     @Published public private(set) var canRedo = false
 
+    /// Monotonic counter bumped only when the persistable content changes.
+    /// Observers (like the simulation document) subscribe to this instead of
+    /// `objectWillChange`, so selecting or rotating the selection highlight does
+    /// not dirty the document or discard results.
+    @Published public private(set) var contentVersion = 0
+
     private var undoStack: [HistoryEntry] = []
     private var redoStack: [HistoryEntry] = []
     private let undoLimit = 100
@@ -135,7 +141,9 @@ public class SchematicDocument: ObservableObject {
         var selectedLabelID: UUID?
     }
 
-    public init() {}
+    public init() {
+        self.rebuildConnectivity()
+    }
 
     // MARK: - Snapshots
 
@@ -153,7 +161,7 @@ public class SchematicDocument: ObservableObject {
         undoStack.removeAll()
         redoStack.removeAll()
         updateUndoAvailability()
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     // MARK: - Undo / redo
@@ -199,7 +207,7 @@ public class SchematicDocument: ObservableObject {
         selectedSymbolID = entry.selectedSymbolID
         selectedWireID = entry.selectedWireID
         selectedLabelID = entry.selectedLabelID
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     private func updateUndoAvailability() {
@@ -215,7 +223,7 @@ public class SchematicDocument: ObservableObject {
         selectedSymbolID = symbol.id
         selectedWireID = nil
         selectedLabelID = nil
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     @discardableResult
@@ -244,14 +252,14 @@ public class SchematicDocument: ObservableObject {
         guard symbols[index].position != position else { return }
         if recordUndo { checkpoint() }
         symbols[index].position = position
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func rotateSymbol(id: UUID, by degrees: Int) {
         guard let index = symbols.firstIndex(where: { $0.id == id }) else { return }
         checkpoint()
         symbols[index].rotation = (((symbols[index].rotation + degrees) % 360) + 360) % 360
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func setRotation(id: UUID, to degrees: Int) {
@@ -260,7 +268,7 @@ public class SchematicDocument: ObservableObject {
         guard symbols[index].rotation != normalized else { return }
         checkpoint()
         symbols[index].rotation = normalized
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func deleteSymbol(id: UUID) {
@@ -268,7 +276,7 @@ public class SchematicDocument: ObservableObject {
         checkpoint()
         symbols.remove(at: index)
         if selectedSymbolID == id { selectedSymbolID = nil }
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func setReference(id: UUID, to reference: String) {
@@ -277,7 +285,7 @@ public class SchematicDocument: ObservableObject {
         guard symbols[index].refDes != trimmed else { return }
         checkpoint()
         symbols[index].refDes = trimmed
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func setParameter(id: UUID, key: String, value: Double) {
@@ -292,7 +300,7 @@ public class SchematicDocument: ObservableObject {
     public func addWire(_ wire: WireSegment) {
         checkpoint()
         wires.append(wire)
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func deleteWire(id: UUID) {
@@ -300,7 +308,7 @@ public class SchematicDocument: ObservableObject {
         checkpoint()
         wires.remove(at: index)
         if selectedWireID == id { selectedWireID = nil }
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     // MARK: - Net labels
@@ -310,7 +318,7 @@ public class SchematicDocument: ObservableObject {
         guard !trimmed.isEmpty else { return }
         checkpoint()
         netLabels.append(NetLabel(name: trimmed.uppercased(), position: position))
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func renameNetLabel(id: UUID, to name: String) {
@@ -319,7 +327,7 @@ public class SchematicDocument: ObservableObject {
         guard !trimmed.isEmpty, netLabels[index].name != trimmed else { return }
         checkpoint()
         netLabels[index].name = trimmed
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     public func deleteNetLabel(id: UUID) {
@@ -327,10 +335,17 @@ public class SchematicDocument: ObservableObject {
         checkpoint()
         netLabels.remove(at: index)
         if selectedLabelID == id { selectedLabelID = nil }
-        rebuildConnectivity()
+        markContentChanged()
     }
 
     // MARK: - Connectivity
+
+    /// Bump the content version and re-derive connectivity. Content mutations go
+    /// through here; selection-only changes deliberately do not.
+    private func markContentChanged() {
+        contentVersion &+= 1
+        rebuildConnectivity()
+    }
 
     public func rebuildConnectivity() {
         self.nets = ConnectivityBuilder.build(symbols: symbols, wires: wires, labels: netLabels)

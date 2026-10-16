@@ -30,14 +30,20 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     private var cancellables = Set<AnyCancellable>()
     private var autosaveTask: Task<Void, Never>?
+    private var diagnosticsTask: Task<Void, Never>?
+
+    /// Opt-in so that documents created outside the app (e.g. in tests) never
+    /// write to the shared recovery directory.
+    var autosaveRecoveryEnabled = false
 
     init(id: UUID = UUID()) {
         self.id = id
 
-        schematic.objectWillChange
-            .sink { [weak self] _ in
-                Task { @MainActor in self?.schematicDidChange() }
-            }
+        // Only content changes dirty the document; selection and undo-availability
+        // changes do not publish a new content version.
+        schematic.$contentVersion
+            .dropFirst()
+            .sink { [weak self] _ in self?.contentDidChange() }
             .store(in: &cancellables)
 
         $netlistText
@@ -66,16 +72,23 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     // MARK: - Change tracking
 
-    private func schematicDidChange() {
-        contentDidChange()
-    }
-
     private func contentDidChange() {
         isDirty = true
         simulationResult = nil
         simulationError = nil
-        refreshDiagnostics()
+        scheduleDiagnosticsRefresh()
         scheduleAutosave()
+    }
+
+    /// Diagnostics and netlist projection are comparatively expensive and a drag
+    /// emits a burst of content changes, so coalesce them on a short debounce.
+    private func scheduleDiagnosticsRefresh() {
+        diagnosticsTask?.cancel()
+        diagnosticsTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            self?.refreshDiagnostics()
+        }
     }
 
     func refreshDiagnostics() {
@@ -123,12 +136,6 @@ final class CircuitDocument: ObservableObject, Identifiable {
         isSimulating = false
     }
 
-    var availableOutputNets: [String] {
-        if let ac = simulationResult?.ac { return ac.nodes.map(\.name) }
-        if let dc = simulationResult?.dc { return dc.nodes.map(\.name) }
-        return schematic.nets.filter { !$0.isGround }.map(\.name)
-    }
-
     // MARK: - Persistence
 
     func makeFile() -> CircuitFile {
@@ -142,13 +149,12 @@ final class CircuitDocument: ObservableObject, Identifiable {
         usesSchematic = true
         simulationResult = nil
         simulationError = nil
+        // Loading runs the same change notifications as editing; the content is
+        // now the persisted state, so it is clean.
+        autosaveTask?.cancel()
+        diagnosticsTask?.cancel()
         refreshDiagnostics()
-        // Loading mutates the schematic, which schedules change notifications.
-        // Clear the dirty flag once those deferred notifications have drained.
-        Task { @MainActor [weak self] in
-            self?.autosaveTask?.cancel()
-            self?.isDirty = false
-        }
+        isDirty = false
     }
 
     func save(to url: URL) throws {
@@ -156,25 +162,24 @@ final class CircuitDocument: ObservableObject, Identifiable {
         fileURL = url
         lastSavedAt = Date()
         isDirty = false
-        CircuitFileStore.clearRecovery()
+        CircuitFileStore.clearRecovery(id: id)
     }
 
     static func recovered(from file: CircuitFile) -> CircuitDocument {
         let document = CircuitDocument()
         document.load(file)
         document.name = file.name + " (Recovered)"
-        Task { @MainActor [weak document] in
-            document?.isDirty = true
-        }
+        document.isDirty = true
         return document
     }
 
     private func scheduleAutosave() {
         autosaveTask?.cancel()
+        guard autosaveRecoveryEnabled else { return }
         autosaveTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard !Task.isCancelled, let self else { return }
-            CircuitFileStore.saveRecovery(self.makeFile())
+            CircuitFileStore.saveRecovery(self.makeFile(), id: self.id)
         }
     }
 }

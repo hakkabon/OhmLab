@@ -39,14 +39,17 @@ public enum SpiceParseError: LocalizedError {
 
 public struct SpiceAnalysisCard: Sendable, Equatable {
     public var hasAC: Bool
-    public var pointsPerDecade: Int
+    public var sweep: FrequencySweepType
+    /// Points per decade/octave, or the total point count for a linear sweep.
+    public var points: Int
     public var startFrequency: Double
     public var stopFrequency: Double
     public var hasOperatingPoint: Bool
 
     public static let none = SpiceAnalysisCard(
         hasAC: false,
-        pointsPerDecade: 20,
+        sweep: .dec,
+        points: 20,
         startFrequency: 1,
         stopFrequency: 1e6,
         hasOperatingPoint: false
@@ -67,10 +70,12 @@ public enum SpiceNetlistParser {
         var analysis = SpiceAnalysisCard.none
         var sawContent = false
 
+        // SPICE node names are case-insensitive; "0" is always ground.
         func node(_ name: String) -> Int {
-            if let existing = nodeIndex[name] { return existing }
+            let key = name.uppercased()
+            if let existing = nodeIndex[key] { return existing }
             let index = nodeNames.count
-            nodeIndex[name] = index
+            nodeIndex[key] = index
             nodeNames.append(name)
             return index
         }
@@ -87,7 +92,7 @@ public enum SpiceNetlistParser {
                 switch directive {
                 case ".ac":
                     analysis.hasAC = true
-                    analysis.pointsPerDecade = try parseAC(tokens: tokens, line: lineNumber, text: stripped, into: &analysis)
+                    try parseAC(tokens: tokens, line: lineNumber, text: stripped, into: &analysis)
                 case ".op":
                     analysis.hasOperatingPoint = true
                 case ".end", ".ends":
@@ -120,9 +125,18 @@ public enum SpiceNetlistParser {
                 elements.append(.init(kind: kind, nodeA: a, nodeB: b, value: value, name: name))
             case "V", "I":
                 guard tokens.count >= 4 else { throw SpiceParseError.malformed(line: lineNumber, text: stripped) }
-                let (magnitude, phase) = try parseSource(Array(tokens.dropFirst(3)), line: lineNumber, text: stripped)
+                let source = try parseSource(Array(tokens.dropFirst(3)), line: lineNumber, text: stripped)
                 let kind: LinearCircuit.ElementKind = kindLetter == "V" ? .voltageSource : .currentSource
-                elements.append(.init(kind: kind, nodeA: a, nodeB: b, value: magnitude, phaseDegrees: phase, name: name))
+                elements.append(.init(
+                    kind: kind,
+                    nodeA: a,
+                    nodeB: b,
+                    value: source.ac ?? source.dc ?? 0,
+                    phaseDegrees: source.phaseDegrees,
+                    dcValue: source.dc,
+                    acValue: source.ac,
+                    name: name
+                ))
             default:
                 throw SpiceParseError.unsupportedElement(line: lineNumber, name: name)
             }
@@ -152,11 +166,10 @@ public enum SpiceNetlistParser {
         line: Int,
         text: String,
         into analysis: inout SpiceAnalysisCard
-    ) throws -> Int {
-        // .ac dec <points> <fstart> <fstop>
+    ) throws {
+        // .ac <dec|oct|lin> <points> <fstart> <fstop>
         guard tokens.count >= 5 else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
-        let sweep = tokens[1].lowercased()
-        guard sweep == "dec" || sweep == "lin" || sweep == "oct" else {
+        guard let sweep = FrequencySweepType(rawValue: tokens[1].lowercased()) else {
             throw SpiceParseError.invalidAnalysis(line: line, text: text)
         }
         guard let points = Int(tokens[2]) else {
@@ -167,39 +180,50 @@ public enum SpiceNetlistParser {
         guard points > 0, start > 0, stop > start else {
             throw SpiceParseError.invalidAnalysis(line: line, text: text)
         }
+        analysis.sweep = sweep
+        analysis.points = points
         analysis.startFrequency = start
         analysis.stopFrequency = stop
-        return points
     }
 
+    /// Parses a source's magnitude specification, keeping DC and AC separate:
+    /// `DC 5`, `AC 1 90`, `5 AC 1`, `5`, etc. Phase only applies to AC.
     private static func parseSource(
         _ tokens: [String],
         line: Int,
         text: String
-    ) throws -> (magnitude: Double, phaseDegrees: Double) {
-        var magnitude: Double?
+    ) throws -> (dc: Double?, ac: Double?, phaseDegrees: Double) {
+        var dc: Double?
+        var ac: Double?
         var phase: Double = 0
         var index = 0
         while index < tokens.count {
             let token = tokens[index].uppercased()
             if token == "AC" {
                 guard index + 1 < tokens.count else { throw SpiceParseError.malformed(line: line, text: text) }
-                magnitude = try parseNumber(tokens[index + 1], line: line)
+                ac = try parseNumber(tokens[index + 1], line: line)
                 if index + 2 < tokens.count, let parsedPhase = try? parseNumber(tokens[index + 2], line: line) {
                     phase = parsedPhase
+                    index += 3
+                } else {
+                    index += 2
                 }
-                break
             } else if token == "DC" {
                 guard index + 1 < tokens.count else { throw SpiceParseError.malformed(line: line, text: text) }
-                magnitude = try parseNumber(tokens[index + 1], line: line)
+                dc = try parseNumber(tokens[index + 1], line: line)
                 index += 2
             } else {
-                magnitude = try parseNumber(tokens[index], line: line)
+                let value = try parseNumber(tokens[index], line: line)
+                if dc == nil {
+                    dc = value
+                } else {
+                    phase = value
+                }
                 index += 1
             }
         }
-        guard let resolved = magnitude else { throw SpiceParseError.malformed(line: line, text: text) }
-        return (resolved, phase)
+        guard dc != nil || ac != nil else { throw SpiceParseError.malformed(line: line, text: text) }
+        return (dc, ac, phase)
     }
 
     /// Parse a SPICE-style value with optional engineering suffix, e.g. `4.7k`,

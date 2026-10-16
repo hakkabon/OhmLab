@@ -337,28 +337,15 @@ public class SchematicCanvas: PlatformView {
         }
         for symbol in document.symbols {
             guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else { continue }
-            for pin in descriptor.pins {
-                let offset = rotatedOffset(pin.position, rotation: symbol.rotation)
-                let location = GridPoint(symbol.position.x + offset.x, symbol.position.y + offset.y)
-                rayCount[location, default: 0] += 1
-                isTerminal.insert(location)
+            for entry in PinGeometry.pinLocations(for: symbol, descriptor: descriptor) {
+                rayCount[entry.location, default: 0] += 1
+                isTerminal.insert(entry.location)
             }
         }
 
         return rayCount.filter { $0.value >= 3 && isTerminal.contains($0.key) }
             .keys
             .sorted { ($0.x, $0.y) < ($1.x, $1.y) }
-    }
-
-    private func rotatedOffset(_ position: CGPoint, rotation: Int) -> (x: Int, y: Int) {
-        let x = Int((position.x / GridPoint.gridSize).rounded())
-        let y = Int((position.y / GridPoint.gridSize).rounded())
-        switch ((rotation % 360) + 360) % 360 {
-        case 90: return (-y, x)
-        case 180: return (-x, -y)
-        case 270: return (y, -x)
-        default: return (x, y)
-        }
     }
 
     // MARK: - Hit testing

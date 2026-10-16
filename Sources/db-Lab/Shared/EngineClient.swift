@@ -38,6 +38,8 @@ enum CircuitSimulationError: LocalizedError {
     case invalidACSettings
     case tooManySamples
     case missingGround
+    case acSolveFailed(frequency: Double, reason: String)
+    case unstableResult
 
     var errorDescription: String? {
         switch self {
@@ -46,11 +48,15 @@ enum CircuitSimulationError: LocalizedError {
         case .noAnalysisSelected:
             return "Select at least one analysis type (DC or AC)."
         case .invalidACSettings:
-            return "AC start frequency, stop frequency, and points per decade must define a valid positive sweep."
+            return "AC start frequency, stop frequency, and sweep points must define a valid positive sweep."
         case .tooManySamples:
             return "The requested analysis exceeds the 200,000-sample limit."
         case .missingGround:
             return "The circuit has no ground reference."
+        case .acSolveFailed(let frequency, let reason):
+            return "AC solve failed at \(String(format: "%.6g", frequency)) Hz: \(reason)"
+        case .unstableResult:
+            return "The solution is not numerically stable. Check for floating nodes or short circuits."
         }
     }
 }
@@ -90,7 +96,8 @@ enum SimulationEngine {
                settings.acStopFrequency == AnalysisSettings.default.acStopFrequency {
                 effective.acStartFrequency = parsed.analysis.startFrequency
                 effective.acStopFrequency = parsed.analysis.stopFrequency
-                effective.acPointsPerDecade = parsed.analysis.pointsPerDecade
+                effective.acPointsPerDecade = parsed.analysis.points
+                effective.acSweepType = parsed.analysis.sweep
             }
         }
         return try solve(circuit: parsed.circuit, settings: effective)
@@ -114,6 +121,7 @@ enum SimulationEngine {
         var dcResult: CircuitSimResult.DCResult?
         if settings.runDC {
             let solution = try circuit.solveDC()
+            try assertFinite(solution)
             dcResult = CircuitSimResult.DCResult(
                 nodes: (1..<circuit.nodeCount).map { node in
                     (circuit.nodeNames[node], solution.nodeVoltages[node].re)
@@ -125,34 +133,40 @@ enum SimulationEngine {
 
         var acResult: CircuitSimResult.ACResult?
         if settings.runAC {
-            guard settings.acStartFrequency.isFinite,
-                  settings.acStopFrequency.isFinite,
-                  settings.acStartFrequency > 0,
-                  settings.acStopFrequency > settings.acStartFrequency,
-                  settings.acPointsPerDecade > 0 else {
-                throw CircuitSimulationError.invalidACSettings
-            }
-            let frequencies = logspace(
-                from: settings.acStartFrequency,
-                to: settings.acStopFrequency,
-                pointsPerDecade: settings.acPointsPerDecade
-            )
-            guard frequencies.count <= 200_000 else { throw CircuitSimulationError.tooManySamples }
-
-            var nodeResponses: [(name: String, response: [FreqPoint])] = []
-            for node in 1..<circuit.nodeCount {
-                var points: [FreqPoint] = []
-                points.reserveCapacity(frequencies.count)
-                for frequency in frequencies {
-                    let solution = try circuit.solveAC(frequencyHz: frequency)
+            let frequencies = try makeFrequencies(settings)
+            // Solve once per frequency and read every node from that solution,
+            // rather than re-solving for each node.
+            var nodePoints = [[FreqPoint]](repeating: [], count: circuit.nodeCount)
+            var maxMagnitude = 0.0
+            for frequency in frequencies {
+                let solution: LinearCircuit.Solution
+                do {
+                    solution = try circuit.solveAC(frequencyHz: frequency)
+                } catch {
+                    throw CircuitSimulationError.acSolveFailed(
+                        frequency: frequency,
+                        reason: error.localizedDescription
+                    )
+                }
+                try assertFinite(solution)
+                for node in 1..<circuit.nodeCount {
                     let voltage = solution.nodeVoltages[node]
-                    points.append(FreqPoint(
+                    maxMagnitude = max(maxMagnitude, voltage.magnitude)
+                    nodePoints[node].append(FreqPoint(
                         freqHz: frequency,
                         magnitudeDb: voltage.magnitudeDecibels,
                         phaseDeg: voltage.phaseDegrees
                     ))
                 }
-                nodeResponses.append((circuit.nodeNames[node], points))
+            }
+            if maxMagnitude > 1e15 {
+                warnings.append(
+                    "Voltage magnitude reached \(String(format: "%.3g", maxMagnitude)); "
+                    + "the circuit may be near-singular (floating node or short)."
+                )
+            }
+            let nodeResponses = (1..<circuit.nodeCount).map { node in
+                (circuit.nodeNames[node], nodePoints[node])
             }
             acResult = CircuitSimResult.ACResult(frequencies: frequencies, nodes: nodeResponses)
         }
@@ -160,15 +174,30 @@ enum SimulationEngine {
         return CircuitSimResult(dc: dcResult, ac: acResult, warnings: warnings)
     }
 
-    static func logspace(from start: Double, to stop: Double, pointsPerDecade: Int) -> [Double] {
-        guard start > 0, stop > start, pointsPerDecade > 0 else { return [] }
-        let decades = log10(stop / start)
-        let intervals = Int(ceil(decades * Double(pointsPerDecade)))
-        var frequencies = (0...intervals).map { index in
-            min(start * pow(10, Double(index) / Double(pointsPerDecade)), stop)
-        }
-        if frequencies.last != stop { frequencies.append(stop) }
+    private static func makeFrequencies(_ settings: AnalysisSettings) throws -> [Double] {
+        let type = settings.acSweepType
+        let estimated = FrequencySweep.pointCount(
+            from: settings.acStartFrequency,
+            to: settings.acStopFrequency,
+            count: settings.acPointsPerDecade,
+            type: type
+        )
+        guard estimated > 0 else { throw CircuitSimulationError.invalidACSettings }
+        guard estimated <= FrequencySweep.maxPointCount else { throw CircuitSimulationError.tooManySamples }
+        let frequencies = FrequencySweep.points(
+            from: settings.acStartFrequency,
+            to: settings.acStopFrequency,
+            count: settings.acPointsPerDecade,
+            type: type
+        )
+        guard !frequencies.isEmpty else { throw CircuitSimulationError.invalidACSettings }
         return frequencies
+    }
+
+    private static func assertFinite(_ solution: LinearCircuit.Solution) throws {
+        for voltage in solution.nodeVoltages where !voltage.re.isFinite || !voltage.im.isFinite {
+            throw CircuitSimulationError.unstableResult
+        }
     }
 }
 

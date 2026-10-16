@@ -399,6 +399,148 @@ import Testing
     #expect(ac?.frequencies.first == 10)
 }
 
+// MARK: - Phase 0 hardening
+
+@Test @MainActor func selectingComponentsDoesNotDirtyOrClearResults() async {
+    let document = CircuitDocument()
+    document.settings.runDC = false
+    document.settings.runAC = true
+    document.settings.acStartFrequency = 10
+    document.settings.acStopFrequency = 10_000
+    document.settings.acPointsPerDecade = 5
+
+    _ = document.schematic.addComponent(descriptorId: "voltage-source", at: GridPoint(4, 0))
+    _ = document.schematic.addComponent(descriptorId: "resistor", at: GridPoint(8, 0))
+    _ = document.schematic.addComponent(descriptorId: "capacitor", at: GridPoint(12, 0))
+    _ = document.schematic.addComponent(descriptorId: "ground", at: GridPoint(2, 1))
+    _ = document.schematic.addComponent(descriptorId: "ground", at: GridPoint(14, 1))
+
+    await document.runSimulation()
+    #expect(document.simulationResult != nil)
+    let dirtyBefore = document.isDirty
+
+    document.schematic.selectedSymbolID = document.schematic.symbols.first?.id
+    document.schematic.selectedWireID = document.schematic.wires.first?.id
+
+    #expect(document.simulationResult != nil)
+    #expect(document.isDirty == dirtyBefore)
+}
+
+@Test func sourceKeepsSeparateDcAndAcValues() throws {
+    let netlist = """
+    V1 1 0 DC 5 AC 1
+    R1 1 0 1k
+    .end
+    """
+    let dcResult = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let dc = try #require(dcResult.dc)
+    #expect(abs((dc.nodes.first { $0.name == "1" }?.voltage ?? 0) - 5) < 1e-9)
+
+    var acSettings = AnalysisSettings.default
+    acSettings.runDC = false
+    acSettings.runAC = true
+    acSettings.acStartFrequency = 100
+    acSettings.acStopFrequency = 1_000
+    acSettings.acPointsPerDecade = 2
+    let acResult = try SimulationEngine.solve(netlist: netlist, settings: acSettings)
+    let ac = try #require(acResult.ac)
+    let node = try #require(ac.nodes.first { $0.name == "1" })
+    #expect(abs((node.response.first?.magnitudeDb ?? 99)) < 1e-6)
+}
+
+@Test func elementUsesSeparateDcAndAcMagnitudes() {
+    let element = LinearCircuit.Element(
+        kind: .voltageSource, nodeA: 1, nodeB: 0, value: 1, dcValue: 5, acValue: 2, name: "V1"
+    )
+    #expect(element.magnitude(isDC: true) == 5)
+    #expect(element.magnitude(isDC: false) == 2)
+
+    let fallback = LinearCircuit.Element(kind: .voltageSource, nodeA: 1, nodeB: 0, value: 3, name: "V2")
+    #expect(fallback.magnitude(isDC: true) == 3)
+    #expect(fallback.magnitude(isDC: false) == 3)
+}
+
+@Test func linearSweepProducesEquallySpacedPoints() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = true
+    settings.acSweepType = .lin
+    settings.acStartFrequency = 100
+    settings.acStopFrequency = 200
+    settings.acPointsPerDecade = 5
+
+    let netlist = "V1 1 0 AC 1\nR1 1 0 1k\n.end"
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let ac = try #require(result.ac)
+    #expect(ac.frequencies.count == 5)
+    #expect(ac.frequencies.first == 100)
+    #expect(ac.frequencies.last == 200)
+    #expect(abs(ac.frequencies[1] - 125) < 1e-9)
+}
+
+@Test func octaveSweepStepsByPowersOfTwo() {
+    let points = FrequencySweep.points(from: 100, to: 400, count: 1, type: .oct)
+    #expect(points.first == 100)
+    #expect(points.last == 400)
+    #expect(points.contains { abs($0 - 200) < 1e-9 })
+}
+
+@Test func netlistParserReadsLinearSweep() throws {
+    let parsed = try SpiceNetlistParser.parse("V1 1 0 AC 1\nR1 1 0 1k\n.ac lin 5 100 200\n.end")
+    #expect(parsed.analysis.sweep == .lin)
+    #expect(parsed.analysis.points == 5)
+    #expect(parsed.analysis.startFrequency == 100)
+    #expect(parsed.analysis.stopFrequency == 200)
+}
+
+@Test func netlistNodeNamesAreCaseInsensitive() throws {
+    let parsed = try SpiceNetlistParser.parse("V1 In 0 AC 1\nR1 IN 0 1k\n.end")
+    #expect(parsed.circuit.nodeNames == ["0", "In"])
+    #expect(parsed.circuit.elements[0].nodeA == parsed.circuit.elements[1].nodeA)
+}
+
+@Test func nodeMapReservesZeroAndDeduplicatesNames() {
+    let nets = [
+        Net(id: 1, name: "0", connectedPins: []),
+        Net(id: 2, name: "OUT", connectedPins: []),
+        Net(id: 3, name: "OUT", connectedPins: []),
+        Net(id: 4, name: "0", connectedPins: [], isGround: true)
+    ]
+    let map = NodeMap.build(from: nets)
+
+    #expect(map.nodeNames[0] == "0")
+    #expect(map.nodeNameByNetID[4] == "0")
+    #expect(map.nodeNameByNetID[1] != "0")
+    #expect(Set([map.nodeNameByNetID[2], map.nodeNameByNetID[3]]).count == 2)
+}
+
+@Test func analysisSettingsDecodeLegacyJSONWithoutSweepType() throws {
+    let json = #"{"runDC":true,"runAC":true,"acStartFrequency":1,"acStopFrequency":1000,"acPointsPerDecade":10}"#
+    let settings = try JSONDecoder().decode(AnalysisSettings.self, from: Data(json.utf8))
+    #expect(settings.acSweepType == .dec)
+    #expect(settings.outputNetNames.isEmpty)
+}
+
+@Test func diagnosticsReportUngroundedSubcircuit() {
+    let source = SymbolInstance(descriptorId: "voltage-source", refDes: "V1", position: GridPoint(0, 0))
+    let load = SymbolInstance(descriptorId: "resistor", refDes: "R1", position: GridPoint(4, 0))
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+    let floatingA = SymbolInstance(descriptorId: "resistor", refDes: "R2", position: GridPoint(20, 0))
+    let floatingB = SymbolInstance(descriptorId: "resistor", refDes: "R3", position: GridPoint(26, 0))
+
+    let diagnostics = CircuitDiagnostics.analyze(
+        symbols: [source, load, ground, floatingA, floatingB],
+        wires: [],
+        labels: []
+    )
+
+    #expect(diagnostics.contains {
+        $0.severity == .warning
+            && $0.message.localizedCaseInsensitiveContains("not connected to ground")
+            && $0.message.contains("R2")
+    })
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

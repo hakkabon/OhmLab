@@ -41,9 +41,12 @@ public enum SpiceNetlistBuilder {
             throw SpiceNetlistBuildError.missingGround
         }
 
+        // Share the compiler's node mapping so exported names always match the
+        // names the solver reports.
+        let nodeMap = NodeMap.build(from: nets)
         var nodeByPin: [PinRef: String] = [:]
         for net in nets {
-            let node = net.isGround ? "0" : net.name
+            guard let node = nodeMap.nodeNameByNetID[net.id] else { continue }
             for pin in net.connectedPins {
                 nodeByPin[pin] = node
             }

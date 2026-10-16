@@ -96,14 +96,14 @@ Create a circuit, place components (R, C, L, V, I, ground), draw wires, and pres
 2. Choose **Wire** and click two grid locations to connect them; component pins connect when they share a grid location. Use **Label** to name a net (e.g. `OUT`).
 3. Select a placed component to edit its parameters or rotation. Drag a component to move it.
 4. Review the **Diagnostics** and **Projected SPICE Netlist** panels.
-5. Configure DC/AC settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view.
+5. Configure DC/AC settings (decade, octave, or linear sweep) and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I with `.ac`), then **Run**. Unsupported cards are reported rather than ignored.
+Enter or paste SPICE (R, C, L, V, I with `.ac dec|oct|lin`), then **Run**. Sources keep separate `DC` and `AC` values (`V1 1 0 DC 5 AC 1`). Unsupported cards are reported rather than ignored.
 
 ## Document format
 
-`.dblab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. The store also mirrors unsaved edits to a recovery slot that is offered on the next launch. `CircuitFileStore.migrate` is where future schema upgrades belong.
+`.dblab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. Each open document mirrors its unsaved edits to its own recovery slot, so several drafts survive a crash and are offered on the next launch. `CircuitFileStore.migrate` is where future schema upgrades belong.
 
 ## Requirements
 - macOS 14+

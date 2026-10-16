@@ -11,8 +11,10 @@ import Foundation
 public struct AnalysisSettings: Codable, Equatable, Sendable {
     public var runDC: Bool
     public var runAC: Bool
+    public var acSweepType: FrequencySweepType
     public var acStartFrequency: Double
     public var acStopFrequency: Double
+    /// Points per decade/octave, or the total point count for a linear sweep.
     public var acPointsPerDecade: Int
     /// Net name the source is measured against (nil = all sources).
     public var inputNetName: String?
@@ -25,6 +27,7 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         acStartFrequency: 1,
         acStopFrequency: 1_000_000,
         acPointsPerDecade: 20,
+        acSweepType: .dec,
         inputNetName: nil,
         outputNetNames: []
     )
@@ -35,16 +38,37 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         acStartFrequency: Double,
         acStopFrequency: Double,
         acPointsPerDecade: Int,
+        acSweepType: FrequencySweepType = .dec,
         inputNetName: String? = nil,
         outputNetNames: [String] = []
     ) {
         self.runDC = runDC
         self.runAC = runAC
+        self.acSweepType = acSweepType
         self.acStartFrequency = acStartFrequency
         self.acStopFrequency = acStopFrequency
         self.acPointsPerDecade = acPointsPerDecade
         self.inputNetName = inputNetName
         self.outputNetNames = outputNetNames
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runDC, runAC, acSweepType, acStartFrequency, acStopFrequency
+        case acPointsPerDecade, inputNetName, outputNetNames
+    }
+
+    /// Custom decoding so documents written before `acSweepType` existed still
+    /// load, defaulting to a decade sweep.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        runDC = try container.decode(Bool.self, forKey: .runDC)
+        runAC = try container.decode(Bool.self, forKey: .runAC)
+        acSweepType = try container.decodeIfPresent(FrequencySweepType.self, forKey: .acSweepType) ?? .dec
+        acStartFrequency = try container.decode(Double.self, forKey: .acStartFrequency)
+        acStopFrequency = try container.decode(Double.self, forKey: .acStopFrequency)
+        acPointsPerDecade = try container.decode(Int.self, forKey: .acPointsPerDecade)
+        inputNetName = try container.decodeIfPresent(String.self, forKey: .inputNetName)
+        outputNetNames = try container.decodeIfPresent([String].self, forKey: .outputNetNames) ?? []
     }
 }
 
@@ -126,8 +150,14 @@ public enum CircuitFileStore {
     }
 
     // MARK: - Crash recovery
+    //
+    // Each open document mirrors itself to its own recovery slot (keyed by the
+    // document ID), so several unsaved documents survive a crash without
+    // overwriting one another.
 
-    private static func recoveryURL() -> URL? {
+    private static let recoveryPrefix = "recovery-"
+
+    private static func recoveryDirectory() -> URL? {
         guard let base = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -136,27 +166,42 @@ public enum CircuitFileStore {
         ) else { return nil }
         let directory = base.appendingPathComponent("db-Lab", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("recovery.dblab")
+        return directory
     }
 
-    /// Mirror the in-memory document to the recovery slot. Best-effort.
-    public static func saveRecovery(_ file: CircuitFile) {
-        guard let url = recoveryURL() else { return }
+    private static func recoveryURL(id: UUID) -> URL? {
+        recoveryDirectory()?.appendingPathComponent("\(recoveryPrefix)\(id.uuidString).\(fileExtension)")
+    }
+
+    /// Mirror the in-memory document to its recovery slot. Best-effort.
+    public static func saveRecovery(_ file: CircuitFile, id: UUID) {
+        guard let url = recoveryURL(id: id) else { return }
         try? encode(file).write(to: url, options: .atomic)
     }
 
-    public static func loadRecovery() -> CircuitFile? {
-        guard let url = recoveryURL(), FileManager.default.fileExists(atPath: url.path) else { return nil }
+    public static func loadRecovery(id: UUID) -> CircuitFile? {
+        guard let url = recoveryURL(id: id), FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try? read(from: url)
     }
 
-    public static func clearRecovery() {
-        guard let url = recoveryURL() else { return }
+    public static func clearRecovery(id: UUID) {
+        guard let url = recoveryURL(id: id) else { return }
         try? FileManager.default.removeItem(at: url)
     }
 
-    public static var hasRecovery: Bool {
-        guard let url = recoveryURL() else { return false }
-        return FileManager.default.fileExists(atPath: url.path)
+    /// All recoverable documents, stable-sorted by slot name.
+    public static func loadAllRecoveries() -> [CircuitFile] {
+        guard let directory = recoveryDirectory(),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                  at: directory,
+                  includingPropertiesForKeys: nil,
+                  options: [.skipsHiddenFiles]
+              ) else {
+            return []
+        }
+        return urls
+            .filter { $0.lastPathComponent.hasPrefix(recoveryPrefix) && $0.pathExtension == fileExtension }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .compactMap { try? read(from: $0) }
     }
 }

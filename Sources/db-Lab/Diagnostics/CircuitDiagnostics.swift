@@ -46,13 +46,29 @@ public struct Diagnostic: Identifiable, Equatable, Sendable {
 public enum CircuitDiagnostics {
     @MainActor
     public static func analyze(_ document: SchematicDocument) -> [Diagnostic] {
-        analyze(symbols: document.symbols, wires: document.wires, labels: document.netLabels)
+        analyze(
+            symbols: document.symbols,
+            wires: document.wires,
+            labels: document.netLabels,
+            nets: document.nets
+        )
     }
 
     public static func analyze(
         symbols: [SymbolInstance],
         wires: [WireSegment],
         labels: [NetLabel]
+    ) -> [Diagnostic] {
+        analyze(symbols: symbols, wires: wires, labels: labels, nets: nil)
+    }
+
+    /// - Parameter nets: connectivity precomputed by the caller (the document
+    ///   already derives and caches it); recomputed here when nil.
+    public static func analyze(
+        symbols: [SymbolInstance],
+        wires: [WireSegment],
+        labels: [NetLabel],
+        nets precomputedNets: [Net]?
     ) -> [Diagnostic] {
         var diagnostics: [Diagnostic] = []
 
@@ -66,7 +82,7 @@ public enum CircuitDiagnostics {
         }
 
         // Connectivity (Layer 2) is the basis for most warnings below.
-        let nets = ConnectivityBuilder.build(symbols: symbols, wires: wires, labels: labels)
+        let nets = precomputedNets ?? ConnectivityBuilder.build(symbols: symbols, wires: wires, labels: labels)
 
         // Ground reference.
         let groundNets = nets.filter(\.isGround)
@@ -167,6 +183,14 @@ public enum CircuitDiagnostics {
             ))
         }
 
+        // Pin -> net lookup, reused by the pin checks and reachability below.
+        var netIDByPin: [PinRef: Int] = [:]
+        for net in nets {
+            for pin in net.connectedPins {
+                netIDByPin[pin] = net.id
+            }
+        }
+
         // Pin-level checks.
         for symbol in symbols {
             guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else { continue }
@@ -174,11 +198,13 @@ public enum CircuitDiagnostics {
 
             var locatedNodes: [Int] = []
             for pin in descriptor.pins {
-                let location = locationOf(pin: pin, on: symbol)
+                let location = PinGeometry.location(of: pin, on: symbol)
                 let isOnWire = wires.contains { wire in
                     zip(wire.points, wire.points.dropFirst()).contains { ConnectivityBuilder.liesOnSegment(location, $0, $1) }
                 }
-                let net = nets.first { $0.connectedPins.contains(PinRef(symbolId: symbol.id, pinId: pin.id)) }
+                let net = netIDByPin[PinRef(symbolId: symbol.id, pinId: pin.id)].flatMap { id in
+                    nets.first { $0.id == id }
+                }
                 let pinCount = net?.connectedPins.count ?? 0
 
                 if !isOnWire && pinCount <= 1 {
@@ -214,25 +240,80 @@ public enum CircuitDiagnostics {
             ))
         }
 
+        // Ungrounded subcircuits: nets joined by components but with no path to
+        // ground make the nodal matrix singular. Group them and warn once each.
+        if !groundNets.isEmpty {
+            diagnostics.append(contentsOf: ungroundedSubcircuits(
+                symbols: symbols,
+                nets: nets,
+                netIDByPin: netIDByPin,
+                groundNetIDs: Set(groundNets.map(\.id))
+            ))
+        }
+
         return diagnostics.sorted { lhs, rhs in
             if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
             return lhs.message < rhs.message
         }
     }
 
-    private static func locationOf(pin: PinDescriptor, on symbol: SymbolInstance) -> GridPoint {
-        let offset = rotatedOffset(pin.position, rotation: symbol.rotation)
-        return GridPoint(symbol.position.x + offset.x, symbol.position.y + offset.y)
-    }
+    /// Finds groups of nets that are connected by two-terminal components but
+    /// have no path to ground, and reports one warning per floating group.
+    private static func ungroundedSubcircuits(
+        symbols: [SymbolInstance],
+        nets: [Net],
+        netIDByPin: [PinRef: Int],
+        groundNetIDs: Set<Int>
+    ) -> [Diagnostic] {
+        var adjacency: [Int: Set<Int>] = [:]
+        var refsByNet: [Int: [String]] = [:]
 
-    private static func rotatedOffset(_ position: CGPoint, rotation: Int) -> (x: Int, y: Int) {
-        let x = Int((position.x / GridPoint.gridSize).rounded())
-        let y = Int((position.y / GridPoint.gridSize).rounded())
-        switch ((rotation % 360) + 360) % 360 {
-        case 90: return (-y, x)
-        case 180: return (-x, -y)
-        case 270: return (y, -x)
-        default: return (x, y)
+        for symbol in symbols {
+            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId),
+                  descriptor.symbol != .ground else { continue }
+            let nodeIDs = descriptor.pins.compactMap { netIDByPin[PinRef(symbolId: symbol.id, pinId: $0.id)] }
+            for nodeID in nodeIDs {
+                refsByNet[nodeID, default: []].append(symbol.refDes)
+            }
+            if descriptor.pins.count == 2, nodeIDs.count == 2, nodeIDs[0] != nodeIDs[1] {
+                adjacency[nodeIDs[0], default: []].insert(nodeIDs[1])
+                adjacency[nodeIDs[1], default: []].insert(nodeIDs[0])
+            }
         }
+
+        var reachable = groundNetIDs
+        var queue = Array(groundNetIDs)
+        while let current = queue.popLast() {
+            for neighbor in adjacency[current] ?? [] where reachable.insert(neighbor).inserted {
+                queue.append(neighbor)
+            }
+        }
+
+        let isolated = Set(nets.map(\.id).filter {
+            !reachable.contains($0) && !refsByNet[$0, default: []].isEmpty
+        })
+        guard !isolated.isEmpty else { return [] }
+
+        let nameByID = Dictionary(uniqueKeysWithValues: nets.map { ($0.id, $0.name) })
+        var visited: Set<Int> = []
+        var diagnostics: [Diagnostic] = []
+        for netID in isolated.sorted() where !visited.contains(netID) {
+            var group: [Int] = []
+            var stack = [netID]
+            visited.insert(netID)
+            while let current = stack.popLast() {
+                group.append(current)
+                for neighbor in adjacency[current] ?? [] where isolated.contains(neighbor) && visited.insert(neighbor).inserted {
+                    stack.append(neighbor)
+                }
+            }
+            let refs = Set(group.flatMap { refsByNet[$0, default: []] }).sorted()
+            let names = group.sorted().map { nameByID[$0] ?? "N\($0)" }
+            diagnostics.append(Diagnostic(
+                severity: .warning,
+                message: "\(refs.joined(separator: ", ")) is not connected to ground (nets \(names.joined(separator: ", ")))."
+            ))
+        }
+        return diagnostics
     }
 }

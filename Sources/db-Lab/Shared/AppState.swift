@@ -22,13 +22,14 @@ final class AppState: ObservableObject {
     @Published var lastError: String?
 
     init() {
-        restoreRecoveryIfAvailable()
+        restoreRecoveriesIfAvailable()
     }
 
     // MARK: – New document factories
 
     func newCircuit() {
         let doc = CircuitDocument()
+        doc.autosaveRecoveryEnabled = true
         circuitDocuments.append(doc)
         selectedSidebarItem = .circuit(doc.id)
     }
@@ -46,11 +47,15 @@ final class AppState: ObservableObject {
 
     // MARK: – Crash recovery
 
-    private func restoreRecoveryIfAvailable() {
-        guard let recovered = CircuitFileStore.loadRecovery() else { return }
-        let document = CircuitDocument.recovered(from: recovered)
-        circuitDocuments.append(document)
-        selectedSidebarItem = .circuit(document.id)
+    private func restoreRecoveriesIfAvailable() {
+        let recovered = CircuitFileStore.loadAllRecoveries()
+        guard !recovered.isEmpty else { return }
+        for file in recovered {
+            let document = CircuitDocument.recovered(from: file)
+            document.autosaveRecoveryEnabled = true
+            circuitDocuments.append(document)
+        }
+        selectedSidebarItem = circuitDocuments.last.map { .circuit($0.id) }
     }
 
     // MARK: – Persistence
@@ -97,6 +102,7 @@ final class AppState: ObservableObject {
         do {
             let file = try CircuitFileStore.read(from: url)
             let document = CircuitDocument()
+            document.autosaveRecoveryEnabled = true
             document.load(file)
             document.fileURL = url
             document.name = url.deletingPathExtension().lastPathComponent

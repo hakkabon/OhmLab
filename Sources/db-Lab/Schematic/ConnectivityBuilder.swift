@@ -73,13 +73,11 @@ public enum ConnectivityBuilder {
                 continue
             }
 
-            for pin in descriptor.pins {
-                let offset = rotatedOffset(for: pin.position, rotation: symbol.rotation)
-                let location = GridPoint(symbol.position.x + offset.x, symbol.position.y + offset.y)
-                pinLocations.append((PinRef(symbolId: symbol.id, pinId: pin.id), location))
+            for entry in PinGeometry.pinLocations(for: symbol, descriptor: descriptor) {
+                pinLocations.append(entry)
 
-                for (start, end) in segments where liesOnSegment(location, start, end) {
-                    unionFind.union(location, start)
+                for (start, end) in segments where liesOnSegment(entry.location, start, end) {
+                    unionFind.union(entry.location, start)
                 }
             }
         }
@@ -146,17 +144,6 @@ public enum ConnectivityBuilder {
 
     private static func labelSortKey(_ label: NetLabel) -> (String, Int, Int, String) {
         (label.name, label.position.x, label.position.y, label.id.uuidString)
-    }
-
-    private static func rotatedOffset(for position: CGPoint, rotation: Int) -> (x: Int, y: Int) {
-        let x = Int((position.x / GridPoint.gridSize).rounded())
-        let y = Int((position.y / GridPoint.gridSize).rounded())
-        switch ((rotation % 360) + 360) % 360 {
-        case 90: return (-y, x)
-        case 180: return (-x, -y)
-        case 270: return (y, -x)
-        default: return (x, y)
-        }
     }
 
     static func liesOnSegment(_ point: GridPoint, _ start: GridPoint, _ end: GridPoint) -> Bool {

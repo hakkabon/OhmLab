@@ -74,7 +74,7 @@ struct CircuitSimulatorView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(document.isSimulating)
+            .disabled(document.isSimulating || (document.usesSchematic && document.hasBlockingErrors))
         }
     }
 
@@ -173,6 +173,16 @@ struct CircuitSimulatorView: View {
                 if document.settings.runAC {
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                         GridRow {
+                            Text("Sweep")
+                            Picker("Sweep", selection: $document.settings.acSweepType) {
+                                Text("Log (decades)").tag(FrequencySweepType.dec)
+                                Text("Log (octaves)").tag(FrequencySweepType.oct)
+                                Text("Linear").tag(FrequencySweepType.lin)
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 160)
+                        }
+                        GridRow {
                             Text("Start frequency (Hz)")
                             TextField("Start frequency", value: $document.settings.acStartFrequency, format: .number)
                                 .frame(maxWidth: 160)
@@ -183,14 +193,22 @@ struct CircuitSimulatorView: View {
                                 .frame(maxWidth: 160)
                         }
                         GridRow {
-                            Text("Points per decade")
-                            TextField("Points per decade", value: $document.settings.acPointsPerDecade, format: .number)
+                            Text(pointsLabel)
+                            TextField(pointsLabel, value: $document.settings.acPointsPerDecade, format: .number)
                                 .frame(maxWidth: 160)
                         }
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var pointsLabel: String {
+        switch document.settings.acSweepType {
+        case .dec: return "Points per decade"
+        case .oct: return "Points per octave"
+        case .lin: return "Points (total)"
         }
     }
 
@@ -268,7 +286,7 @@ struct CircuitSimulatorView: View {
                         }
                     }
                 }
-                .chartXScale(type: .log)
+                .chartXScale(type: document.settings.acSweepType == .lin ? .linear : .log)
                 .chartXAxisLabel("Frequency (Hz)")
                 .chartYAxisLabel(magnitudeAxisLabel(result))
                 .frame(height: 240)
@@ -284,7 +302,7 @@ struct CircuitSimulatorView: View {
                         }
                     }
                 }
-                .chartXScale(type: .log)
+                .chartXScale(type: document.settings.acSweepType == .lin ? .linear : .log)
                 .chartXAxisLabel("Frequency (Hz)")
                 .chartYAxisLabel("Phase (degrees)")
                 .frame(height: 200)
