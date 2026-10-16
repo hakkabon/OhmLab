@@ -14,6 +14,13 @@ struct CircuitSimulatorView: View {
 
                     Spacer()
 
+                    Picker("Editor", selection: $document.usesSchematic) {
+                        Text("Netlist").tag(false)
+                        Text("Schematic").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 220)
+
                     Button {
                         Task { await document.runSimulation() }
                     } label: {
@@ -28,10 +35,16 @@ struct CircuitSimulatorView: View {
                     .disabled(document.isSimulating)
                 }
 
-                GroupBox("SPICE Netlist") {
-                    TextEditor(text: $document.netlistText)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(minHeight: 180)
+                if document.usesSchematic {
+                    SchematicEditorView(document: document.schematic)
+                        .frame(minHeight: 360)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    GroupBox("SPICE Netlist") {
+                        TextEditor(text: $document.netlistText)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 180)
+                    }
                 }
 
                 analysisSettings

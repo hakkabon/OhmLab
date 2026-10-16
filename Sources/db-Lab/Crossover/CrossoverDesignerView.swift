@@ -22,6 +22,10 @@ struct CrossoverDesignerView: View {
     }
 
     @State private var selectedPanel: Panel = .drivers
+    @State private var showingGeneratedCircuit = false
+    @State private var showingCircuitError = false
+    @State private var generatedCircuitText = ""
+    @State private var circuitGenerationError = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,6 +62,24 @@ struct CrossoverDesignerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationTitle(document.name)
+        .sheet(isPresented: $showingGeneratedCircuit) {
+            NavigationStack {
+                TextEditor(text: .constant(generatedCircuitText))
+                    .font(.system(.body, design: .monospaced))
+                    .padding()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingGeneratedCircuit = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 520, minHeight: 360)
+        }
+        .alert("Cannot Generate Circuit", isPresented: $showingCircuitError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(circuitGenerationError)
+        }
     }
 
     // MARK: – Toolbar
@@ -78,6 +100,20 @@ struct CrossoverDesignerView: View {
                 Button("2-Way Crossover") { document.applyTwoWayTemplate() }
                 Button("3-Way Crossover") { document.applyThreeWayTemplate() }
             }
+
+            Button {
+                do {
+                    generatedCircuitText = try document.generateAnalysisCircuit()
+                    showingGeneratedCircuit = true
+                } catch {
+                    circuitGenerationError = error.localizedDescription
+                    showingCircuitError = true
+                }
+            } label: {
+                Label("Circuit", systemImage: "text.page")
+            }
+            .buttonStyle(.bordered)
+            .help("Preview the passive SPICE circuit generated from the crossover model")
 
             // Synthesize all
             Button {

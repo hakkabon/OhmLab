@@ -9,6 +9,8 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     @Published var name: String = "Untitled Circuit"
     @Published var netlistText: String = defaultNetlist
+    @Published var schematic = SchematicDocument()
+    @Published var usesSchematic = false
 
     // Analysis settings
     @Published var runDC: Bool = true
@@ -30,8 +32,11 @@ final class CircuitDocument: ObservableObject, Identifiable {
         simulationError = nil
         simulationResult = nil
         do {
+            let netlist = usesSchematic
+                ? try SpiceNetlistBuilder.build(from: schematic)
+                : netlistText
             simulationResult = try await EngineClient.shared.simulateSpice(
-                netlist: netlistText,
+                netlist: netlist,
                 runDC: runDC,
                 runAC: runAC,
                 acFStart: acFStart,

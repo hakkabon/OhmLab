@@ -118,6 +118,139 @@ import Testing
     #expect(netSignature(forward) == netSignature(reversed))
 }
 
+@Test @MainActor func componentRegistryProvidesTypedPassiveDefaults() {
+    let document = SchematicDocument()
+    let resistor = document.addComponent(descriptorId: "resistor", at: GridPoint(0, 0))
+    let capacitor = document.addComponent(descriptorId: "capacitor", at: GridPoint(5, 0))
+    let inductor = document.addComponent(descriptorId: "inductor", at: GridPoint(10, 0))
+
+    #expect(resistor?.parameters["resistance"] == 1_000)
+    #expect(capacitor?.parameters["capacitance"] == 1e-6)
+    #expect(inductor?.parameters["inductance"] == 1e-3)
+    #expect(resistor?.refDes == "R1")
+    #expect(document.addComponent(descriptorId: "resistor", at: GridPoint(15, 0))?.refDes == "R2")
+}
+
+@Test @MainActor func schematicNetlistEmitsVoltageSourceAndPassiveComponents() throws {
+    let document = SchematicDocument()
+    let source = document.addComponent(descriptorId: "voltage-source", at: GridPoint(0, 0))!
+    let resistor = document.addComponent(descriptorId: "resistor", at: GridPoint(4, 0))!
+    let ground = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))!
+
+    #expect(source.refDes == "V1")
+    #expect(resistor.parameters["resistance"] == 1_000)
+    #expect(ground.descriptorId == "ground")
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+    #expect(netlist.contains("V1 0 N"))
+    #expect(netlist.contains("R1 N"))
+    #expect(netlist.contains("AC 1"))
+    #expect(netlist.hasSuffix(".end"))
+}
+
+@Test @MainActor func schematicNetlistEmitsCapacitorsAndInductors() throws {
+    let document = SchematicDocument()
+    let capacitor = document.addComponent(descriptorId: "capacitor", at: GridPoint(0, 0))!
+    let inductor = document.addComponent(descriptorId: "inductor", at: GridPoint(5, 0))!
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(0, 2))
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+
+    #expect(netlist.contains("C1 N"))
+    #expect(netlist.localizedCaseInsensitiveContains("1e-06"))
+    #expect(netlist.contains("L1 N"))
+    #expect(netlist.contains("0.001"))
+    #expect(capacitor.parameters["capacitance"] == 1e-6)
+    #expect(inductor.parameters["inductance"] == 1e-3)
+}
+
+@Test @MainActor func seriesResistanceInductorExpandsToResistorAndInductor() throws {
+    let document = SchematicDocument()
+    let inductor = document.addComponent(descriptorId: "inductor-series-resistance", at: GridPoint(0, 0))!
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(2, 1))
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+
+    #expect(inductor.refDes == "L1")
+    #expect(netlist.contains("R1_SER 0 L1_SER 0.2"))
+    #expect(netlist.contains("L1 L1_SER 0 0.001"))
+}
+
+@Test @MainActor func schematicNetlistRequiresGroundAndRejectsInvalidValues() {
+    let document = SchematicDocument()
+    _ = document.addComponent(descriptorId: "resistor", at: GridPoint(0, 0))
+
+    do {
+        _ = try SpiceNetlistBuilder.build(from: document)
+        Issue.record("A schematic without ground should not generate an analysis netlist.")
+    } catch SpiceNetlistBuildError.missingGround {
+    } catch {
+        Issue.record("Unexpected error: \(error.localizedDescription)")
+    }
+
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(0, 2))
+    document.symbols[0].parameters["resistance"] = 0
+    do {
+        _ = try SpiceNetlistBuilder.build(from: document)
+        Issue.record("A zero-ohm resistor should be rejected.")
+    } catch SpiceNetlistBuildError.invalidParameter(reference: "R1", parameter: "resistance") {
+    } catch {
+        Issue.record("Unexpected error: \(error.localizedDescription)")
+    }
+}
+
+@Test @MainActor func schematicModeBuildsNetlistBeforeSimulation() async {
+    let document = CircuitDocument()
+    document.usesSchematic = true
+    _ = document.schematic.addComponent(descriptorId: "voltage-source", at: GridPoint(0, 0))
+    _ = document.schematic.addComponent(descriptorId: "resistor", at: GridPoint(4, 0))
+    _ = document.schematic.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+
+    await document.runSimulation()
+
+    #expect(document.simulationError == nil)
+    #expect(document.simulationResult?.isMock == true)
+}
+
+@Test @MainActor func crossoverDomainGeneratesPassiveCircuitNetlist() throws {
+    let document = CrossoverDocument()
+    document.synthesizeAllFilters()
+
+    let netlist = try document.generateAnalysisCircuit()
+
+    #expect(netlist.contains("V1 IN 0 AC 1"))
+    #expect(netlist.contains("RLOAD_F1"))
+    #expect(netlist.contains("RLOAD_F2"))
+    #expect(netlist.contains(".AC DEC 200 20 20000"))
+    #expect(netlist.contains(".end"))
+}
+
+@Test @MainActor func crossoverSimulationStoresGeneratedCircuitAndMarksMockResult() async {
+    let document = CrossoverDocument()
+    document.synthesizeAllFilters()
+
+    await document.runSimulation()
+
+    #expect(document.simulationError == nil)
+    #expect(document.generatedAnalysisNetlist?.contains("V1 IN 0 AC 1") == true)
+    #expect(document.simulationResult != nil)
+}
+
+@Test @MainActor func crossoverCircuitRejectsCompensationItCannotRepresent() {
+    let document = CrossoverDocument()
+    document.synthesizeAllFilters()
+    document.compensations.append(CompensationSpec(kind: .zobel, driverName: "Woofer"))
+
+    do {
+        _ = try document.generateAnalysisCircuit()
+        Issue.record("Unsupported compensation must not be silently omitted.")
+    } catch CrossoverCircuitBuildError.unsupportedCompensation("Zobel") {
+    } catch {
+        Issue.record("Unexpected error: \(error.localizedDescription)")
+    }
+}
+
 @Test @MainActor func mockSimulationHonorsAnalysisSettings() async throws {
     let result = try await EngineClient.shared.simulateSpice(
         netlist: "R1 1 0 1k",

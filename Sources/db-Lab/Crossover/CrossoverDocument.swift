@@ -16,6 +16,7 @@ final class CrossoverDocument: ObservableObject, Identifiable {
     @Published var simulationResult: CrossoverSimResult? = nil
     @Published var isSimulating: Bool = false
     @Published var simulationError: String? = nil
+    @Published var generatedAnalysisNetlist: String? = nil
 
     // Settings
     @Published var fMin: Double = 20
@@ -77,7 +78,10 @@ final class CrossoverDocument: ObservableObject, Identifiable {
         guard !drivers.isEmpty, !filters.isEmpty else { return }
         isSimulating = true
         simulationError = nil
+        simulationResult = nil
+        generatedAnalysisNetlist = nil
         do {
+            generatedAnalysisNetlist = try generateAnalysisCircuit()
             simulationResult = try await EngineClient.shared.simulateCrossover(
                 drivers: drivers,
                 filters: filters,
@@ -89,6 +93,18 @@ final class CrossoverDocument: ObservableObject, Identifiable {
             simulationError = error.localizedDescription
         }
         isSimulating = false
+    }
+
+    @discardableResult
+    func generateAnalysisCircuit() throws -> String {
+        try CrossoverCircuitBuilder.build(
+            drivers: drivers,
+            filters: filters,
+            compensations: compensations,
+            fMin: fMin,
+            fMax: fMax,
+            pointsPerDecade: pointsPerDecade
+        )
     }
 
     // MARK: – Filter synthesis helper

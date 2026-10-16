@@ -34,9 +34,22 @@ public struct SymbolInstance: Identifiable, Equatable {
     public var refDes: String
     public var position: GridPoint
     public var rotation: Int // 0, 90, 180, 270
+    public var parameters: [String: Double]
     
-    public init(id: UUID = UUID(), descriptorId: String, refDes: String, position: GridPoint, rotation: Int = 0) {
-        self.id = id; self.descriptorId = descriptorId; self.refDes = refDes; self.position = position; self.rotation = rotation
+    public init(
+        id: UUID = UUID(),
+        descriptorId: String,
+        refDes: String,
+        position: GridPoint,
+        rotation: Int = 0,
+        parameters: [String: Double] = [:]
+    ) {
+        self.id = id
+        self.descriptorId = descriptorId
+        self.refDes = refDes
+        self.position = position
+        self.rotation = rotation
+        self.parameters = parameters
     }
 }
 
@@ -54,12 +67,35 @@ public class SchematicDocument: ObservableObject {
     @Published public var symbols: [SymbolInstance] = []
     @Published public var wires: [WireSegment] = []
     @Published public var nets: [Net] = []
+    @Published public var selectedSymbolID: UUID?
     
     public init() {}
     
     public func addSymbol(_ symbol: SymbolInstance) {
         symbols.append(symbol)
+        selectedSymbolID = symbol.id
         rebuildConnectivity()
+    }
+
+    @discardableResult
+    public func addComponent(descriptorId: String, at position: GridPoint) -> SymbolInstance? {
+        guard let descriptor = ComponentRegistry.shared.descriptor(for: descriptorId) else {
+            return nil
+        }
+        let existingReferences = Set(symbols.map { $0.refDes.uppercased() })
+        var suffix = 1
+        while existingReferences.contains("\(descriptor.prefix)\(suffix)".uppercased()) {
+            suffix += 1
+        }
+        let refDes = "\(descriptor.prefix)\(suffix)"
+        let symbol = SymbolInstance(
+            descriptorId: descriptorId,
+            refDes: refDes,
+            position: position,
+            parameters: descriptor.defaultParameterValues
+        )
+        addSymbol(symbol)
+        return symbol
     }
     
     public func addWire(_ wire: WireSegment) {

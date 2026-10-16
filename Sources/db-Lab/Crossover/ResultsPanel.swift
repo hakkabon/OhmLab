@@ -23,6 +23,18 @@ struct ResultsPanel: View {
                 ErrorBanner(message: error)
             }
 
+            if document.simulationResult != nil {
+                Label(
+                    "Demonstration data only — the generated circuit is not being solved yet.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+            }
+
             if document.isSimulating {
                 ProgressView("Simulating…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
