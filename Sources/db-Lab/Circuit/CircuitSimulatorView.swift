@@ -1,5 +1,6 @@
 import Charts
 import SwiftUI
+import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 #else
@@ -28,6 +29,7 @@ struct CircuitSimulatorView: View {
     }
 
     @State private var acQuantity: ACQuantity = .voltage
+    @State private var isImporting = false
 
     var body: some View {
         ScrollView {
@@ -73,6 +75,20 @@ struct CircuitSimulatorView: View {
 
             Spacer()
 
+            Button {
+                isImporting = true
+            } label: {
+                Label("Import", systemImage: "square.and.arrow.down.on.square")
+            }
+            .buttonStyle(.bordered)
+            .help("Import a KiCad schematic (.kicad_sch) or a SPICE netlist (.cir, .net, .sp).")
+            .fileImporter(
+                isPresented: $isImporting,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: false,
+                onCompletion: handleImport
+            )
+
             #if os(macOS)
             Button {
                 appState.save(document: document)
@@ -100,6 +116,24 @@ struct CircuitSimulatorView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(document.isSimulating || (document.usesSchematic && document.hasBlockingErrors))
+        }
+    }
+
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            #if os(macOS)
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            #endif
+            do {
+                try document.importDesign(at: url)
+            } catch {
+                document.simulationError = error.localizedDescription
+            }
+        case .failure(let error):
+            document.simulationError = error.localizedDescription
         }
     }
 

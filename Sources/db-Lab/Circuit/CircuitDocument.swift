@@ -165,6 +165,33 @@ final class CircuitDocument: ObservableObject, Identifiable {
         CircuitFileStore.clearRecovery(id: id)
     }
 
+    // MARK: - Interchange
+
+    /// Replaces the netlist with imported SPICE text and switches to netlist
+    /// mode so it can be run immediately.
+    func importNetlist(_ text: String) {
+        netlistText = text
+        usesSchematic = false
+    }
+
+    /// Imports either a KiCad schematic (`.kicad_sch`, macOS via `kicad-cli`) or
+    /// a SPICE netlist file, loading the result into the netlist editor.
+    ///
+    /// Import never blocks on parse errors: the netlist text is loaded as-is and
+    /// the diagnostics panel reports anything the engine cannot run.
+    func importDesign(at url: URL) throws {
+        let ext = url.pathExtension.lowercased()
+        if KiCadInterchange.schematicExtensions.contains(ext) {
+            let text = try KiCadInterchange.exportedNetlistText(at: url)
+            importNetlist(text)
+        } else if KiCadInterchange.netlistExtensions.contains(ext) {
+            importNetlist(try KiCadInterchange.readNetlist(at: url))
+        } else {
+            throw KiCadInterchangeError.unsupportedFormat(url.lastPathComponent)
+        }
+        name = url.deletingPathExtension().lastPathComponent
+    }
+
     static func recovered(from file: CircuitFile) -> CircuitDocument {
         let document = CircuitDocument()
         document.load(file)

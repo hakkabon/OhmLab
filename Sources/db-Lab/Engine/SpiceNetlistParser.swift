@@ -348,7 +348,7 @@ public enum SpiceNetlistParser {
                     output.append(rawLine)
                     continue
                 }
-                let path = tokens.count >= 2 ? tokens[1] : ""
+                let path = SpiceNetlistParser.unquoted(tokens.count >= 2 ? tokens[1] : "")
                 guard !path.isEmpty else {
                     warnings.append("Skipped \(directive) card with no path (line \(offset + 1)).")
                     continue
@@ -390,6 +390,11 @@ public enum SpiceNetlistParser {
                 break
             case ".temp":
                 warnings.append("Ignored .temp: temperature-dependent models are not yet supported.")
+            case let card where SpiceNetlistParser.ignorableCards.contains(card):
+                // Informational or output-selection cards from KiCad/ngspice.
+                break
+            case let card where SpiceNetlistParser.warningCards.contains(card):
+                warnings.append("Ignored \(card): this analysis is not supported.")
             case ".end":
                 break
             default:
@@ -580,18 +585,28 @@ public enum SpiceNetlistParser {
             let stripped = line.text
             let tokens = SpiceNetlistParser.splitTokens(stripped)
             if let first = tokens.first, first.hasPrefix(".") {
-                // `.model` cards are collected globally in the scan pass; any
-                // other directive is not valid inside a subcircuit body.
-                if first.lowercased() == ".model" { return }
+                // `.model` cards are collected globally in the scan pass; benign
+                // control cards are tolerated, and anything else is not valid
+                // inside a subcircuit body.
+                let card = first.lowercased()
+                if card == ".model" { return }
+                if SpiceNetlistParser.ignorableCards.contains(card) { return }
+                if SpiceNetlistParser.warningCards.contains(card) {
+                    warnings.append("Ignored \(card) inside a subcircuit: this analysis is not supported.")
+                    return
+                }
                 throw SpiceParseError.unsupportedCard(line: line.number, text: stripped)
             }
-            guard tokens.count >= 3 else {
+            guard tokens.count >= 2 else {
                 throw SpiceParseError.malformed(line: line.number, text: stripped)
             }
             let name = tokens[0]
             guard let kindLetter = name.uppercased().first else {
                 throw SpiceParseError.malformed(line: line.number, text: stripped)
             }
+            // Report unsupported element types before shape checks so a KiCad
+            // connector (`J1 Net-_J1-Pad1_`) reads as "unsupported element"
+            // rather than a cryptic "malformed line".
             let localName = scopedName(name, scope: scope)
 
             switch kindLetter {
@@ -843,6 +858,30 @@ public enum SpiceNetlistParser {
             .components(separatedBy: .whitespaces)
             .joined()
     }
+
+    /// Removes one pair of enclosing double quotes, e.g. `"/tmp/a.lib"` ->
+    /// `/tmp/a.lib`. KiCad and ngspice quote `.include` paths.
+    static func unquoted(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.count >= 2, trimmed.hasPrefix("\""), trimmed.hasSuffix("\"") {
+            return String(trimmed.dropFirst().dropLast())
+        }
+        return trimmed
+    }
+
+    /// Control cards emitted by KiCad, ngspice and other tools that carry no
+    /// information this engine can act on. They are accepted so an exported
+    /// netlist round-trips without edits; anything that would change results is
+    /// surfaced as a warning instead (see `.four`, `.nodeset`).
+    private static let ignorableCards: Set<String> = [
+        ".title", ".date", ".rev", ".company", ".width",
+        ".plot", ".print", ".save", ".probe", ".backanno",
+        ".end", ".ends", ".option", ".options"
+    ]
+
+    /// Control cards that are accepted but change the simulation in a way this
+    /// engine does not model; each one records a warning.
+    private static let warningCards: Set<String> = [".four", ".nodeset", ".noise", ".disto", ".sens"]
 
     /// Evenly spaced values from `start` to `stop` (inclusive) in steps of
     /// `step`. The step's sign selects the direction; an empty result means the

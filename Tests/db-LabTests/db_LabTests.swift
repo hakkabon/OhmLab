@@ -1808,6 +1808,138 @@ import Testing
     #expect(csv.contains("V1="))
 }
 
+// MARK: - KiCad interchange
+
+/// A schema-free, KiCad-flavoured netlist: benign control cards, `/`-prefixed
+/// labels, and `Net-_<ref>-Pad<n>_` auto nets, exactly as `kicad-cli` emits.
+private let kicadStyleNetlist = """
+.title KiCad schematic
+.date 2026-01-01
+.save all
+.probe v(out)
+V1 1 0 DC 10
+R1 1 Net-_R2-Pad1_ 1k
+R2 Net-_R2-Pad1_ 0 1k
+.end
+"""
+
+@Test func kicadControlCardsAreToleratedSilently() throws {
+    let parsed = try SpiceNetlistParser.parse(kicadStyleNetlist)
+    #expect(parsed.warnings.isEmpty)
+    #expect(parsed.circuit.nodeNames.contains("Net-_R2-Pad1_"))
+}
+
+@Test func kicadStyledNetlistSolves() throws {
+    let result = try SimulationEngine.solve(netlist: kicadStyleNetlist, settings: .default)
+    let dc = try #require(result.dc)
+    let midpoint = try #require(dc.nodes.first { $0.name == "Net-_R2-Pad1_" })
+    #expect(abs(midpoint.voltage - 5) < 1e-9)
+}
+
+@Test func kicadLabeledNetNameIsPreserved() throws {
+    let parsed = try SpiceNetlistParser.parse("V1 /in 0 DC 1\nR1 /in 0 1k\n.end")
+    #expect(parsed.circuit.nodeNames.contains("/in"))
+}
+
+@Test func kicadUnsupportedSymbolIsReported() {
+    // Connector-only symbols export as `<ref> <net>` with no model.
+    #expect(throws: SpiceParseError.self) {
+        try SpiceNetlistParser.parse("J1 __J1\n.end")
+    }
+}
+
+@Test func kicadQuotedIncludePathIsUnquoted() throws {
+    var requested: [String] = []
+    let netlist = """
+    .include "models/divider.lib"
+    V1 1 0 DC 1
+    R1 1 0 1k
+    .end
+    """
+    _ = try SpiceNetlistParser.parse(netlist) { path in
+        requested.append(path)
+        return "R2 1 0 2k"
+    }
+    #expect(requested == ["models/divider.lib"])
+}
+
+@Test func nodesetCodeIsAcceptedWithWarning() throws {
+    let parsed = try SpiceNetlistParser.parse("V1 1 0 DC 1\nR1 1 0 1k\n.nodeset v(1)=0.5\n.end")
+    #expect(parsed.warnings.contains { $0.contains(".nodeset") })
+}
+
+@Test @MainActor func importNetlistSwitchesToNetlistMode() {
+    let document = CircuitDocument()
+    document.importNetlist("V1 1 0 DC 1\nR1 1 0 1k\n.end")
+    #expect(document.usesSchematic == false)
+    #expect(document.netlistText.contains("V1"))
+}
+
+@Test @MainActor func importDesignLoadsNetlistFile() throws {
+    let document = CircuitDocument()
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("divider-\(UUID().uuidString).cir")
+    try "V1 1 0 DC 2\nR1 1 0 1k\n.end".write(to: url, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    try document.importDesign(at: url)
+    #expect(document.usesSchematic == false)
+    #expect(document.name == url.deletingPathExtension().lastPathComponent)
+    #expect(document.netlistText.contains("DC 2"))
+}
+
+@Test @MainActor func importDesignRejectsUnknownExtension() throws {
+    let document = CircuitDocument()
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mystery-\(UUID().uuidString).xyz")
+    try "not a netlist".write(to: url, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    #expect(throws: KiCadInterchangeError.self) { try document.importDesign(at: url) }
+}
+
+@Test @MainActor func interchangeExportMatchesBuilder() throws {
+    let document = SchematicDocument()
+    let source = try #require(document.addComponent(descriptorId: "voltage-source", at: GridPoint(0, 0)))
+    document.setParameter(id: source.id, key: "dcVoltage", value: 5)
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+
+    let netlist = try KiCadInterchange.exportNetlist(from: document)
+    #expect(netlist.contains("DC 5"))
+}
+
+#if os(macOS)
+@Test func kicadCLIExportArgumentsAreExact() {
+    let schematic = URL(fileURLWithPath: "/tmp/x.kicad_sch")
+    let output = URL(fileURLWithPath: "/tmp/x.cir")
+    #expect(KiCadCLIClient.exportArguments(schematic: schematic, output: output) == [
+        "sch", "export", "netlist", "--format", "spice",
+        "--output", "/tmp/x.cir", "/tmp/x.kicad_sch"
+    ])
+}
+
+@Test func kicadCLILocatePrefersExplicitExecutable() {
+    #expect(KiCadCLIClient.locate(explicitPath: "/bin/ls", searchPATH: false)?.path == "/bin/ls")
+}
+
+private let kicadTemplateSchematicPath =
+    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/template/API_Series-500/API_Series-500.kicad_sch"
+
+private var kicadLiveExportAvailable: Bool {
+    KiCadCLIClient.isAvailable && FileManager.default.fileExists(atPath: kicadTemplateSchematicPath)
+}
+
+@Test(.enabled(if: kicadLiveExportAvailable))
+func kicadCLIExportsARealSchematic() throws {
+    let text = try KiCadCLIClient.exportSpiceNetlist(
+        from: URL(fileURLWithPath: kicadTemplateSchematicPath)
+    )
+    #expect(text.contains(".title"))
+    // The bundled template is connector-only, which we surface as unsupported.
+    #expect(throws: SpiceParseError.self) { try KiCadInterchange.parseNetlist(text) }
+}
+#endif
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {
