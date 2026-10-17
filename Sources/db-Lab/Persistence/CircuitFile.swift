@@ -21,6 +21,13 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
     public var tranStep: Double
     public var tranStop: Double
     public var tranStart: Double
+    /// DC sweep of a single named source (schematic mode; netlists may also use
+    /// a `.dc` card).
+    public var runDCSweep: Bool
+    public var dcSweepSource: String
+    public var dcSweepStart: Double
+    public var dcSweepStop: Double
+    public var dcSweepStep: Double
     /// Net name the source is measured against (nil = all sources).
     public var inputNetName: String?
     /// Nets selected for plotting in the results panel.
@@ -37,6 +44,11 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         tranStep: 1e-4,
         tranStop: 1e-2,
         tranStart: 0,
+        runDCSweep: false,
+        dcSweepSource: "",
+        dcSweepStart: 0,
+        dcSweepStop: 5,
+        dcSweepStep: 1,
         inputNetName: nil,
         outputNetNames: []
     )
@@ -52,6 +64,11 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         tranStep: Double = 1e-4,
         tranStop: Double = 1e-2,
         tranStart: Double = 0,
+        runDCSweep: Bool = false,
+        dcSweepSource: String = "",
+        dcSweepStart: Double = 0,
+        dcSweepStop: Double = 5,
+        dcSweepStep: Double = 1,
         inputNetName: String? = nil,
         outputNetNames: [String] = []
     ) {
@@ -65,6 +82,11 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         self.tranStep = tranStep
         self.tranStop = tranStop
         self.tranStart = tranStart
+        self.runDCSweep = runDCSweep
+        self.dcSweepSource = dcSweepSource
+        self.dcSweepStart = dcSweepStart
+        self.dcSweepStop = dcSweepStop
+        self.dcSweepStep = dcSweepStep
         self.inputNetName = inputNetName
         self.outputNetNames = outputNetNames
     }
@@ -72,6 +94,7 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case runDC, runAC, runTransient, acSweepType, acStartFrequency, acStopFrequency
         case acPointsPerDecade, tranStep, tranStop, tranStart, inputNetName, outputNetNames
+        case runDCSweep, dcSweepSource, dcSweepStart, dcSweepStop, dcSweepStep
     }
 
     /// Custom decoding so documents written before `acSweepType` or the
@@ -88,6 +111,11 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
         tranStep = try container.decodeIfPresent(Double.self, forKey: .tranStep) ?? 1e-4
         tranStop = try container.decodeIfPresent(Double.self, forKey: .tranStop) ?? 1e-2
         tranStart = try container.decodeIfPresent(Double.self, forKey: .tranStart) ?? 0
+        runDCSweep = try container.decodeIfPresent(Bool.self, forKey: .runDCSweep) ?? false
+        dcSweepSource = try container.decodeIfPresent(String.self, forKey: .dcSweepSource) ?? ""
+        dcSweepStart = try container.decodeIfPresent(Double.self, forKey: .dcSweepStart) ?? 0
+        dcSweepStop = try container.decodeIfPresent(Double.self, forKey: .dcSweepStop) ?? 5
+        dcSweepStep = try container.decodeIfPresent(Double.self, forKey: .dcSweepStep) ?? 1
         inputNetName = try container.decodeIfPresent(String.self, forKey: .inputNetName)
         outputNetNames = try container.decodeIfPresent([String].self, forKey: .outputNetNames) ?? []
     }

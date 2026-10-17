@@ -1610,6 +1610,204 @@ import Testing
     })
 }
 
+// MARK: - Phase 7: SPICE dialect breadth
+
+@Test func netlistParamCardSubstitutesBracedAndBareValues() throws {
+    let netlist = """
+    .param R=1k
+    V1 1 0 DC 1
+    R1 1 0 {R}
+    R2 2 0 2k
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let r1 = try #require(parsed.circuit.elements.first { $0.name == "R1" })
+    #expect(abs(r1.value - 1000) < 1e-9)
+
+    let bare = try SpiceNetlistParser.parse(".param R=2k\nV1 1 0 DC 1\nR1 1 0 R\n.end")
+    #expect(abs((bare.circuit.elements.first { $0.name == "R1" }?.value ?? 0) - 2000) < 1e-9)
+}
+
+@Test func netlistParamReachesSourcesAndSubcircuits() throws {
+    let netlist = """
+    .param VB=5
+    .param RB=2k
+    V1 1 0 DC {VB}
+    .subckt DIV a b
+    R1 a b {RB}
+    .ends
+    X1 1 0 DIV
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let source = try #require(parsed.circuit.elements.first { $0.name == "V1" })
+    #expect(abs((source.dcValue ?? 0) - 5) < 1e-9)
+    let resistor = try #require(parsed.circuit.elements.first { $0.name == "X1.R1" })
+    #expect(abs(resistor.value - 2000) < 1e-9)
+}
+
+@Test func netlistOptionsCardIsAccepted() throws {
+    let netlist = """
+    V1 1 0 DC 1
+    R1 1 0 1k
+    .options reltol=1e-3 abstol=1e-12 gmin=1e-12
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(parsed.circuit.elements.count == 2)
+}
+
+@Test func netlistIncludeResolverInlinesFileContents() throws {
+    let resolver: SpiceIncludeResolver = { path in
+        path == "part.lib" ? "R1 1 0 1k\n" : nil
+    }
+    let netlist = """
+    V1 1 0 DC 1
+    .include part.lib
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist, include: resolver)
+    #expect(Set(parsed.circuit.elements.map(\.name)) == ["V1", "R1"])
+    #expect(parsed.warnings.isEmpty)
+}
+
+@Test func netlistIncludeWithoutResolverWarnsAndSkips() throws {
+    let netlist = "V1 1 0 DC 1\nR1 1 0 1k\n.lib missing.lib\n.end"
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(Set(parsed.circuit.elements.map(\.name)) == ["V1", "R1"])
+    #expect(parsed.warnings.contains { $0.contains("missing.lib") })
+}
+
+@Test func netlistIcSeedsTransientInitialCondition() throws {
+    let netlist = """
+    V1 1 0 DC 10
+    R1 1 2 1k
+    C1 2 0 1e-6
+    .ic V(2)=2
+    .tran 1e-5 1e-4
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let transient = try #require(result.transient)
+    let node = try #require(transient.nodes.first { $0.name == "2" })
+    // The recorded initial point reflects the `.ic` override, not the 10 V
+    // operating point.
+    #expect(abs(node.values[0] - 2) < 1e-9)
+}
+
+@Test func netlistDCRunsSingleSourceSweep() throws {
+    let netlist = """
+    V1 1 0 DC 0
+    R1 1 0 1k
+    .dc V1 0 4 1
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let sweep = try #require(result.sweep)
+    #expect(sweep.axes.count == 1)
+    #expect(sweep.axes[0].name == "V1")
+    #expect(sweep.points.count == 5)
+    let last = try #require(sweep.points.last?.nodes.first { $0.name == "1" }?.voltage)
+    #expect(abs(last - 4) < 1e-9)
+}
+
+@Test func netlistDCNestedSweepProducesTwoAxes() throws {
+    let netlist = """
+    V1 1 0 DC 0
+    V2 2 0 DC 0
+    R1 1 0 1k
+    R2 2 0 1k
+    .dc V1 0 2 1 V2 0 2 1
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let sweep = try #require(result.sweep)
+    #expect(sweep.axes.map(\.name) == ["V1", "V2"])
+    #expect(sweep.points.count == 9)
+    #expect(sweep.points.first?.coordinates.count == 2)
+}
+
+@Test func netlistDCSweepRejectsUnknownSource() {
+    let netlist = """
+    V1 1 0 DC 1
+    R1 1 0 1k
+    .dc NOPE 0 1 1
+    .end
+    """
+    #expect(throws: CircuitSimulationError.self) {
+        _ = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    }
+}
+
+@Test func netlistStepParamReParsesEachValue() throws {
+    let netlist = """
+    .param RV=1k
+    V1 1 0 DC 1
+    R1 1 0 {RV}
+    .step param RV list 1k 2k
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let sweep = try #require(result.sweep)
+    #expect(sweep.axes.count == 1)
+    #expect(sweep.axes[0].name == "RV")
+    #expect(sweep.axes[0].values == [1000, 2000])
+    #expect(sweep.points.count == 2)
+    let first = try #require(sweep.points[0].components.first { $0.name == "R1" }?.current)
+    let second = try #require(sweep.points[1].components.first { $0.name == "R1" }?.current)
+    #expect(abs(first - 1e-3) < 1e-9)
+    #expect(abs(second - 5e-4) < 1e-9)
+}
+
+@Test func schematicStyleSweepUsesSettings() throws {
+    let netlist = """
+    V1 1 0 DC 0
+    R1 1 0 1k
+    .end
+    """
+    var settings = AnalysisSettings.default
+    settings.runDCSweep = true
+    settings.dcSweepSource = "V1"
+    settings.dcSweepStart = 0
+    settings.dcSweepStop = 4
+    settings.dcSweepStep = 1
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let sweep = try #require(result.sweep)
+    #expect(sweep.points.count == 5)
+}
+
+@Test func netlistGroundAliasNormalizesToNodeZero() throws {
+    let netlist = """
+    V1 1 gnd DC 5
+    R1 1 gnd 1k
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(parsed.circuit.nodeNames.contains("0"))
+    #expect(parsed.circuit.elements.allSatisfy { $0.nodeB == 0 })
+    #expect(parsed.warnings.contains { $0.localizedCaseInsensitiveContains("ground") })
+}
+
+@Test func netlistTempCardWarnsInsteadOfFailing() throws {
+    let netlist = "V1 1 0 DC 1\nR1 1 0 1k\n.temp 50\n.end"
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(parsed.warnings.contains { $0.localizedCaseInsensitiveContains("temperature") })
+}
+
+@Test func csvIncludesSweepSection() throws {
+    let netlist = """
+    V1 1 0 DC 0
+    R1 1 0 1k
+    .dc V1 0 2 1
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let csv = CircuitResultExport.csv(result)
+    #expect(csv.contains("time_s,sweep"))
+    #expect(csv.contains("sweep,"))
+    #expect(csv.contains("V1="))
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

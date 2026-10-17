@@ -24,16 +24,17 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 
 ### Layer 3: The Netlist Layer (The Projection)
 This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I, D, Q, M).
-*   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets.
-*   **Value Parsing:** Converts strings like `4.7k` or `10u` into floating-point values.
-*   **Import/Export:** A `.ac`-aware netlist reader lets you edit SPICE directly; the schematic projects back to a readable SPICE netlist.
+*   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets. `gnd`, `ground`, and `agnd` are normalized to node `0` (a note is recorded), and node names are trimmed of stray whitespace.
+*   **Value Parsing:** Converts strings like `4.7k` or `10u` into floating-point values, and evaluates `{…}` expressions over `.param` values.
+*   **Import/Export:** A `.ac`- and `.dc`-aware netlist reader lets you edit SPICE directly; the schematic projects back to a readable SPICE netlist.
 
 ### Layer 4: The Simulation Layer (The Engine)
 The simulation layer is a **native Swift linear solver**:
 *   **MNA Solver:** Builds and solves Modified Nodal Analysis matrices (`Complex` + partial-pivot Gaussian elimination).
 *   **AC Analysis:** Decade, octave, or linear sweeps of complex node voltages and element currents → magnitude (dB) and phase over frequency.
 *   **DC Operating Point:** Capacitors open, inductors short (0 V branch); node voltages plus per-element voltage and current.
-*   **Transient Analysis:** Backward-Euler time stepping with companion models for C and L, seeded by the operating point at the start time. Sources support `PULSE`, `SIN`, and `PWL` shapes.
+*   **Transient Analysis:** Backward-Euler time stepping with companion models for C and L, seeded by the operating point at the start time (a `.ic` card may override starting node voltages and inductor currents). Sources support `PULSE`, `SIN`, and `PWL` shapes.
+*   **DC Sweep:** `.dc <src> <start> <stop> <step>` sweeps an independent source (nested sweeps are supported); `.step param <name> list <v…>` / `.step param <name> <start> <stop> <step>` re-parses the netlist per value. Each operating point is returned with its sweep coordinates, plotted, and exported to CSV.
 *   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance), NPN/PNP bipolar transistors (simplified Ebers-Moll transport model: saturation current, forward/reverse beta; no Early effect), and N-MOS/P-MOS field-effect transistors (Level 1 Shichman-Hodges: threshold voltage, transconductance parameter `KP`, channel-length modulation `LAMBDA`, body effect `GAMMA`, surface potential `PHI`). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal). The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block (4×4 for the MOSFET).
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
@@ -41,7 +42,7 @@ The simulation layer is a **native Swift linear solver**:
 
 *   **Custom Native Canvas:** Native Core Graphics drawing for the grid, wires, symbols, pin endpoints, junctions, and net labels, with pan, zoom, drag-to-move, and selection.
 *   **Data-Driven Components:** Passive components and AC sources are defined in a `ComponentRegistry`, including pins, symbols, reference prefixes, and typed parameters.
-*   **Real Analysis, Real Results:** The DC/AC/transient results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data. Node voltages and element currents are both plottable as Bode plots or time-domain waveforms, and results can be copied out as CSV.
+*   **Real Analysis, Real Results:** The DC/AC/transient/DC-sweep results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data. Node voltages and element currents are both plottable as Bode plots, time-domain waveforms, or DC transfer curves, and results can be copied out as CSV.
 *   **Diagnostics as Guidance:** The document is validated continuously — missing ground, duplicate/invalid references, invalid values, floating pins, and shorts are reported inline with the affected component named.
 *   **Durable Documents:** Circuits serialize to versioned `.dblab` JSON, with open/save and crash recovery of unsaved edits.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
@@ -68,6 +69,19 @@ Other nonlinear devices (JFET), switches, and transformers are intentionally out
 ### Subcircuits (netlist)
 
 `.subckt <name> <ports…> [params: k=v …]` … `.ends` definitions are expanded when instantiated by an `X<name> <nodes…> <subckt> [k=v …]` element. Expansion is a flattening pass, not a schematic feature: each instance's internal nodes are given a private, instance-scoped name so parallel instances never share nodes, and element names are prefixed with the instance (e.g. `X1.R1`). Definitions may nest, and `{…}` expressions over parameters (`{R/2}`, `{R + R}`) are evaluated per instance; instance values override `.subckt` defaults. Unknown subcircuits, port-count mismatches, and recursion are reported as errors.
+
+### Netlist dialect & analysis cards
+
+Beyond elements, the reader understands a useful subset of control cards:
+
+*   **`.param NAME=expr …`** — global parameters, substituted into `{…}` expressions, bare value tokens, and source specifications everywhere (including inside subcircuits). Caller-supplied overrides (used by `.step`) take precedence over a `.param` card.
+*   **`.ic V(node)=value …` / `.ic I(element)=value …`** — starting conditions for a transient run.
+*   **`.dc <src> <start> <stop> <step> [<src2> …]`** — a (nested) DC sweep of independent sources.
+*   **`.step param <name> list <v…>` / `.step param <name> <start> <stop> <step>`** — repeat the DC analysis per parameter value by re-parsing; `.step temp` and non-`param` forms are reported and skipped (temperature-dependent models are not modelled yet).
+*   **`.include <file>` / `.lib <file>`** — inlined through a pluggable `SpiceIncludeResolver`; without a resolver (or when a file is missing) the card is skipped and a note is recorded.
+*   **`.options …`** — accepted and ignored; **`.temp`** is reported and ignored.
+
+Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel with the parsed netlist and are surfaced in the results panel.
 
 ## Project Structure
 
@@ -112,7 +126,7 @@ Create a circuit, place components (R, C, L, V, I, D, Q, M, ground), draw wires,
 5. Configure DC/AC/transient settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view. Transient runs plot selected node voltages and element currents over time.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I, D, Q, M with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Unsupported cards are reported rather than ignored.
+Enter or paste SPICE (R, C, L, V, I, D, Q, M with `.ac dec|oct|lin`, `.tran`, `.dc`, and `.step param`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Parameter (`.param`/`{…}`), include (`.include`/`.lib`), and initial-condition (`.ic`) cards are supported; unsupported cards are reported rather than ignored.
 
 ## Document format
 

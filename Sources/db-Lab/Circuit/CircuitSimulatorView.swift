@@ -6,6 +6,14 @@ import AppKit
 import UIKit
 #endif
 
+/// A flattened point for the DC sweep chart: one signal within one curve.
+private struct SweepPlotPoint: Identifiable {
+    let id = UUID()
+    let x: Double
+    let y: Double
+    let series: String
+}
+
 struct CircuitSimulatorView: View {
     @ObservedObject var document: CircuitDocument
     @EnvironmentObject private var appState: AppState
@@ -102,7 +110,7 @@ struct CircuitSimulatorView: View {
                 .frame(minHeight: 380)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
-            GroupBox("SPICE Netlist (R, C, L, V, I)") {
+            GroupBox("SPICE Netlist") {
                 TextEditor(text: $document.netlistText)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 200)
@@ -236,6 +244,31 @@ struct CircuitSimulatorView: View {
                         }
                     }
                 }
+                Toggle("DC sweep of a source", isOn: $document.settings.runDCSweep)
+                if document.settings.runDCSweep {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Source")
+                            TextField("e.g. V1", text: $document.settings.dcSweepSource)
+                                .frame(maxWidth: 160)
+                        }
+                        GridRow {
+                            Text("Start")
+                            TextField("Start", value: $document.settings.dcSweepStart, format: .number)
+                                .frame(maxWidth: 160)
+                        }
+                        GridRow {
+                            Text("Stop")
+                            TextField("Stop", value: $document.settings.dcSweepStop, format: .number)
+                                .frame(maxWidth: 160)
+                        }
+                        GridRow {
+                            Text("Step")
+                            TextField("Step", value: $document.settings.dcSweepStep, format: .number)
+                                .frame(maxWidth: 160)
+                        }
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -266,6 +299,9 @@ struct CircuitSimulatorView: View {
 
             if let dc = result.dc {
                 dcResults(dc)
+            }
+            if let sweep = result.sweep {
+                sweepResults(sweep)
             }
             if let ac = result.ac {
                 acResults(ac)
@@ -381,6 +417,78 @@ struct CircuitSimulatorView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sweepResults(_ result: CircuitSimResult.SweepResult) -> some View {
+        let names = sweepSignalNames(result)
+        let selected = Set(document.settings.outputNetNames)
+        let plotNames = selected.isEmpty ? Set(names) : selected.intersection(names)
+        let xAxis = result.axes.last
+        let xLabel = xAxis?.name ?? "Sweep"
+        let yLabel = acQuantity == .voltage ? "Voltage (V)" : "Current (A)"
+
+        let plotPoints: [SweepPlotPoint] = result.points.flatMap { point -> [SweepPlotPoint] in
+            guard xAxis != nil else { return [] }
+            let xIndex = result.axes.count - 1
+            let outer = point.coordinates.prefix(xIndex)
+                .map { "\($0.name)=\(format($0.value))" }
+                .joined(separator: ", ")
+            return names.filter { plotNames.contains($0) }.compactMap { name in
+                guard let y = sweepValue(point, name: name) else { return nil }
+                let series = outer.isEmpty ? name : "\(name) (\(outer))"
+                return SweepPlotPoint(x: point.coordinates[xIndex].value, y: y, series: series)
+            }
+        }
+
+        return GroupBox("DC Sweep") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Picker("Quantity", selection: $acQuantity) {
+                        ForEach(ACQuantity.allCases) { quantity in
+                            Text(quantity.title).tag(quantity)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 240)
+
+                    Spacer()
+
+                    Text("\(result.points.count) operating points")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                netSelectionControls(names, showReference: false)
+
+                Chart {
+                    ForEach(plotPoints) { point in
+                        LineMark(
+                            x: .value(xLabel, point.x),
+                            y: .value(yLabel, point.y)
+                        )
+                        .foregroundStyle(by: .value("Signal", point.series))
+                    }
+                }
+                .chartXAxisLabel(xLabel)
+                .chartYAxisLabel(yLabel)
+                .frame(height: 240)
+            }
+        }
+    }
+
+    private func sweepSignalNames(_ result: CircuitSimResult.SweepResult) -> [String] {
+        guard let first = result.points.first else { return [] }
+        switch acQuantity {
+        case .voltage: return first.nodes.map(\.name)
+        case .current: return first.components.map(\.name)
+        }
+    }
+
+    private func sweepValue(_ point: CircuitSimResult.SweepPoint, name: String) -> Double? {
+        switch acQuantity {
+        case .voltage: return point.nodes.first { $0.name == name }?.voltage
+        case .current: return point.components.first { $0.name == name }?.current
         }
     }
 

@@ -1,8 +1,10 @@
 // SpiceNetlistParser.swift
 // A small, well-scoped SPICE reader for the element set the solver supports:
 // R, C, L, independent V and I sources, diodes (D), bipolar transistors (Q),
-// MOSFETs (M), and `.subckt` definitions instantiated with `X` elements, plus
-// `.ac` and `.tran` analysis cards.
+// MOSFETs (M), and `.subckt` definitions instantiated with `X` elements. It
+// understands the `.ac`, `.tran`, and `.dc` analysis cards, `.step param`, the
+// `.param`, `.options`, `.include`/`.lib`, and `.ic` control cards, and treats
+// common ground aliases (`gnd`, `ground`) as node 0.
 //
 // This is intentionally not a full SPICE implementation. Unsupported cards are
 // reported instead of being silently ignored, so the UI can tell the user what
@@ -99,6 +101,28 @@ private struct SubcircuitDefinition {
     var line: Int
 }
 
+/// One axis of a `.dc` sweep: an independent source name and its sampled values.
+public struct SpiceSweepAxis: Sendable, Equatable {
+    public var name: String
+    public var values: [Double]
+
+    public init(name: String, values: [Double]) {
+        self.name = name
+        self.values = values
+    }
+}
+
+/// A `.step param <name> …` specification: a parameter and the values it takes.
+public struct SpiceStepSpec: Sendable, Equatable {
+    public var parameter: String
+    public var values: [Double]
+
+    public init(parameter: String, values: [Double]) {
+        self.parameter = parameter
+        self.values = values
+    }
+}
+
 public struct SpiceAnalysisCard: Sendable, Equatable {
     public var hasAC: Bool
     public var sweep: FrequencySweepType
@@ -111,6 +135,11 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
     public var tranStep: Double
     public var tranStop: Double
     public var tranStart: Double
+    /// Nested `.dc` sweep axes, ordered outermost first. The last axis is the
+    /// innermost one (the plot's X axis).
+    public var dcSweep: [SpiceSweepAxis]
+    /// A `.step param …` specification, applied around the DC analyses.
+    public var step: SpiceStepSpec?
 
     public static let none = SpiceAnalysisCard(
         hasAC: false,
@@ -122,18 +151,32 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
         hasTransient: false,
         tranStep: 1e-4,
         tranStop: 1e-2,
-        tranStart: 0
+        tranStart: 0,
+        dcSweep: [],
+        step: nil
     )
 }
 
 public struct ParsedSpiceNetlist: Sendable {
     public var circuit: LinearCircuit
     public var analysis: SpiceAnalysisCard
+    /// Non-fatal notes: skipped `.include`s, ignored directives, aliased grounds.
+    public var warnings: [String]
+    /// Starting conditions from any `.ic` cards.
+    public var initialConditions: InitialConditions
 }
 
+/// Resolves an `.include`/`.lib` path to its file contents, or `nil` when the
+/// file cannot be found. The parser never touches the filesystem itself.
+public typealias SpiceIncludeResolver = (String) throws -> String?
+
 public enum SpiceNetlistParser {
-    public static func parse(_ text: String) throws -> ParsedSpiceNetlist {
-        try Parser().run(text)
+    public static func parse(
+        _ text: String,
+        include: SpiceIncludeResolver? = nil,
+        parameterOverrides: [String: Double] = [:]
+    ) throws -> ParsedSpiceNetlist {
+        try Parser(parameterOverrides: parameterOverrides).run(text, include: include)
     }
 
     // MARK: - Parser
@@ -154,6 +197,23 @@ public enum SpiceNetlistParser {
         private var pendingMOSFETs: [PendingMOSFET] = []
         private var analysis = SpiceAnalysisCard.none
         private var sawContent = false
+        /// Global `.param` values, visible everywhere including subcircuits.
+        private var globalParameters: [String: Double]
+        /// Caller-supplied parameter values (e.g. from `.step`); these take
+        /// precedence over any `.param` card that declares the same name.
+        private let parameterOverrides: [String: Double]
+        /// `.ic` starting conditions.
+        private var initialConditions = InitialConditions()
+        private var warnings: [String] = []
+        private var aliasedGrounds: Set<String> = []
+
+        init(parameterOverrides: [String: Double]) {
+            let overrides = Dictionary(
+                uniqueKeysWithValues: parameterOverrides.map { ($0.key.uppercased(), $0.value) }
+            )
+            self.parameterOverrides = overrides
+            self.globalParameters = overrides
+        }
 
         private struct PendingDiode {
             var name: String
@@ -193,8 +253,9 @@ public enum SpiceNetlistParser {
             var callStack: [String] = []
         }
 
-        func run(_ text: String) throws -> ParsedSpiceNetlist {
-            let rawLines = text.components(separatedBy: .newlines)
+        func run(_ text: String, include: SpiceIncludeResolver?) throws -> ParsedSpiceNetlist {
+            let expanded = try expandIncludes(text, include: include, depth: 0)
+            let rawLines = expanded.components(separatedBy: .newlines)
             var topLevel: [SubcircuitLine] = []
             var open: SubcircuitDefinition?
 
@@ -229,6 +290,9 @@ public enum SpiceNetlistParser {
                     )
                     sawContent = true
                     open?.body.append(SubcircuitLine(text: stripped, number: lineNumber))
+                case ".param":
+                    try processParameters(tokens: tokens, line: lineNumber, text: stripped, open: &open)
+                    sawContent = true
                 case _ where open != nil:
                     open?.body.append(SubcircuitLine(text: stripped, number: lineNumber))
                 case _ where directive.hasPrefix("."):
@@ -242,8 +306,10 @@ public enum SpiceNetlistParser {
                 throw SpiceParseError.unterminatedSubcircuit(line: existing.line, name: existing.name)
             }
 
+            var rootScope = Scope()
+            rootScope.parameters = globalParameters
             for line in topLevel {
-                try emit(line: line, scope: Scope())
+                try emit(line: line, scope: rootScope)
             }
 
             try resolveDevices()
@@ -253,8 +319,52 @@ public enum SpiceNetlistParser {
 
             return ParsedSpiceNetlist(
                 circuit: LinearCircuit(nodeNames: nodeNames, elements: elements),
-                analysis: analysis
+                analysis: analysis,
+                warnings: warnings,
+                initialConditions: initialConditions
             )
+        }
+
+        // MARK: Includes
+
+        /// Rewrites `.include`/`.lib` cards into the referenced file's contents,
+        /// recursively. Without a resolver — or when a path cannot be resolved —
+        /// the card is skipped and a warning is recorded.
+        private func expandIncludes(
+            _ text: String,
+            include: SpiceIncludeResolver?,
+            depth: Int
+        ) throws -> String {
+            guard depth < 16 else {
+                warnings.append("Stopped expanding .include: nesting is too deep.")
+                return text
+            }
+            var output: [String] = []
+            for (offset, rawLine) in text.components(separatedBy: .newlines).enumerated() {
+                let stripped = SpiceNetlistParser.stripComment(rawLine).trimmingCharacters(in: .whitespaces)
+                let tokens = SpiceNetlistParser.splitTokens(stripped)
+                guard let directive = tokens.first?.lowercased(),
+                      directive == ".include" || directive == ".lib" else {
+                    output.append(rawLine)
+                    continue
+                }
+                let path = tokens.count >= 2 ? tokens[1] : ""
+                guard !path.isEmpty else {
+                    warnings.append("Skipped \(directive) card with no path (line \(offset + 1)).")
+                    continue
+                }
+                guard let include else {
+                    warnings.append("Skipped \(directive) \"\(path)\": no file resolver is available.")
+                    continue
+                }
+                let contents = try include(path)
+                guard let contents else {
+                    warnings.append("Skipped \(directive) \"\(path)\": file could not be resolved.")
+                    continue
+                }
+                output.append(try expandIncludes(contents, include: include, depth: depth + 1))
+            }
+            return output.joined(separator: "\n")
         }
 
         // MARK: Directives
@@ -269,12 +379,141 @@ public enum SpiceNetlistParser {
             case ".tran":
                 analysis.hasTransient = true
                 try SpiceNetlistParser.parseTran(tokens: tokens, line: line, text: text, into: &analysis)
+            case ".dc":
+                try processDCSweep(tokens: tokens, line: line, text: text)
+            case ".step":
+                try processStep(tokens: tokens, line: line, text: text)
+            case ".ic":
+                try processInitialConditions(tokens: tokens, line: line, text: text)
+            case ".options", ".option":
+                // Accepted and ignored: solver options are not user-tunable here.
+                break
+            case ".temp":
+                warnings.append("Ignored .temp: temperature-dependent models are not yet supported.")
             case ".end":
                 break
             default:
                 throw SpiceParseError.unsupportedCard(line: line, text: text)
             }
             sawContent = true
+        }
+
+        // MARK: Parameters and initial conditions
+
+        /// Parses `.param NAME=expr [NAME2=expr2 …]`. At the top level the values
+        /// become global parameters; inside a subcircuit body they are added to
+        /// that subcircuit's defaults.
+        private func processParameters(
+            tokens: [String],
+            line: Int,
+            text: String,
+            open: inout SubcircuitDefinition?
+        ) throws {
+            var items: [(key: String, expression: String)] = []
+            for token in tokens.dropFirst() {
+                let pair = token.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2 else { throw SpiceParseError.malformed(line: line, text: text) }
+                items.append((
+                    key: String(pair[0]).uppercased(),
+                    expression: SpiceNetlistParser.unwrapBraces(String(pair[1]))
+                ))
+            }
+            guard !items.isEmpty else { throw SpiceParseError.malformed(line: line, text: text) }
+
+            if open != nil {
+                for item in items {
+                    open?.parameterDefaults.append((key: item.key, expression: item.expression))
+                }
+            } else {
+                for item in items {
+                    // An override (from `.step`) wins over a `.param` card.
+                    if parameterOverrides[item.key] != nil { continue }
+                    globalParameters[item.key] = try SpiceNetlistParser.evaluate(
+                        item.expression, params: globalParameters, line: line, text: text
+                    )
+                }
+            }
+        }
+
+        /// Parses `.ic V(node)=value [I(element)=value …]`.
+        private func processInitialConditions(tokens: [String], line: Int, text: String) throws {
+            for token in tokens.dropFirst() {
+                let pair = token.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2 else { throw SpiceParseError.malformed(line: line, text: text) }
+                let lhs = String(pair[0])
+                let value = try SpiceNetlistParser.evaluateValue(
+                    String(pair[1]), params: globalParameters, line: line, text: text
+                )
+                guard lhs.count >= 3,
+                      let openParen = lhs.firstIndex(of: "("),
+                      lhs.hasSuffix(")") else {
+                    throw SpiceParseError.malformed(line: line, text: text)
+                }
+                let kind = lhs[lhs.startIndex].uppercased()
+                let inner = String(lhs[lhs.index(after: openParen)..<lhs.index(before: lhs.endIndex)])
+                switch kind {
+                case "V": initialConditions.nodeVoltages[inner] = value
+                case "I": initialConditions.elementCurrents[inner] = value
+                default: throw SpiceParseError.malformed(line: line, text: text)
+                }
+            }
+        }
+
+        /// Parses `.dc <src> <start> <stop> <step> [<src2> …]` into nested axes.
+        private func processDCSweep(tokens: [String], line: Int, text: String) throws {
+            let body = Array(tokens.dropFirst())
+            guard body.count >= 4, body.count % 4 == 0 else {
+                throw SpiceParseError.invalidAnalysis(line: line, text: text)
+            }
+            var axes: [SpiceSweepAxis] = []
+            var index = 0
+            while index < body.count {
+                let start = try SpiceNetlistParser.parseNumber(body[index + 1], line: line)
+                let stop = try SpiceNetlistParser.parseNumber(body[index + 2], line: line)
+                let step = try SpiceNetlistParser.parseNumber(body[index + 3], line: line)
+                let values = SpiceNetlistParser.linearSweep(from: start, to: stop, step: step)
+                guard !values.isEmpty else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
+                axes.append(SpiceSweepAxis(name: body[index], values: values))
+                index += 4
+            }
+            analysis.dcSweep = axes
+        }
+
+        /// Parses `.step param <name> list <v…>` / `.step param <name> <start>
+        /// <stop> <step>`. Other `.step` forms are reported and ignored.
+        private func processStep(tokens: [String], line: Int, text: String) throws {
+            let body = Array(tokens.dropFirst())
+            guard let kind = body.first?.lowercased() else {
+                throw SpiceParseError.invalidAnalysis(line: line, text: text)
+            }
+            switch kind {
+            case "param":
+                guard body.count >= 3 else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
+                let name = body[1]
+                if body[2].lowercased() == "list" {
+                    let values = try body.dropFirst(3).map {
+                        try SpiceNetlistParser.parseNumber($0, line: line)
+                    }
+                    guard !values.isEmpty else {
+                        throw SpiceParseError.invalidAnalysis(line: line, text: text)
+                    }
+                    analysis.step = SpiceStepSpec(parameter: name, values: values)
+                } else {
+                    guard body.count >= 5 else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
+                    let start = try SpiceNetlistParser.parseNumber(body[2], line: line)
+                    let stop = try SpiceNetlistParser.parseNumber(body[3], line: line)
+                    let increment = try SpiceNetlistParser.parseNumber(body[4], line: line)
+                    let values = SpiceNetlistParser.linearSweep(from: start, to: stop, step: increment)
+                    guard !values.isEmpty else {
+                        throw SpiceParseError.invalidAnalysis(line: line, text: text)
+                    }
+                    analysis.step = SpiceStepSpec(parameter: name, values: values)
+                }
+            case "temp":
+                warnings.append("Ignored .step temp: temperature-dependent models are not yet supported.")
+            default:
+                warnings.append("Ignored .step \(kind): only '.step param' is supported.")
+            }
         }
 
         private func makeSubcircuit(tokens: [String], line: Int, text: String) throws -> SubcircuitDefinition {
@@ -303,17 +542,23 @@ public enum SpiceNetlistParser {
         // MARK: Nodes and names
 
         private func node(_ name: String) -> Int {
-            let key = name.uppercased()
+            let normalized = SpiceNetlistParser.normalizedNodeName(name)
+            let key = normalized.uppercased()
             if let existing = nodeIndex[key] { return existing }
             let index = nodeNames.count
             nodeIndex[key] = index
-            nodeNames.append(name)
+            nodeNames.append(normalized)
             return index
         }
 
         private func resolveNode(_ raw: String, scope: Scope) -> Int {
             let key = raw.uppercased()
-            if key == "0" { return 0 }
+            if SpiceNetlistParser.groundAliases.contains(key) {
+                if key != "0", aliasedGrounds.insert(key).inserted {
+                    warnings.append("Node \"\(raw)\" was treated as ground (node 0).")
+                }
+                return 0
+            }
             if let external = scope.portNodes[key] { return external }
             if scope.namePrefix.isEmpty { return node(raw) }
             // Internal nodes are private to each instance, so they carry the
@@ -461,7 +706,7 @@ public enum SpiceNetlistParser {
             child.namePrefix = "\(scope.namePrefix)\(tokens[0])."
             child.callStack = scope.callStack + [key]
 
-            var parameters: [String: Double] = [:]
+            var parameters: [String: Double] = scope.parameters
             for (name, expression) in definition.parameterDefaults {
                 parameters[name.uppercased()] = try SpiceNetlistParser.evaluate(
                     expression, params: parameters, line: line.number, text: line.text
@@ -585,6 +830,34 @@ public enum SpiceNetlistParser {
             return String(line[line.startIndex..<semicolon])
         }
         return line
+    }
+
+    /// Node names that mean the ground reference (node 0). SPICE itself uses
+    /// `0`; schematics exported from other tools often spell it `gnd`.
+    private static let groundAliases: Set<String> = ["0", "GND", "GROUND", "AGND"]
+
+    /// Node names are trimmed and internally stripped of whitespace so that a
+    /// stray space never silently creates a second net.
+    static func normalizedNodeName(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespaces)
+            .components(separatedBy: .whitespaces)
+            .joined()
+    }
+
+    /// Evenly spaced values from `start` to `stop` (inclusive) in steps of
+    /// `step`. The step's sign selects the direction; an empty result means the
+    /// range is invalid.
+    static func linearSweep(from start: Double, to stop: Double, step: Double) -> [Double] {
+        guard step.isFinite, step != 0, start.isFinite, stop.isFinite else { return [] }
+        let span = stop - start
+        guard span != 0, span / step > 0 else { return [] }
+        var values: [Double] = []
+        let count = Int((span / step).rounded()) + 1
+        guard count > 0, count <= 1_000_000 else { return [] }
+        for index in 0..<count {
+            values.append(start + Double(index) * step)
+        }
+        return values
     }
 
     /// Splits a line on whitespace, but never inside `{…}`, so parameter

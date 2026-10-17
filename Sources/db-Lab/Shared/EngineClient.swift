@@ -19,7 +19,10 @@ struct CircuitSimResult: Sendable {
     let dc: DCResult?
     let ac: ACResult?
     let transient: TransientResult?
-    let warnings: [String]
+    /// A DC sweep (from a `.dc` card, a `.step param`, or the sweep settings),
+    /// with one operating point per swept combination.
+    var sweep: SweepResult?
+    var warnings: [String]
 
     struct DCResult: Sendable {
         let nodes: [(name: String, voltage: Double)]
@@ -28,6 +31,27 @@ struct CircuitSimResult: Sendable {
         let components: [(name: String, voltage: Double, current: Double)]
         let sources: [(name: String, current: Double)]
         let converged: Bool
+    }
+
+    /// One independent axis of a DC sweep and its sampled values.
+    struct SweepAxis: Sendable {
+        let name: String
+        let values: [Double]
+    }
+
+    /// A single operating point within a sweep. `coordinates` holds one value
+    /// per axis, ordered the same as `SweepResult.axes`.
+    struct SweepPoint: Sendable {
+        let coordinates: [(name: String, value: Double)]
+        let nodes: [(name: String, voltage: Double)]
+        let components: [(name: String, voltage: Double, current: Double)]
+    }
+
+    struct SweepResult: Sendable {
+        /// Sweep dimensions, outermost first. The last axis is the innermost and
+        /// forms the plot's X axis; the others select the curves.
+        let axes: [SweepAxis]
+        let points: [SweepPoint]
     }
 
     struct ACResult: Sendable {
@@ -51,6 +75,8 @@ enum CircuitSimulationError: LocalizedError {
     case noAnalysisSelected
     case invalidACSettings
     case invalidTransientSettings
+    case invalidDCSweepSettings
+    case unknownSweepSource(String)
     case tooManySamples
     case missingGround
     case acSolveFailed(frequency: Double, reason: String)
@@ -61,11 +87,15 @@ enum CircuitSimulationError: LocalizedError {
         case .emptyNetlist:
             return "Enter a SPICE netlist before running the simulation."
         case .noAnalysisSelected:
-            return "Select at least one analysis type (DC, AC, or transient)."
+            return "Select at least one analysis type (DC, AC, transient, or a DC sweep)."
         case .invalidACSettings:
             return "AC start frequency, stop frequency, and sweep points must define a valid positive sweep."
         case .invalidTransientSettings:
             return "Transient step, stop time, and start time must define a valid, sufficiently small run."
+        case .invalidDCSweepSettings:
+            return "The DC sweep start, stop, and step must define a valid range."
+        case .unknownSweepSource(let name):
+            return "The DC sweep targets \"\(name)\", but no source with that name exists."
         case .tooManySamples:
             return "The requested analysis exceeds the 200,000-sample limit."
         case .missingGround:
@@ -90,7 +120,8 @@ enum SimulationEngine {
             wires: snapshot.wires,
             labels: snapshot.netLabels
         )
-        return try solve(circuit: circuit, settings: settings)
+        let axes = try sweepAxes(from: settings)
+        return try solve(circuit: circuit, settings: settings, sweepAxes: axes)
     }
 
     // MARK: - Netlist path
@@ -126,13 +157,67 @@ enum SimulationEngine {
                 effective.tranStart = parsed.analysis.tranStart
             }
         }
-        return try solve(circuit: parsed.circuit, settings: effective)
+
+        // Sweep axes: a `.dc` card wins; otherwise the UI settings may request
+        // one. A `.step param` is handled separately by re-parsing per value.
+        var axes = parsed.analysis.dcSweep
+        if axes.isEmpty {
+            axes = try sweepAxes(from: settings)
+        }
+        if let step = parsed.analysis.step {
+            // The stepped parameter is exposed by re-parsing; run the base
+            // analyses without a sweep so the step runner owns the result.
+            var result = try solve(
+                circuit: parsed.circuit,
+                settings: effective,
+                initialConditions: parsed.initialConditions
+            )
+            result.sweep = try runParameterStep(
+                netlist: netlist,
+                step: step,
+                axes: axes,
+                settings: effective
+            )
+            if effective.runAC || effective.runTransient {
+                result.warnings.append(
+                    "STEP applies only to DC analyses here; AC and transient were run once at the un-stepped value."
+                )
+            }
+            result.warnings.insert(contentsOf: parsed.warnings, at: 0)
+            return result
+        }
+
+        var result = try solve(
+            circuit: parsed.circuit,
+            settings: effective,
+            initialConditions: parsed.initialConditions,
+            sweepAxes: axes
+        )
+        result.warnings.insert(contentsOf: parsed.warnings, at: 0)
+        return result
+    }
+
+    /// Builds the DC sweep axes requested through `AnalysisSettings`.
+    private static func sweepAxes(from settings: AnalysisSettings) throws -> [SpiceSweepAxis] {
+        guard settings.runDCSweep, !settings.dcSweepSource.isEmpty else { return [] }
+        let values = SpiceNetlistParser.linearSweep(
+            from: settings.dcSweepStart,
+            to: settings.dcSweepStop,
+            step: settings.dcSweepStep
+        )
+        guard !values.isEmpty else { throw CircuitSimulationError.invalidDCSweepSettings }
+        return [SpiceSweepAxis(name: settings.dcSweepSource, values: values)]
     }
 
     // MARK: - Common solve
 
-    private static func solve(circuit: LinearCircuit, settings: AnalysisSettings) throws -> CircuitSimResult {
-        guard settings.runDC || settings.runAC || settings.runTransient else {
+    private static func solve(
+        circuit: LinearCircuit,
+        settings: AnalysisSettings,
+        initialConditions: InitialConditions = InitialConditions(),
+        sweepAxes: [SpiceSweepAxis] = []
+    ) throws -> CircuitSimResult {
+        guard settings.runDC || settings.runAC || settings.runTransient || !sweepAxes.isEmpty else {
             throw CircuitSimulationError.noAnalysisSelected
         }
 
@@ -231,7 +316,8 @@ enum SimulationEngine {
                 raw = try solver.run(
                     startTime: settings.tranStart,
                     stopTime: settings.tranStop,
-                    maxSteps: FrequencySweep.maxPointCount
+                    maxSteps: FrequencySweep.maxPointCount,
+                    initialConditions: initialConditions
                 )
             } catch {
                 throw CircuitSimulationError.invalidTransientSettings
@@ -252,7 +338,140 @@ enum SimulationEngine {
             )
         }
 
-        return CircuitSimResult(dc: dcResult, ac: acResult, transient: transientResult, warnings: warnings)
+        var sweepResult: CircuitSimResult.SweepResult?
+        if !sweepAxes.isEmpty {
+            let totalPoints = sweepAxes.reduce(1) { $0 * $1.values.count }
+            guard totalPoints > 0, totalPoints <= FrequencySweep.maxPointCount else {
+                throw CircuitSimulationError.tooManySamples
+            }
+            sweepResult = try runDCSweep(circuit: circuit, axes: sweepAxes)
+        }
+
+        return CircuitSimResult(
+            dc: dcResult,
+            ac: acResult,
+            transient: transientResult,
+            sweep: sweepResult,
+            warnings: warnings
+        )
+    }
+
+    // MARK: - DC sweep
+
+    /// Runs a (possibly nested) DC sweep, returning one operating point per
+    /// combination of axis values. The first axis varies slowest.
+    private static func runDCSweep(
+        circuit: LinearCircuit,
+        axes: [SpiceSweepAxis]
+    ) throws -> CircuitSimResult.SweepResult {
+        let sources = Set(circuit.sourceNames.map { $0.uppercased() })
+        // `.dc` axes must name an existing source; step axes are parameters and
+        // are resolved by re-parsing, so they contribute no override here.
+        for axis in axes where !sources.contains(axis.name.uppercased()) {
+            // Only complain when this looks like a `.dc` source sweep: a step
+            // parameter is passed in with a name that is not a source either, so
+            // callers distinguish them by only including `.dc` axes here.
+            throw CircuitSimulationError.unknownSweepSource(axis.name)
+        }
+        var combinations: [[Double]] = [[]]
+        for axis in axes {
+            combinations = combinations.flatMap { prefix in
+                axis.values.map { prefix + [$0] }
+            }
+        }
+        var points: [CircuitSimResult.SweepPoint] = []
+        for combination in combinations {
+            var overrides: [String: Double] = [:]
+            for (axis, value) in zip(axes, combination) {
+                overrides[axis.name] = value
+            }
+            let solution = try circuit.solveDC(sourceOverrides: overrides)
+            try assertFinite(solution)
+            points.append(makeSweepPoint(
+                circuit: circuit,
+                axes: axes,
+                coordinates: combination,
+                solution: solution
+            ))
+        }
+        return CircuitSimResult.SweepResult(
+            axes: axes.map { CircuitSimResult.SweepAxis(name: $0.name, values: $0.values) },
+            points: points
+        )
+    }
+
+    /// Runs a `.step param` sweep, re-parsing the netlist once per value so the
+    /// parameter reaches element values as well as sources. Any `.dc` axes are
+    /// nested inside each step value.
+    private static func runParameterStep(
+        netlist: String,
+        step: SpiceStepSpec,
+        axes: [SpiceSweepAxis],
+        settings: AnalysisSettings
+    ) throws -> CircuitSimResult.SweepResult {
+        var points: [CircuitSimResult.SweepPoint] = []
+        let stepAxis = SpiceSweepAxis(name: step.parameter, values: step.values)
+        let allAxes = [stepAxis] + axes
+        let totalPoints = allAxes.reduce(1) { $0 * $1.values.count }
+        guard totalPoints > 0, totalPoints <= FrequencySweep.maxPointCount else {
+            throw CircuitSimulationError.tooManySamples
+        }
+        var innerCombinations: [[Double]] = [[]]
+        for axis in axes {
+            innerCombinations = innerCombinations.flatMap { prefix in
+                axis.values.map { prefix + [$0] }
+            }
+        }
+        for stepValue in step.values {
+            let parsed = try SpiceNetlistParser.parse(
+                netlist,
+                parameterOverrides: [step.parameter: stepValue]
+            )
+            let circuit = parsed.circuit
+            let sources = Set(circuit.sourceNames.map { $0.uppercased() })
+            for axis in axes where !sources.contains(axis.name.uppercased()) {
+                throw CircuitSimulationError.unknownSweepSource(axis.name)
+            }
+            for inner in innerCombinations {
+                var overrides: [String: Double] = [:]
+                for (axis, value) in zip(axes, inner) {
+                    overrides[axis.name] = value
+                }
+                let solution = try circuit.solveDC(sourceOverrides: overrides)
+                try assertFinite(solution)
+                points.append(makeSweepPoint(
+                    circuit: circuit,
+                    axes: axes,
+                    coordinates: [stepValue] + inner,
+                    solution: solution
+                ))
+            }
+        }
+        return CircuitSimResult.SweepResult(
+            axes: allAxes.map { CircuitSimResult.SweepAxis(name: $0.name, values: $0.values) },
+            points: points
+        )
+    }
+
+    private static func makeSweepPoint(
+        circuit: LinearCircuit,
+        axes: [SpiceSweepAxis],
+        coordinates: [Double],
+        solution: LinearCircuit.Solution
+    ) -> CircuitSimResult.SweepPoint {
+        let labels = zip(axes, coordinates).map { (name: $0.name, value: $1) }
+        let nodes = (1..<circuit.nodeCount).map { node in
+            (circuit.nodeNames[node], solution.nodeVoltages[node].re)
+        }
+        let components = circuit.elements.enumerated().map { index, element in
+            let voltage = solution.nodeVoltages[element.nodeA] - solution.nodeVoltages[element.nodeB]
+            return (element.name, voltage.re, solution.elementCurrents[index].re)
+        }
+        return CircuitSimResult.SweepPoint(
+            coordinates: labels,
+            nodes: nodes,
+            components: components
+        )
     }
 
     private static func makeFrequencies(_ settings: AnalysisSettings) throws -> [Double] {

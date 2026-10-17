@@ -26,7 +26,12 @@ public struct TransientSolver: Sendable {
         self.timestep = timestep
     }
 
-    public func run(startTime: Double, stopTime: Double, maxSteps: Int) throws -> Result {
+    public func run(
+        startTime: Double,
+        stopTime: Double,
+        maxSteps: Int,
+        initialConditions: InitialConditions = InitialConditions()
+    ) throws -> Result {
         guard stopTime > startTime else {
             throw CircuitSolveError.invalidElement("Transient stop time")
         }
@@ -35,8 +40,10 @@ public struct TransientSolver: Sendable {
             throw CircuitSolveError.invalidElement("Transient step count")
         }
 
-        // Initial condition: DC operating point with sources at `startTime`.
-        let operatingPoint = try circuit.solveOperatingPoint(atTime: startTime)
+        // Initial condition: DC operating point with sources at `startTime`,
+        // then any `.ic` overrides applied to node voltages and inductor currents.
+        let rawOperatingPoint = try circuit.solveOperatingPoint(atTime: startTime)
+        let operatingPoint = initialConditions.applied(to: rawOperatingPoint, in: circuit)
         var capacitorVoltage = [Double](repeating: 0, count: circuit.elements.count)
         var inductorCurrent = [Double](repeating: 0, count: circuit.elements.count)
         var nonlinearState = circuit.nonlinearState(from: operatingPoint)

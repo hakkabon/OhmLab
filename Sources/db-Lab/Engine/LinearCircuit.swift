@@ -40,6 +40,51 @@ public enum CircuitSolveError: LocalizedError {
     }
 }
 
+/// Initial conditions supplied by a `.ic` card. Node names and element names are
+/// matched case-insensitively. Node voltages seed capacitors (and the recorded
+/// initial point of a transient run); element currents seed inductors.
+public struct InitialConditions: Sendable, Equatable {
+    /// Node name (as written) mapped to its starting voltage.
+    public var nodeVoltages: [String: Double]
+    /// Element name mapped to its starting current, used for inductors.
+    public var elementCurrents: [String: Double]
+
+    public init(
+        nodeVoltages: [String: Double] = [:],
+        elementCurrents: [String: Double] = [:]
+    ) {
+        self.nodeVoltages = nodeVoltages
+        self.elementCurrents = elementCurrents
+    }
+
+    public var isEmpty: Bool { nodeVoltages.isEmpty && elementCurrents.isEmpty }
+
+    /// Applies these conditions to a solved operating point, returning a copy
+    /// whose node voltages (and, where matched, inductor currents) reflect the
+    /// `.ic` values. Nodes and elements that are not mentioned are unchanged.
+    func applied(to solution: LinearCircuit.Solution, in circuit: LinearCircuit) -> LinearCircuit.Solution {
+        guard !isEmpty else { return solution }
+        var result = solution
+        let voltageOverrides = Dictionary(
+            uniqueKeysWithValues: nodeVoltages.map { ($0.key.uppercased(), $0.value) }
+        )
+        for node in circuit.nodeNames.indices {
+            if let value = voltageOverrides[circuit.nodeNames[node].uppercased()] {
+                result.nodeVoltages[node] = Complex(value, 0)
+            }
+        }
+        let currentOverrides = Dictionary(
+            uniqueKeysWithValues: elementCurrents.map { ($0.key.uppercased(), $0.value) }
+        )
+        for index in circuit.elements.indices {
+            if let value = currentOverrides[circuit.elements[index].name.uppercased()] {
+                result.elementCurrents[index] = Complex(value, 0)
+            }
+        }
+        return result
+    }
+}
+
 public struct LinearCircuit: Sendable {
     public enum ElementKind: String, Sendable {
         case resistor
@@ -541,6 +586,35 @@ public struct LinearCircuit: Sendable {
     public func solveDC() throws -> Solution {
         try validate()
         return try solveNonlinear(mode: .dc)
+    }
+
+    /// DC operating point with selected source magnitudes overridden, used by a
+    /// `.dc` sweep. Keys are element names (case-insensitive); only voltage and
+    /// current sources are affected. Names that match no source are ignored so a
+    /// caller can validate them separately.
+    public func solveDC(sourceOverrides: [String: Double]) throws -> Solution {
+        guard !sourceOverrides.isEmpty else { return try solveDC() }
+        var circuit = self
+        let overrides = Dictionary(
+            uniqueKeysWithValues: sourceOverrides.map { ($0.key.uppercased(), $0.value) }
+        )
+        circuit.elements = elements.map { element in
+            guard element.kind == .voltageSource || element.kind == .currentSource,
+                  let override = overrides[element.name.uppercased()] else { return element }
+            var element = element
+            element.dcValue = override
+            return element
+        }
+        try circuit.validate()
+        return try circuit.solveNonlinear(mode: .dc)
+    }
+
+    /// Names of the independent sources in the circuit (case-sensitive), so a
+    /// sweep can check that its target exists.
+    public var sourceNames: [String] {
+        elements.compactMap { element in
+            element.kind == .voltageSource || element.kind == .currentSource ? element.name : nil
+        }
     }
 
     /// DC topology (capacitors open, inductors short) with time-domain source

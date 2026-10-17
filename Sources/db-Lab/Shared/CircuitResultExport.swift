@@ -6,7 +6,7 @@ import Foundation
 
 enum CircuitResultExport {
     static func csv(_ result: CircuitSimResult) -> String {
-        var rows = ["analysis,frequency_hz,signal,quantity,value,time_s"]
+        var rows = ["analysis,frequency_hz,signal,quantity,value,time_s,sweep"]
 
         if let dc = result.dc {
             for node in dc.nodes {
@@ -15,6 +15,21 @@ enum CircuitResultExport {
             for component in dc.components {
                 rows.append(row(analysis: "dc", frequency: nil, signal: component.name, quantity: "voltage", value: component.voltage))
                 rows.append(row(analysis: "dc", frequency: nil, signal: component.name, quantity: "current", value: component.current))
+            }
+        }
+
+        if let sweep = result.sweep {
+            for point in sweep.points {
+                let coordinate = point.coordinates
+                    .map { "\($0.name)=\(number($0.value))" }
+                    .joined(separator: ";")
+                for node in point.nodes {
+                    rows.append(row(analysis: "sweep", frequency: nil, signal: node.name, quantity: "voltage", value: node.voltage, sweep: coordinate))
+                }
+                for component in point.components {
+                    rows.append(row(analysis: "sweep", frequency: nil, signal: component.name, quantity: "voltage", value: component.voltage, sweep: coordinate))
+                    rows.append(row(analysis: "sweep", frequency: nil, signal: component.name, quantity: "current", value: component.current, sweep: coordinate))
+                }
             }
         }
 
@@ -55,11 +70,13 @@ enum CircuitResultExport {
         signal: String,
         quantity: String,
         value: Double,
-        time: Double? = nil
+        time: Double? = nil,
+        sweep: String? = nil
     ) -> String {
         let frequencyField = frequency.map { number($0) } ?? ""
         let timeField = time.map { number($0) } ?? ""
-        return "\(analysis),\(frequencyField),\(escape(signal)),\(quantity),\(number(value)),\(timeField)"
+        let sweepField = sweep.map { escape($0) } ?? ""
+        return "\(analysis),\(frequencyField),\(escape(signal)),\(quantity),\(number(value)),\(timeField),\(sweepField)"
     }
 
     private static func number(_ value: Double) -> String {
