@@ -7,6 +7,7 @@ public enum ComponentSymbol: String, Sendable {
     case inductorSeries
     case voltageSource
     case currentSource
+    case diode
     case ground
 }
 
@@ -138,6 +139,17 @@ public final class ComponentRegistry: Sendable {
                     ComponentParameterDescriptor(id: "dcCurrent", name: "DC current", unit: "A", defaultValue: 0),
                     ComponentParameterDescriptor(id: "acMagnitude", name: "AC magnitude", unit: "A", defaultValue: 1),
                     ComponentParameterDescriptor(id: "acPhaseDegrees", name: "AC phase", unit: "°", defaultValue: 0)
+                ]
+            ),
+            "diode": ComponentDescriptor(
+                id: "diode",
+                prefix: "D",
+                displayName: "Diode",
+                symbol: .diode,
+                pins: twoTerminalPins,
+                parameters: [
+                    ComponentParameterDescriptor(id: "saturationCurrent", name: "Saturation current", unit: "A", defaultValue: 1e-14),
+                    ComponentParameterDescriptor(id: "emissionCoefficient", name: "Emission coefficient", unit: "", defaultValue: 1)
                 ]
             ),
             "ground": ComponentDescriptor(

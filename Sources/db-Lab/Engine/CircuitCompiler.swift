@@ -190,6 +190,26 @@ public enum CircuitCompiler {
                     acValue: ac,
                     name: symbol.refDes
                 ))
+            case .diode:
+                let (a, b) = try twoTerminalNodes(for: symbol, descriptor: descriptor)
+                let saturation = try positive(
+                    try parameter("saturationCurrent", descriptor: descriptor, symbol: symbol),
+                    parameter: "saturation current",
+                    symbol: symbol
+                )
+                let emission = try positive(
+                    try parameter("emissionCoefficient", descriptor: descriptor, symbol: symbol),
+                    parameter: "emission coefficient",
+                    symbol: symbol
+                )
+                elements.append(.init(
+                    kind: .diode,
+                    nodeA: a,
+                    nodeB: b,
+                    value: 0,
+                    diode: .init(saturationCurrent: saturation, emissionCoefficient: emission),
+                    name: symbol.refDes
+                ))
             }
         }
 

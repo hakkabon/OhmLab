@@ -224,6 +224,17 @@ public class SchematicCanvas: PlatformView {
                 path.addLine(to: CGPoint(x: 0, y: -6))
                 path.addLine(to: CGPoint(x: 4, y: -2))
             }
+        case .diode:
+            path.move(to: CGPoint(x: -40, y: 0))
+            path.addLine(to: CGPoint(x: -8, y: 0))
+            path.move(to: CGPoint(x: -8, y: -10))
+            path.addLine(to: CGPoint(x: -8, y: 10))
+            path.addLine(to: CGPoint(x: 8, y: 0))
+            path.addLine(to: CGPoint(x: -8, y: -10))
+            path.move(to: CGPoint(x: 8, y: -10))
+            path.addLine(to: CGPoint(x: 8, y: 10))
+            path.move(to: CGPoint(x: 8, y: 0))
+            path.addLine(to: CGPoint(x: 40, y: 0))
         case .ground:
             path.move(to: CGPoint(x: 0, y: -20))
             path.addLine(to: CGPoint(x: 0, y: -8))
@@ -318,6 +329,8 @@ public class SchematicCanvas: PlatformView {
                 ac: symbol.parameters["acMagnitude"] ?? 0,
                 unit: "A"
             )
+        case .diode:
+            return String(format: "IS=%.0e A", value)
         case .ground:
             return nil
         }

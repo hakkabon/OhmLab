@@ -831,6 +831,142 @@ import Testing
     #expect(settings.tranStart == 0)
 }
 
+// MARK: - Phase 3: nonlinear devices (diode)
+
+@Test func netlistParserReadsDiodeModelAndExpandsSeriesResistance() throws {
+    let netlist = """
+    V1 1 0 DC 5
+    R1 1 2 1k
+    D1 2 0 DMOD
+    .model DMOD D(IS=2e-14 N=1.5 RS=10)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let diode = try #require(parsed.circuit.elements.first { $0.name == "D1" })
+    #expect(diode.kind == .diode)
+    #expect(abs((diode.diode?.saturationCurrent ?? 0) - 2e-14) < 1e-20)
+    #expect(abs((diode.diode?.emissionCoefficient ?? 0) - 1.5) < 1e-9)
+    #expect(parsed.circuit.elements.contains { $0.name == "RD1_SER" && $0.kind == .resistor })
+}
+
+@Test func netlistParseRejectsDiodeWithUnknownModel() {
+    #expect(throws: (any Error).self) {
+        _ = try SpiceNetlistParser.parse("V1 1 0 DC 5\nR1 1 2 1k\nD1 2 0 NOPE\n.end")
+    }
+}
+
+@Test func diodeForwardBiasConductsAtJunctionVoltage() throws {
+    let netlist = """
+    V1 1 0 DC 5
+    R1 1 2 1k
+    D1 2 0 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let dc = try #require(result.dc)
+    let voltage = try #require(dc.nodes.first { $0.name == "2" }?.voltage)
+    #expect(voltage > 0.6 && voltage < 0.75)
+    let diode = try #require(dc.components.first { $0.name == "D1" })
+    #expect(abs(diode.current - (5 - voltage) / 1_000) < 1e-6)
+}
+
+@Test func diodeReverseBiasBlocks() throws {
+    let netlist = """
+    V1 1 0 DC 5
+    R1 1 2 1k
+    D1 0 2 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let dc = try #require(result.dc)
+    let voltage = try #require(dc.nodes.first { $0.name == "2" }?.voltage)
+    #expect(abs(voltage - 5) < 0.01)
+    let diode = try #require(dc.components.first { $0.name == "D1" })
+    #expect(abs(diode.current) < 1e-9)
+}
+
+@Test func diodeSmallSignalACProducesFiniteResult() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = true
+    settings.acStartFrequency = 10
+    settings.acStopFrequency = 1_000
+    settings.acPointsPerDecade = 2
+
+    let netlist = """
+    V1 1 0 DC 2 AC 1
+    R1 1 2 1k
+    D1 2 0 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let ac = try #require(result.ac)
+    let node = try #require(ac.nodes.first { $0.name == "2" })
+    #expect(node.response.allSatisfy { $0.magnitudeDb.isFinite })
+}
+
+@Test func diodeTransientReachesForwardDrop() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    settings.runTransient = true
+    settings.tranStep = 1e-5
+    settings.tranStop = 1e-3
+
+    let netlist = """
+    V1 1 0 PULSE(0 5 0 1n 1n 1 2)
+    R1 1 2 1k
+    D1 2 0 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let transient = try #require(result.transient)
+    let values = try #require(transient.nodes.first { $0.name == "2" }?.values)
+    #expect((values.last ?? 0) > 0.6 && (values.last ?? 0) < 0.75)
+}
+
+@Test func compilerMapsDiodeParameters() throws {
+    let diode = SymbolInstance(
+        descriptorId: "diode",
+        refDes: "D1",
+        position: GridPoint(0, 0),
+        parameters: ["saturationCurrent": 2e-14, "emissionCoefficient": 1.5]
+    )
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let circuit = try CircuitCompiler.compile(symbols: [diode, ground], wires: [], labels: [])
+    let element = try #require(circuit.elements.first { $0.name == "D1" })
+    #expect(element.kind == .diode)
+    #expect(abs((element.diode?.saturationCurrent ?? 0) - 2e-14) < 1e-20)
+    #expect(abs((element.diode?.emissionCoefficient ?? 0) - 1.5) < 1e-9)
+}
+
+@Test @MainActor func netlistBuilderEmitsDiodeAndModel() throws {
+    let document = SchematicDocument()
+    _ = document.addComponent(descriptorId: "diode", at: GridPoint(0, 0))
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+    #expect(netlist.contains("D1 "))
+    #expect(netlist.contains(".model DMOD1 D(IS=1E-14 N=1)"))
+}
+
+@Test func diagnosticsRejectZeroSaturationCurrent() {
+    var diode = SymbolInstance(descriptorId: "diode", refDes: "D1", position: GridPoint(0, 0))
+    diode.parameters = ComponentRegistry.shared.descriptor(for: "diode")!.defaultParameterValues
+    diode.parameters["saturationCurrent"] = 0
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let diagnostics = CircuitDiagnostics.analyze(symbols: [diode, ground], wires: [], labels: [])
+    #expect(diagnostics.contains {
+        $0.severity == .error && $0.message.localizedCaseInsensitiveContains("saturation current")
+    })
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

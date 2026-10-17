@@ -39,6 +39,7 @@ public struct TransientSolver: Sendable {
         let operatingPoint = try circuit.solveOperatingPoint(atTime: startTime)
         var capacitorVoltage = [Double](repeating: 0, count: circuit.elements.count)
         var inductorCurrent = [Double](repeating: 0, count: circuit.elements.count)
+        var diodeVoltage: [Int: Double] = [:]
         for (index, element) in circuit.elements.enumerated() {
             switch element.kind {
             case .capacitor:
@@ -47,6 +48,10 @@ public struct TransientSolver: Sendable {
                 capacitorVoltage[index] = voltage.re
             case .inductor:
                 inductorCurrent[index] = operatingPoint.elementCurrents[index].re
+            case .diode:
+                let voltage = operatingPoint.nodeVoltages[element.nodeA]
+                    - operatingPoint.nodeVoltages[element.nodeB]
+                diodeVoltage[index] = voltage.re
             case .resistor, .voltageSource, .currentSource:
                 break
             }
@@ -75,7 +80,8 @@ public struct TransientSolver: Sendable {
                 timestep: timestep,
                 time: time,
                 capacitorVoltage: capacitorVoltage,
-                inductorCurrent: inductorCurrent
+                inductorCurrent: inductorCurrent,
+                diodeBias: diodeVoltage
             )
             for (index, element) in circuit.elements.enumerated() {
                 switch element.kind {
@@ -85,6 +91,10 @@ public struct TransientSolver: Sendable {
                     capacitorVoltage[index] = voltage.re
                 case .inductor:
                     inductorCurrent[index] = solution.elementCurrents[index].re
+                case .diode:
+                    let voltage = solution.nodeVoltages[element.nodeA]
+                        - solution.nodeVoltages[element.nodeB]
+                    diodeVoltage[index] = voltage.re
                 case .resistor, .voltageSource, .currentSource:
                     break
                 }

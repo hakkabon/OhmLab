@@ -16,6 +16,7 @@ public enum SpiceParseError: LocalizedError {
     case unsupportedCard(line: Int, text: String)
     case invalidValue(line: Int, text: String)
     case invalidAnalysis(line: Int, text: String)
+    case missingModel(line: Int, name: String)
 
     public var errorDescription: String? {
         switch self {
@@ -26,15 +27,24 @@ public enum SpiceParseError: LocalizedError {
         case .malformed(let line, let text):
             return "Line \(line): could not parse \"\(text)\"."
         case .unsupportedElement(let line, let name):
-            return "Line \(line): element \(name) is not supported yet (only R, C, L, V, I)."
+            return "Line \(line): element \(name) is not supported yet (only R, C, L, V, I, D)."
         case .unsupportedCard(let line, let text):
             return "Line \(line): directive \"\(text)\" is not supported."
         case .invalidValue(let line, let text):
             return "Line \(line): \"\(text)\" is not a valid numeric value."
         case .invalidAnalysis(let line, let text):
-            return "Line \(line): \"\(text)\" is not a valid .ac analysis."
+            return "Line \(line): \"\(text)\" is not a valid analysis card."
+        case .missingModel(let line, let name):
+            return "Line \(line): no .model named \"\(name)\" was defined for this device."
         }
     }
+}
+
+/// A parsed diode model from a `.model … D(…)` card.
+private struct DiodeModelDefinition {
+    var saturationCurrent = 1e-14
+    var emissionCoefficient = 1.0
+    var seriesResistance = 0.0
 }
 
 public struct SpiceAnalysisCard: Sendable, Equatable {
@@ -75,6 +85,16 @@ public enum SpiceNetlistParser {
         var nodeNames = ["0"]
         var nodeIndex: [String: Int] = ["0": 0]
         var elements: [LinearCircuit.Element] = []
+        var diodeModels: [String: DiodeModelDefinition] = [:]
+        struct PendingDiode {
+            var name: String
+            var anode: Int
+            var cathode: Int
+            var model: String
+            var area: Double
+            var line: Int
+        }
+        var pendingDiodes: [PendingDiode] = []
         var analysis = SpiceAnalysisCard.none
         var sawContent = false
 
@@ -106,9 +126,11 @@ public enum SpiceNetlistParser {
                 case ".tran":
                     analysis.hasTransient = true
                     try parseTran(tokens: tokens, line: lineNumber, text: stripped, into: &analysis)
+                case ".model":
+                    try parseModel(stripped, line: lineNumber, into: &diodeModels)
                 case ".end", ".ends":
                     break
-                case ".dc", ".noise", ".disto", ".four", ".print", ".plot", ".save", ".param", ".include", ".lib", ".model", ".subckt", ".options":
+                case ".dc", ".noise", ".disto", ".four", ".print", ".plot", ".save", ".param", ".include", ".lib", ".subckt", ".options":
                     throw SpiceParseError.unsupportedCard(line: lineNumber, text: stripped)
                 default:
                     throw SpiceParseError.unsupportedCard(line: lineNumber, text: stripped)
@@ -150,10 +172,62 @@ public enum SpiceNetlistParser {
                     transient: source.waveform,
                     name: name
                 ))
+            case "D":
+                guard tokens.count >= 4 else { throw SpiceParseError.malformed(line: lineNumber, text: stripped) }
+                let area = tokens.count >= 5 ? try parseNumber(tokens[4], line: lineNumber) : 1.0
+                pendingDiodes.append(PendingDiode(
+                    name: name,
+                    anode: a,
+                    cathode: b,
+                    model: tokens[3].uppercased(),
+                    area: area,
+                    line: lineNumber
+                ))
             default:
                 throw SpiceParseError.unsupportedElement(line: lineNumber, name: name)
             }
             sawContent = true
+        }
+
+        // Resolve diodes now that every `.model` card has been read, expanding a
+        // model's series resistance into an internal series resistor.
+        for pending in pendingDiodes {
+            guard let definition = diodeModels[pending.model] else {
+                throw SpiceParseError.missingModel(line: pending.line, name: pending.model)
+            }
+            let parameters = LinearCircuit.DiodeParameters(
+                saturationCurrent: definition.saturationCurrent,
+                emissionCoefficient: definition.emissionCoefficient,
+                area: pending.area
+            )
+            if definition.seriesResistance > 0 {
+                let internalNode = nodeNames.count
+                nodeNames.append("\(pending.name)_SER")
+                elements.append(.init(
+                    kind: .resistor,
+                    nodeA: pending.anode,
+                    nodeB: internalNode,
+                    value: definition.seriesResistance,
+                    name: "R\(pending.name)_SER"
+                ))
+                elements.append(.init(
+                    kind: .diode,
+                    nodeA: internalNode,
+                    nodeB: pending.cathode,
+                    value: 0,
+                    diode: parameters,
+                    name: pending.name
+                ))
+            } else {
+                elements.append(.init(
+                    kind: .diode,
+                    nodeA: pending.anode,
+                    nodeB: pending.cathode,
+                    value: 0,
+                    diode: parameters,
+                    name: pending.name
+                ))
+            }
         }
 
         guard sawContent, !elements.isEmpty else { throw SpiceParseError.empty }
@@ -216,6 +290,56 @@ public enum SpiceNetlistParser {
         analysis.tranStep = step
         analysis.tranStop = stop
         analysis.tranStart = start
+    }
+
+    /// Parses `.model <name> D(<params>)`. Only the diode (`D`) model type is
+    /// supported; unknown parameters are ignored so standard cards load.
+    private static func parseModel(
+        _ text: String,
+        line: Int,
+        into models: inout [String: DiodeModelDefinition]
+    ) throws {
+        var body = text
+        if body.lowercased().hasPrefix(".model") {
+            body = String(body.dropFirst(".model".count))
+        }
+        let parts = body.trimmingCharacters(in: .whitespaces)
+            .split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            .map(String.init)
+        guard parts.count >= 2 else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
+
+        var typeToken = parts[1]
+        if let paren = typeToken.firstIndex(of: "(") {
+            typeToken = String(typeToken[..<paren])
+        }
+        guard typeToken.uppercased() == "D" else {
+            throw SpiceParseError.unsupportedCard(line: line, text: text)
+        }
+
+        var paramText = String(parts[1].dropFirst(typeToken.count))
+        if parts.count > 2 { paramText += " " + parts[2] }
+        let values = parseKeyValues(paramText, line: line)
+
+        var definition = DiodeModelDefinition()
+        if let isat = values["IS"] { definition.saturationCurrent = isat }
+        if let n = values["N"] { definition.emissionCoefficient = n }
+        if let rs = values["RS"] { definition.seriesResistance = rs }
+        models[parts[0].uppercased()] = definition
+    }
+
+    private static func parseKeyValues(_ text: String, line: Int) -> [String: Double] {
+        var result: [String: Double] = [:]
+        let cleaned = text
+            .replacingOccurrences(of: "(", with: " ")
+            .replacingOccurrences(of: ")", with: " ")
+        for token in cleaned.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "," }) {
+            let pair = token.split(separator: "=", maxSplits: 1)
+            guard pair.count == 2 else { continue }
+            if let value = try? parseNumber(String(pair[1]), line: line) {
+                result[pair[0].uppercased()] = value
+            }
+        }
+        return result
     }
 
     private struct SourceSpec {

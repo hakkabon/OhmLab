@@ -53,6 +53,7 @@ public enum SpiceNetlistBuilder {
         }
 
         var lines = ["* Generated from db-Lab schematic"]
+        var modelLines: [String] = []
         var references = Set<String>()
         for symbol in document.symbols.sorted(by: { $0.refDes < $1.refDes }) {
             guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else {
@@ -118,10 +119,21 @@ public enum SpiceNetlistBuilder {
                     "\(symbol.refDes) \(firstNode) \(secondNode) "
                     + "DC \(spiceNumber(dc)) AC \(spiceNumber(ac)) \(spiceNumber(phase))"
                 )
+            case .diode:
+                let saturation = try parameter("saturationCurrent", descriptor: descriptor, symbol: symbol)
+                try validate(saturation, parameter: "saturation current", symbol: symbol)
+                let emission = try parameter("emissionCoefficient", descriptor: descriptor, symbol: symbol)
+                try validate(emission, parameter: "emission coefficient", symbol: symbol)
+                let modelName = "DMOD\(symbol.refDes.dropFirst())"
+                lines.append("\(symbol.refDes) \(firstNode) \(secondNode) \(modelName)")
+                modelLines.append(
+                    ".model \(modelName) D(IS=\(spiceNumber(saturation)) N=\(spiceNumber(emission)))"
+                )
             case .ground:
                 break
             }
         }
+        lines.append(contentsOf: modelLines)
         lines.append(".end")
         return lines.joined(separator: "\n")
     }

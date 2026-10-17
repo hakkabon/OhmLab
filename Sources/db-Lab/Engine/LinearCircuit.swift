@@ -1,9 +1,11 @@
 // LinearCircuit.swift
-// A dependency-free Modified Nodal Analysis (MNA) engine for linear circuits.
+// A dependency-free Modified Nodal Analysis (MNA) engine.
 //
 // Supported elements: resistor, capacitor, inductor, independent voltage source,
-// and independent current source. Nonlinear devices are deliberately out of
-// scope for the first milestone and are reported as unsupported elsewhere.
+// independent current source, and a Shockley diode. The diode is nonlinear, so
+// DC, operating-point, and transient solves run a Newton-Raphson iteration that
+// repeatedly linearises each diode about its current bias point. AC analysis
+// linearises once about the DC operating point (small-signal).
 //
 // Node indexing convention: node `0` is the ground reference. Matrix rows and
 // columns 0..<n-1 correspond to circuit nodes 1...n-1. Voltage source branch
@@ -16,6 +18,7 @@ public enum CircuitSolveError: LocalizedError {
     case noNodes
     case invalidElement(String)
     case unsupportedElement(String)
+    case didNotConverge(String)
 
     public var errorDescription: String? {
         switch self {
@@ -27,6 +30,8 @@ public enum CircuitSolveError: LocalizedError {
             return "Element \(name) has an invalid or non-positive value."
         case .unsupportedElement(let name):
             return "Element \(name) is not supported by the linear solver yet."
+        case .didNotConverge(let name):
+            return "The nonlinear solve did not converge near \(name). Check the bias point."
         }
     }
 }
@@ -38,6 +43,32 @@ public struct LinearCircuit: Sendable {
         case inductor
         case voltageSource
         case currentSource
+        case diode
+    }
+
+    /// Shockley diode parameters. `saturationCurrent` is scaled by `area`.
+    public struct DiodeParameters: Sendable, Equatable {
+        public var saturationCurrent: Double
+        public var emissionCoefficient: Double
+        public var thermalVoltage: Double
+        public var area: Double
+
+        public init(
+            saturationCurrent: Double = 1e-14,
+            emissionCoefficient: Double = 1,
+            thermalVoltage: Double = 0.025_852,
+            area: Double = 1
+        ) {
+            self.saturationCurrent = saturationCurrent
+            self.emissionCoefficient = emissionCoefficient
+            self.thermalVoltage = thermalVoltage
+            self.area = area
+        }
+
+        /// Effective saturation current, including the area multiplier.
+        var effectiveSaturationCurrent: Double { saturationCurrent * area }
+        /// Thermal voltage times the emission coefficient.
+        var junctionVoltage: Double { emissionCoefficient * thermalVoltage }
     }
 
     public struct Element: Sendable {
@@ -54,6 +85,8 @@ public struct LinearCircuit: Sendable {
         /// Time-domain shape for a source, used by transient analysis. When nil
         /// the source is constant at its DC magnitude.
         public var transient: Waveform?
+        /// Shockley parameters for a diode element; nil for every other kind.
+        public var diode: DiodeParameters?
         public var name: String
 
         public init(
@@ -65,6 +98,7 @@ public struct LinearCircuit: Sendable {
             dcValue: Double? = nil,
             acValue: Double? = nil,
             transient: Waveform? = nil,
+            diode: DiodeParameters? = nil,
             name: String
         ) {
             self.kind = kind
@@ -75,6 +109,7 @@ public struct LinearCircuit: Sendable {
             self.dcValue = dcValue
             self.acValue = acValue
             self.transient = transient
+            self.diode = diode
             self.name = name
         }
 
@@ -149,30 +184,84 @@ public struct LinearCircuit: Sendable {
             if case .dc = self { return true }
             return false
         }
+
+        var isAC: Bool {
+            if case .ac = self { return true }
+            return false
+        }
+    }
+
+    // MARK: - Nonlinear device support
+
+    public var hasDiode: Bool {
+        elements.contains { $0.kind == .diode }
+    }
+
+    private var diodeIndices: [Int] {
+        elements.indices.filter { elements[$0].kind == .diode }
+    }
+
+    /// Shockley current and small-signal conductance at a junction voltage.
+    private func diodeCurrentAndConductance(
+        _ element: Element,
+        voltage: Double
+    ) -> (current: Double, conductance: Double) {
+        guard let model = element.diode else { return (0, 0) }
+        let vt = model.junctionVoltage
+        guard vt > 0 else { return (0, 0) }
+        let isat = model.effectiveSaturationCurrent
+        // Clamp the exponent so extreme forward bias cannot overflow.
+        let exponent = min(voltage / vt, 80)
+        let expValue = exp(exponent)
+        return (isat * (expValue - 1), isat * expValue / vt)
+    }
+
+    /// Limits a Newton update to the diode's forward operating region (a form of
+    /// SPICE's pnjlim), which keeps the exponential from overshooting.
+    private func limitedDiodeVoltage(_ new: Double, previous: Double, element: Element) -> Double {
+        guard let model = element.diode, model.junctionVoltage > 0 else { return new }
+        let vt = model.junctionVoltage
+        let isat = model.effectiveSaturationCurrent
+        guard isat > 0 else { return new }
+        let critical = vt * log(vt / (2.0.squareRoot() * isat))
+        if new > critical, abs(new - previous) > 2 * vt {
+            if previous > 0 {
+                let arg = 1 + (new - previous) / vt
+                return arg > 0 ? previous + vt * log(arg) : critical
+            }
+            return vt * log(max(new, .leastNormalMagnitude) / vt)
+        }
+        return max(new, -1_000)
     }
 
     // MARK: - DC operating point
 
     public func solveDC() throws -> Solution {
         try validate()
-        return try assemble(mode: .dc)
+        return try solveNonlinear(mode: .dc)
     }
 
     /// DC topology (capacitors open, inductors short) with time-domain source
     /// values. This is the initial condition for a transient run.
-    public func solveOperatingPoint(atTime time: Double) throws -> Solution {
+    public func solveOperatingPoint(atTime time: Double, diodeBias: [Int: Double] = [:]) throws -> Solution {
         try validate()
-        return try assemble(mode: .operatingPoint(time: time))
+        return try solveNonlinear(mode: .operatingPoint(time: time), initialBias: diodeBias)
     }
 
-    // MARK: - AC solve at a single frequency
+    // MARK: - AC solve at a single frequency (small-signal)
 
     public func solveAC(frequencyHz: Double) throws -> Solution {
         try validate()
         guard frequencyHz > 0, frequencyHz.isFinite else {
             throw CircuitSolveError.invalidElement("AC frequency")
         }
-        return try assemble(mode: .ac(omega: 2 * .pi * frequencyHz))
+        // Small-signal AC linearises each diode about the DC operating point.
+        var bias: [Int: Double] = [:]
+        if hasDiode {
+            let operatingPoint = try solveNonlinear(mode: .dc)
+            bias = diodeBias(from: operatingPoint)
+        }
+        return try assembleOnce(mode: .ac(omega: 2 * .pi * frequencyHz), diodeBias: bias)
     }
 
     // MARK: - Transient step
@@ -184,18 +273,61 @@ public struct LinearCircuit: Sendable {
         timestep: Double,
         time: Double,
         capacitorVoltage: [Double],
-        inductorCurrent: [Double]
+        inductorCurrent: [Double],
+        diodeBias: [Int: Double] = [:]
     ) throws -> Solution {
         try validate()
         guard timestep > 0, timestep.isFinite else {
             throw CircuitSolveError.invalidElement("Transient timestep")
         }
-        return try assemble(mode: .transient(
-            timestep: timestep,
-            time: time,
-            capacitorVoltage: capacitorVoltage,
-            inductorCurrent: inductorCurrent
-        ))
+        return try solveNonlinear(
+            mode: .transient(
+                timestep: timestep,
+                time: time,
+                capacitorVoltage: capacitorVoltage,
+                inductorCurrent: inductorCurrent
+            ),
+            initialBias: diodeBias
+        )
+    }
+
+    private func diodeBias(from solution: Solution) -> [Int: Double] {
+        var bias: [Int: Double] = [:]
+        for index in diodeIndices {
+            let element = elements[index]
+            let voltage = solution.nodeVoltages[element.nodeA] - solution.nodeVoltages[element.nodeB]
+            bias[index] = voltage.re
+        }
+        return bias
+    }
+
+    /// Newton-Raphson for circuits with nonlinear elements; a single pass when
+    /// the circuit is purely linear.
+    private func solveNonlinear(mode: AnalysisMode, initialBias: [Int: Double] = [:]) throws -> Solution {
+        let indices = diodeIndices
+        guard !indices.isEmpty else {
+            return try assembleOnce(mode: mode, diodeBias: initialBias)
+        }
+
+        var bias = initialBias
+        var solution = try assembleOnce(mode: mode, diodeBias: bias)
+        for _ in 0..<200 {
+            var maxDelta = 0.0
+            var maxVoltage = 0.0
+            var next: [Int: Double] = [:]
+            for index in indices {
+                let element = elements[index]
+                let raw = (solution.nodeVoltages[element.nodeA] - solution.nodeVoltages[element.nodeB]).re
+                maxVoltage = max(maxVoltage, abs(raw))
+                let limited = limitedDiodeVoltage(raw, previous: bias[index] ?? 0, element: element)
+                next[index] = limited
+                maxDelta = max(maxDelta, abs(limited - (bias[index] ?? 0)))
+            }
+            bias = next
+            solution = try assembleOnce(mode: mode, diodeBias: bias)
+            if maxDelta < 1e-6 + 1e-3 * maxVoltage { return solution }
+        }
+        throw CircuitSolveError.didNotConverge(elements[indices[0]].name)
     }
 
     private func validate() throws {
@@ -212,6 +344,18 @@ public struct LinearCircuit: Sendable {
                       element.acValue?.isFinite ?? true else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
+            case .diode:
+                guard let model = element.diode,
+                      model.saturationCurrent.isFinite,
+                      model.saturationCurrent > 0,
+                      model.emissionCoefficient.isFinite,
+                      model.emissionCoefficient > 0,
+                      model.thermalVoltage.isFinite,
+                      model.thermalVoltage > 0,
+                      model.area.isFinite,
+                      model.area > 0 else {
+                    throw CircuitSolveError.invalidElement(element.name)
+                }
             }
         }
     }
@@ -226,7 +370,7 @@ public struct LinearCircuit: Sendable {
         var voltage: Complex
     }
 
-    private func assemble(mode: AnalysisMode) throws -> Solution {
+    private func assembleOnce(mode: AnalysisMode, diodeBias: [Int: Double]) throws -> Solution {
         let nodeCount = nodeNames.count
         let nodeRows = nodeCount - 1
 
@@ -332,6 +476,19 @@ public struct LinearCircuit: Sendable {
                         phaseDegrees: sourcePhase(element)
                     )
                 )
+            case .diode:
+                let bias = diodeBias[index] ?? 0
+                let (current, conductance) = diodeCurrentAndConductance(element, voltage: bias)
+                stampAdmittance(a: element.nodeA, b: element.nodeB, y: Complex(conductance, 0))
+                // Nonlinear companion: I_eq = I(V) − g·V. AC is purely
+                // incremental (small-signal), so it keeps only the conductance.
+                if !mode.isAC {
+                    stampCurrentSource(
+                        a: element.nodeA,
+                        b: element.nodeB,
+                        current: Complex(current - conductance * bias, 0)
+                    )
+                }
             }
         }
 
@@ -361,6 +518,7 @@ public struct LinearCircuit: Sendable {
         var elementCurrents = computeElementCurrents(
             nodeVoltages: nodeVoltages,
             mode: mode,
+            diodeBias: diodeBias,
             sourceMagnitude: sourceMagnitude,
             sourcePhase: sourcePhase
         )
@@ -384,6 +542,7 @@ public struct LinearCircuit: Sendable {
     private func computeElementCurrents(
         nodeVoltages: [Complex],
         mode: AnalysisMode,
+        diodeBias: [Int: Double],
         sourceMagnitude: (Element) -> Double,
         sourcePhase: (Element) -> Double
     ) -> [Complex] {
@@ -424,6 +583,14 @@ public struct LinearCircuit: Sendable {
             case .voltageSource:
                 // Overwritten in `assemble` from the solved branch current.
                 return .zero
+            case .diode:
+                if mode.isAC {
+                    // Small-signal current: g·Δv about the bias point.
+                    let (_, conductance) = diodeCurrentAndConductance(element, voltage: diodeBias[index] ?? 0)
+                    return v * Complex(conductance, 0)
+                }
+                let (current, _) = diodeCurrentAndConductance(element, voltage: v.re)
+                return Complex(current, 0)
             }
         }
     }

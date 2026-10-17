@@ -1,6 +1,6 @@
 # db-Lab
 
-**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **passive linear circuit workflow**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
+**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **linear circuit workflow with a Shockley diode**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
 The Swift package builds and runs by itself — no Rust toolchain required. A future `audio-spice-core` (Rust/UniFFI) engine can be linked in behind the same interface, but it is not needed for the milestone.
 
@@ -23,7 +23,7 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 *   *Note: Visual wire crossings without an explicit junction or endpoint-to-wire connection are intentionally ignored, preventing accidental shorts.*
 
 ### Layer 3: The Netlist Layer (The Projection)
-This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I).
+This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I, D).
 *   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets.
 *   **Value Parsing:** Converts strings like `4.7k` or `10u` into floating-point values.
 *   **Import/Export:** A `.ac`-aware netlist reader lets you edit SPICE directly; the schematic projects back to a readable SPICE netlist.
@@ -34,6 +34,7 @@ The simulation layer is a **native Swift linear solver**:
 *   **AC Analysis:** Decade, octave, or linear sweeps of complex node voltages and element currents → magnitude (dB) and phase over frequency.
 *   **DC Operating Point:** Capacitors open, inductors short (0 V branch); node voltages plus per-element voltage and current.
 *   **Transient Analysis:** Backward-Euler time stepping with companion models for C and L, seeded by the operating point at the start time. Sources support `PULSE`, `SIN`, and `PWL` shapes.
+*   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal).
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
 ## Key Frontend Features
@@ -55,9 +56,10 @@ The simulation layer is a **native Swift linear solver**:
 | Inductor + series resistance | L | Expanded to a series R and L |
 | Voltage source | V | Independent DC magnitude, AC magnitude/phase, and optional transient shape (`PULSE`, `SIN`, `PWL`) |
 | Current source | I | Independent DC magnitude, AC magnitude/phase, and optional transient shape (`PULSE`, `SIN`, `PWL`) |
+| Diode | D | Shockley model: saturation current (`IS`), emission coefficient (`N`), optional series resistance (`RS`, netlist) |
 | Ground | GND | Maps to node 0 |
 
-Nonlinear devices (diode, BJT, MOSFET), switches, transformers, and SPICE subcircuits are intentionally out of scope for the first milestone and are reported rather than silently ignored.
+Other nonlinear devices (BJT, MOSFET, JFET), switches, transformers, and SPICE subcircuits are intentionally out of scope for this milestone and are reported rather than silently ignored.
 
 ## Project Structure
 
@@ -73,7 +75,7 @@ Sources/db-Lab/
 ├── Engine/                       # Layer 4 (native Swift)
 │   ├── Complex.swift
 │   ├── ComplexLinearSolver.swift
-│   ├── LinearCircuit.swift       # MNA assembly + DC/AC/transient-step solve
+│   ├── LinearCircuit.swift       # MNA assembly, Newton-Raphson, DC/AC/transient solve
 │   ├── TransientSolver.swift     # Backward-Euler time stepping
 │   ├── Waveform.swift            # PULSE / SIN / PWL source shapes
 │   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
@@ -90,7 +92,7 @@ cd db-Lab
 swift run
 ```
 
-Create a circuit, place components (R, C, L, V, I, ground), draw wires, and press **Run**. The DC operating point, AC magnitude/phase plots, and transient waveforms all come from the built-in solver.
+Create a circuit, place components (R, C, L, V, I, D, ground), draw wires, and press **Run**. The DC operating point, AC magnitude/phase plots, and transient waveforms all come from the built-in solver.
 
 ## Workflows
 
@@ -102,7 +104,7 @@ Create a circuit, place components (R, C, L, V, I, ground), draw wires, and pres
 5. Configure DC/AC/transient settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view. Transient runs plot selected node voltages and element currents over time.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Unsupported cards are reported rather than ignored.
+Enter or paste SPICE (R, C, L, V, I, D with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Unsupported cards are reported rather than ignored.
 
 ## Document format
 
