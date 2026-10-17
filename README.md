@@ -61,7 +61,11 @@ The simulation layer is a **native Swift linear solver**:
 | PNP transistor | Q | Same model, polarity reversed |
 | Ground | GND | Maps to node 0 |
 
-Other nonlinear devices (MOSFET, JFET), switches, transformers, and SPICE subcircuits are intentionally out of scope for this milestone and are reported rather than silently ignored.
+Other nonlinear devices (MOSFET, JFET), switches, and transformers are intentionally out of scope for this milestone and are reported rather than silently ignored.
+
+### Subcircuits (netlist)
+
+`.subckt <name> <ports…> [params: k=v …]` … `.ends` definitions are expanded when instantiated by an `X<name> <nodes…> <subckt> [k=v …]` element. Expansion is a flattening pass, not a schematic feature: each instance's internal nodes are given a private, instance-scoped name so parallel instances never share nodes, and element names are prefixed with the instance (e.g. `X1.R1`). Definitions may nest, and `{…}` expressions over parameters (`{R/2}`, `{R + R}`) are evaluated per instance; instance values override `.subckt` defaults. Unknown subcircuits, port-count mismatches, and recursion are reported as errors.
 
 ## Project Structure
 
@@ -106,7 +110,7 @@ Create a circuit, place components (R, C, L, V, I, D, Q, ground), draw wires, an
 5. Configure DC/AC/transient settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view. Transient runs plot selected node voltages and element currents over time.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I, D, Q with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. Unsupported cards are reported rather than ignored.
+Enter or paste SPICE (R, C, L, V, I, D, Q with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Unsupported cards are reported rather than ignored.
 
 ## Document format
 

@@ -1173,6 +1173,192 @@ import Testing
     })
 }
 
+// MARK: - Phase 5: subcircuits
+
+@Test func netlistParserFlattensSubcircuitInstance() throws {
+    let netlist = """
+    .subckt DIV a b mid
+    R1 a mid 1k
+    R2 mid b 1k
+    .ends
+    V1 in 0 DC 10
+    X1 in 0 out DIV
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let names = parsed.circuit.elements.map(\.name)
+    #expect(names.contains("X1.R1"))
+    #expect(names.contains("X1.R2"))
+    // Ports bind to the external nodes given on the X line.
+    let r1 = try #require(parsed.circuit.elements.first { $0.name == "X1.R1" })
+    #expect(parsed.circuit.nodeNames[r1.nodeA] == "in")
+    #expect(parsed.circuit.nodeNames[r1.nodeB] == "out")
+}
+
+@Test func netlistSolvesSubcircuitVoltageDivider() throws {
+    let netlist = """
+    .subckt DIV a b mid
+    R1 a mid 1k
+    R2 mid b 1k
+    .ends
+    V1 in 0 DC 10
+    X1 in 0 out DIV
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let out = try #require(result.dc?.nodes.first { $0.name == "out" }?.voltage)
+    #expect(abs(out - 5) < 1e-6)
+}
+
+@Test func netlistSubcircuitScopesInternalNodesPerInstance() throws {
+    let netlist = """
+    .subckt DIV a b
+    R1 a n 1k
+    R2 n b 1k
+    .ends
+    V1 in 0 DC 10
+    X1 in 0 DIV
+    X2 in 0 DIV
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let names = Set(parsed.circuit.nodeNames)
+    #expect(names.contains("X1.n"))
+    #expect(names.contains("X2.n"))
+    #expect(!names.contains("n"))
+    #expect(Set(parsed.circuit.elements.map(\.name)).isSuperset(of: ["X1.R1", "X2.R1"]))
+}
+
+@Test func netlistSubcircuitParametersOverrideDefaults() throws {
+    let netlist = """
+    .subckt DIVP a b mid params: RA=1k RB=1k
+    R1 a mid {RA}
+    R2 mid b {RB}
+    .ends
+    V1 in 0 DC 10
+    X1 in 0 out DIVP RA=3k RB=1k
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let out = try #require(result.dc?.nodes.first { $0.name == "out" }?.voltage)
+    // 10 * RB / (RA + RB) = 10 * 1k / 4k = 2.5
+    #expect(abs(out - 2.5) < 1e-6)
+}
+
+@Test func netlistSubcircuitParametersUseDefaults() throws {
+    let netlist = """
+    .subckt DIVP a b mid params: RA=1k RB=1k
+    R1 a mid {RA}
+    R2 mid b {RB}
+    .ends
+    V1 in 0 DC 10
+    X1 in 0 out DIVP
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let out = try #require(result.dc?.nodes.first { $0.name == "out" }?.voltage)
+    #expect(abs(out - 5) < 1e-6)
+}
+
+@Test func netlistSubcircuitExpressionsUseParameters() throws {
+    let netlist = """
+    .subckt HALF a b params: R=2k
+    R1 a 0 {R/2}
+    R2 b 0 {R + R}
+    .ends
+    V1 a 0 DC 8
+    X1 a b HALF
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let r1 = try #require(parsed.circuit.elements.first { $0.name == "X1.R1" })
+    let r2 = try #require(parsed.circuit.elements.first { $0.name == "X1.R2" })
+    #expect(abs(r1.value - 1_000) < 1e-9)
+    #expect(abs(r2.value - 4_000) < 1e-9)
+}
+
+@Test func netlistNestedSubcircuitsFlatten() throws {
+    let netlist = """
+    .subckt HALF a b
+    R1 a mid 1k
+    R2 mid b 1k
+    .ends
+    .subckt UNIT a b
+    X1 a b HALF
+    X2 a b HALF
+    .ends
+    V1 in 0 DC 12
+    X0 in 0 UNIT
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let names = Set(parsed.circuit.elements.map(\.name))
+    #expect(names.contains("X0.X1.R1"))
+    #expect(names.contains("X0.X2.R2"))
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    #expect(result.dc != nil)
+}
+
+@Test func netlistSubcircuitSourceParameterSubstitution() throws {
+    let netlist = """
+    .subckt DRV p n params: AMP=5
+    V1 p n DC {AMP}
+    .ends
+    R1 out 0 1k
+    X1 out 0 DRV AMP=3
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let out = try #require(result.dc?.nodes.first { $0.name == "out" }?.voltage)
+    #expect(abs(out - 3) < 1e-6)
+}
+
+@Test func netlistParseRejectsUnknownSubcircuit() {
+    #expect(throws: (any Error).self) {
+        _ = try SpiceNetlistParser.parse("V1 1 0 DC 5\nX1 1 0 NOPE\n.end")
+    }
+}
+
+@Test func netlistParseRejectsSubcircuitPortMismatch() {
+    let netlist = """
+    .subckt DIV a b
+    R1 a b 1k
+    .ends
+    V1 1 0 DC 5
+    X1 1 DIV
+    .end
+    """
+    #expect(throws: (any Error).self) {
+        _ = try SpiceNetlistParser.parse(netlist)
+    }
+}
+
+@Test func netlistParseRejectsRecursiveSubcircuit() {
+    let netlist = """
+    .subckt LOOP a b
+    X1 a b LOOP
+    .ends
+    V1 1 0 DC 5
+    X9 1 0 LOOP
+    .end
+    """
+    #expect(throws: (any Error).self) {
+        _ = try SpiceNetlistParser.parse(netlist)
+    }
+}
+
+@Test func netlistParseRejectsUnterminatedSubcircuit() {
+    let netlist = """
+    .subckt DIV a b
+    R1 a b 1k
+    V1 1 0 DC 5
+    .end
+    """
+    #expect(throws: (any Error).self) {
+        _ = try SpiceNetlistParser.parse(netlist)
+    }
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {
