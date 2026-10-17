@@ -47,6 +47,14 @@ private struct DiodeModelDefinition {
     var seriesResistance = 0.0
 }
 
+/// A parsed BJT model from a `.model … NPN(…)`/`PNP(…)` card.
+private struct BJTModelDefinition {
+    var polarity: LinearCircuit.BJTPolarity = .npn
+    var saturationCurrent = 1e-15
+    var forwardBeta = 100.0
+    var reverseBeta = 1.0
+}
+
 public struct SpiceAnalysisCard: Sendable, Equatable {
     public var hasAC: Bool
     public var sweep: FrequencySweepType
@@ -86,6 +94,7 @@ public enum SpiceNetlistParser {
         var nodeIndex: [String: Int] = ["0": 0]
         var elements: [LinearCircuit.Element] = []
         var diodeModels: [String: DiodeModelDefinition] = [:]
+        var bjtModels: [String: BJTModelDefinition] = [:]
         struct PendingDiode {
             var name: String
             var anode: Int
@@ -95,6 +104,15 @@ public enum SpiceNetlistParser {
             var line: Int
         }
         var pendingDiodes: [PendingDiode] = []
+        struct PendingBJT {
+            var name: String
+            var collector: Int
+            var base: Int
+            var emitter: Int
+            var model: String
+            var line: Int
+        }
+        var pendingBJTs: [PendingBJT] = []
         var analysis = SpiceAnalysisCard.none
         var sawContent = false
 
@@ -127,7 +145,7 @@ public enum SpiceNetlistParser {
                     analysis.hasTransient = true
                     try parseTran(tokens: tokens, line: lineNumber, text: stripped, into: &analysis)
                 case ".model":
-                    try parseModel(stripped, line: lineNumber, into: &diodeModels)
+                    try parseModel(stripped, line: lineNumber, into: &diodeModels, bjtModels: &bjtModels)
                 case ".end", ".ends":
                     break
                 case ".dc", ".noise", ".disto", ".four", ".print", ".plot", ".save", ".param", ".include", ".lib", ".subckt", ".options":
@@ -183,6 +201,17 @@ public enum SpiceNetlistParser {
                     area: area,
                     line: lineNumber
                 ))
+            case "Q":
+                // Q<name> <collector> <base> <emitter> <model>
+                guard tokens.count >= 5 else { throw SpiceParseError.malformed(line: lineNumber, text: stripped) }
+                pendingBJTs.append(PendingBJT(
+                    name: name,
+                    collector: a,
+                    base: b,
+                    emitter: node(tokens[3]),
+                    model: tokens[4].uppercased(),
+                    line: lineNumber
+                ))
             default:
                 throw SpiceParseError.unsupportedElement(line: lineNumber, name: name)
             }
@@ -228,6 +257,27 @@ public enum SpiceNetlistParser {
                     name: pending.name
                 ))
             }
+        }
+
+        // Resolve BJTs; a `.model` card may appear before or after the element.
+        for pending in pendingBJTs {
+            guard let definition = bjtModels[pending.model] else {
+                throw SpiceParseError.missingModel(line: pending.line, name: pending.model)
+            }
+            elements.append(.init(
+                kind: .bjt,
+                nodeA: pending.collector,
+                nodeB: pending.emitter,
+                nodeC: pending.base,
+                value: 0,
+                bjt: LinearCircuit.BJTParameters(
+                    polarity: definition.polarity,
+                    saturationCurrent: definition.saturationCurrent,
+                    forwardBeta: definition.forwardBeta,
+                    reverseBeta: definition.reverseBeta
+                ),
+                name: pending.name
+            ))
         }
 
         guard sawContent, !elements.isEmpty else { throw SpiceParseError.empty }
@@ -292,12 +342,13 @@ public enum SpiceNetlistParser {
         analysis.tranStart = start
     }
 
-    /// Parses `.model <name> D(<params>)`. Only the diode (`D`) model type is
-    /// supported; unknown parameters are ignored so standard cards load.
+    /// Parses `.model <name> D(<params>)` or `.model <name> NPN|PNP(<params>)`.
+    /// Unknown parameters are ignored so standard cards load.
     private static func parseModel(
         _ text: String,
         line: Int,
-        into models: inout [String: DiodeModelDefinition]
+        into models: inout [String: DiodeModelDefinition],
+        bjtModels: inout [String: BJTModelDefinition]
     ) throws {
         var body = text
         if body.lowercased().hasPrefix(".model") {
@@ -312,19 +363,30 @@ public enum SpiceNetlistParser {
         if let paren = typeToken.firstIndex(of: "(") {
             typeToken = String(typeToken[..<paren])
         }
-        guard typeToken.uppercased() == "D" else {
-            throw SpiceParseError.unsupportedCard(line: line, text: text)
-        }
+        let type = typeToken.uppercased()
 
         var paramText = String(parts[1].dropFirst(typeToken.count))
         if parts.count > 2 { paramText += " " + parts[2] }
         let values = parseKeyValues(paramText, line: line)
+        let name = parts[0].uppercased()
 
-        var definition = DiodeModelDefinition()
-        if let isat = values["IS"] { definition.saturationCurrent = isat }
-        if let n = values["N"] { definition.emissionCoefficient = n }
-        if let rs = values["RS"] { definition.seriesResistance = rs }
-        models[parts[0].uppercased()] = definition
+        switch type {
+        case "D":
+            var definition = DiodeModelDefinition()
+            if let isat = values["IS"] { definition.saturationCurrent = isat }
+            if let n = values["N"] { definition.emissionCoefficient = n }
+            if let rs = values["RS"] { definition.seriesResistance = rs }
+            models[name] = definition
+        case "NPN", "PNP":
+            var definition = BJTModelDefinition()
+            definition.polarity = type == "PNP" ? .pnp : .npn
+            if let isat = values["IS"] { definition.saturationCurrent = isat }
+            if let bf = values["BF"] { definition.forwardBeta = bf }
+            if let br = values["BR"] { definition.reverseBeta = br }
+            bjtModels[name] = definition
+        default:
+            throw SpiceParseError.unsupportedCard(line: line, text: text)
+        }
     }
 
     private static func parseKeyValues(_ text: String, line: Int) -> [String: Double] {

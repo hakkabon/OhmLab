@@ -967,6 +967,212 @@ import Testing
     })
 }
 
+// MARK: - Phase 4: nonlinear devices (bipolar junction transistor)
+
+@Test func bjtNpnCommonEmitterBiasesInActiveRegion() throws {
+    // +5 V drives the base through 100k, and the collector through 1k.
+    let circuit = LinearCircuit(
+        nodeNames: ["0", "vb", "b", "vc", "c"],
+        elements: [
+            .init(kind: .voltageSource, nodeA: 1, nodeB: 0, value: 5, name: "VB"),
+            .init(kind: .resistor, nodeA: 1, nodeB: 2, value: 100_000, name: "RB"),
+            .init(kind: .voltageSource, nodeA: 3, nodeB: 0, value: 5, name: "VC"),
+            .init(kind: .resistor, nodeA: 3, nodeB: 4, value: 1_000, name: "RC"),
+            .init(
+                kind: .bjt, nodeA: 4, nodeB: 0, nodeC: 2, value: 0,
+                bjt: LinearCircuit.BJTParameters(polarity: .npn, forwardBeta: 100), name: "Q1"
+            ),
+        ]
+    )
+    let solution = try circuit.solveDC()
+    let vbe = solution.nodeVoltages[2].re
+    let vce = solution.nodeVoltages[4].re
+    let ic = solution.elementCurrents[4].re
+    #expect(vbe > 0.5 && vbe < 0.8)
+    #expect(vce > 0.1 && vce < 5)
+    #expect(ic > 0)
+    // Collector current matches the collector-resistor drop.
+    #expect(abs(ic - (5 - vce) / 1_000) < 1e-5)
+    // Beta relates base and collector currents in the active region.
+    let ib = (5 - vbe) / 100_000
+    #expect(abs(ic - 100 * ib) / ic < 0.05)
+}
+
+@Test func bjtPnpCommonEmitterMirrorsNpn() throws {
+    // The PNP mirror: emitter at +5 V, base pulled to ground through 100k,
+    // collector returned to ground through 1k.
+    let circuit = LinearCircuit(
+        nodeNames: ["0", "ve", "b", "c"],
+        elements: [
+            .init(kind: .voltageSource, nodeA: 1, nodeB: 0, value: 5, name: "VE"),
+            .init(kind: .resistor, nodeA: 2, nodeB: 0, value: 100_000, name: "RB"),
+            .init(kind: .resistor, nodeA: 3, nodeB: 0, value: 1_000, name: "RC"),
+            .init(
+                kind: .bjt, nodeA: 3, nodeB: 1, nodeC: 2, value: 0,
+                bjt: LinearCircuit.BJTParameters(polarity: .pnp, forwardBeta: 100), name: "Q1"
+            ),
+        ]
+    )
+    let solution = try circuit.solveDC()
+    let veb = solution.nodeVoltages[1].re - solution.nodeVoltages[2].re
+    let vc = solution.nodeVoltages[3].re
+    let vec = solution.nodeVoltages[1].re - vc
+    let ic = solution.elementCurrents[3].re
+    #expect(veb > 0.5 && veb < 0.8)
+    #expect(vec > 0.1 && vec < 5)
+    // Collector current flows out of the collector into the resistor to ground,
+    // so the current into the device is negative.
+    #expect(ic < 0)
+    #expect(abs(ic + vc / 1_000) < 1e-5)
+}
+
+@Test func netlistParserReadsBJTModelAndElement() throws {
+    let netlist = """
+    VCC 3 0 DC 5
+    VBB 1 0 DC 5
+    RB 1 2 100k
+    RC 3 4 1k
+    Q1 4 2 0 QNPN
+    .model QNPN NPN(IS=2e-15 BF=150 BR=2)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let bjt = try #require(parsed.circuit.elements.first { $0.name == "Q1" })
+    #expect(bjt.kind == .bjt)
+    #expect(bjt.bjt?.polarity == .npn)
+    #expect(abs((bjt.bjt?.saturationCurrent ?? 0) - 2e-15) < 1e-25)
+    #expect(abs((bjt.bjt?.forwardBeta ?? 0) - 150) < 1e-9)
+    #expect(abs((bjt.bjt?.reverseBeta ?? 0) - 2) < 1e-9)
+    // Node convention: nodeA = collector, nodeB = emitter, nodeC = base.
+    #expect(parsed.circuit.nodeNames[bjt.nodeA] == "4")
+    #expect(parsed.circuit.nodeNames[bjt.nodeB] == "0")
+    #expect(parsed.circuit.nodeNames[try #require(bjt.nodeC)] == "2")
+}
+
+@Test func netlistParserReadsPNPModel() throws {
+    let netlist = """
+    V1 1 0 DC 5
+    Q1 1 2 0 QPNP
+    .model QPNP PNP(IS=1e-15 BF=50)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let bjt = try #require(parsed.circuit.elements.first { $0.name == "Q1" })
+    #expect(bjt.bjt?.polarity == .pnp)
+}
+
+@Test func netlistParseRejectsBJTWithUnknownModel() {
+    #expect(throws: (any Error).self) {
+        _ = try SpiceNetlistParser.parse("V1 1 0 DC 5\nQ1 1 1 0 NOPE\n.end")
+    }
+}
+
+@Test func bjtNetlistSolvesCommonEmitterBias() throws {
+    let netlist = """
+    VCC 3 0 DC 5
+    VBB 1 0 DC 5
+    RB 1 2 100k
+    RC 3 4 1k
+    Q1 4 2 0 QNPN
+    .model QNPN NPN(IS=1e-15 BF=100)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let dc = try #require(result.dc)
+    let base = try #require(dc.nodes.first { $0.name == "2" }?.voltage)
+    let collector = try #require(dc.nodes.first { $0.name == "4" }?.voltage)
+    #expect(base > 0.5 && base < 0.8)
+    #expect(collector > 0.1 && collector < 5)
+    #expect(collector < base + 0.05 || collector > base)
+}
+
+@Test func bjtSmallSignalACProducesFiniteGain() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = true
+    settings.acStartFrequency = 100
+    settings.acStopFrequency = 10_000
+    settings.acPointsPerDecade = 2
+
+    let netlist = """
+    VCC 3 0 DC 5 AC 0
+    VBB 1 0 DC 5 AC 1
+    RB 1 2 100k
+    RC 3 4 1k
+    Q1 4 2 0 QNPN
+    .model QNPN NPN(IS=1e-15 BF=100)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let ac = try #require(result.ac)
+    let collector = try #require(ac.nodes.first { $0.name == "4" })
+    #expect(collector.response.allSatisfy { $0.magnitudeDb.isFinite })
+    #expect((collector.response.first?.magnitudeDb ?? -1_000) > -120)
+}
+
+@Test func bjtTransientRespondsToBasePulse() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    settings.runTransient = true
+    settings.tranStep = 1e-5
+    settings.tranStop = 1e-3
+
+    let netlist = """
+    VCC 3 0 DC 5
+    VBB 1 0 PULSE(0 5 0 1n 1n 1 2)
+    RB 1 2 100k
+    RC 3 4 1k
+    Q1 4 2 0 QNPN
+    .model QNPN NPN(IS=1e-15 BF=100)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let transient = try #require(result.transient)
+    let collector = try #require(transient.nodes.first { $0.name == "4" }?.values)
+    // While the base is driven high the collector is pulled low.
+    #expect((collector.last ?? 5) < 1)
+}
+
+@Test func compilerMapsBJTParametersAndPolarity() throws {
+    let bjt = SymbolInstance(
+        descriptorId: "npn-transistor",
+        refDes: "Q1",
+        position: GridPoint(0, 0),
+        parameters: ["saturationCurrent": 3e-15, "forwardBeta": 120, "reverseBeta": 2]
+    )
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let circuit = try CircuitCompiler.compile(symbols: [bjt, ground], wires: [], labels: [])
+    let element = try #require(circuit.elements.first { $0.name == "Q1" })
+    #expect(element.kind == .bjt)
+    #expect(element.bjt?.polarity == .npn)
+    #expect(abs((element.bjt?.saturationCurrent ?? 0) - 3e-15) < 1e-25)
+    #expect(abs((element.bjt?.forwardBeta ?? 0) - 120) < 1e-9)
+}
+
+@Test @MainActor func netlistBuilderEmitsBJTAndModel() throws {
+    let document = SchematicDocument()
+    _ = document.addComponent(descriptorId: "pnp-transistor", at: GridPoint(0, 0))
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+    #expect(netlist.contains("Q1 "))
+    #expect(netlist.contains(".model QMOD1 PNP(IS=1E-15 BF=100 BR=1)"))
+}
+
+@Test func diagnosticsRejectInvalidForwardBeta() {
+    var bjt = SymbolInstance(descriptorId: "npn-transistor", refDes: "Q1", position: GridPoint(0, 0))
+    bjt.parameters = ComponentRegistry.shared.descriptor(for: "npn-transistor")!.defaultParameterValues
+    bjt.parameters["forwardBeta"] = 1
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let diagnostics = CircuitDiagnostics.analyze(symbols: [bjt, ground], wires: [], labels: [])
+    #expect(diagnostics.contains {
+        $0.severity == .error && $0.message.localizedCaseInsensitiveContains("forward beta")
+    })
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

@@ -2,10 +2,13 @@
 // A dependency-free Modified Nodal Analysis (MNA) engine.
 //
 // Supported elements: resistor, capacitor, inductor, independent voltage source,
-// independent current source, and a Shockley diode. The diode is nonlinear, so
-// DC, operating-point, and transient solves run a Newton-Raphson iteration that
-// repeatedly linearises each diode about its current bias point. AC analysis
-// linearises once about the DC operating point (small-signal).
+// independent current source, a Shockley diode, and NPN/PNP bipolar transistors
+// (simplified Ebers-Moll transport model). The nonlinear devices force DC,
+// operating-point, and transient solves through a damped Newton-Raphson
+// iteration that repeatedly linearises each device about its current bias point.
+// AC analysis linearises once about the DC operating point (small-signal). The
+// Newton machinery is generic over N-terminal devices: each device reports its
+// terminal currents and Jacobian, which are stamped as a block.
 //
 // Node indexing convention: node `0` is the ground reference. Matrix rows and
 // columns 0..<n-1 correspond to circuit nodes 1...n-1. Voltage source branch
@@ -44,6 +47,35 @@ public struct LinearCircuit: Sendable {
         case voltageSource
         case currentSource
         case diode
+        case bjt
+    }
+
+    public enum BJTPolarity: String, Sendable {
+        case npn
+        case pnp
+    }
+
+    /// Simplified Ebers-Moll transport model. Early voltage is not modelled.
+    public struct BJTParameters: Sendable, Equatable {
+        public var polarity: BJTPolarity
+        public var saturationCurrent: Double
+        public var forwardBeta: Double
+        public var reverseBeta: Double
+        public var thermalVoltage: Double
+
+        public init(
+            polarity: BJTPolarity = .npn,
+            saturationCurrent: Double = 1e-15,
+            forwardBeta: Double = 100,
+            reverseBeta: Double = 1,
+            thermalVoltage: Double = 0.025_852
+        ) {
+            self.polarity = polarity
+            self.saturationCurrent = saturationCurrent
+            self.forwardBeta = forwardBeta
+            self.reverseBeta = reverseBeta
+            self.thermalVoltage = thermalVoltage
+        }
     }
 
     /// Shockley diode parameters. `saturationCurrent` is scaled by `area`.
@@ -75,6 +107,9 @@ public struct LinearCircuit: Sendable {
         public var kind: ElementKind
         public var nodeA: Int
         public var nodeB: Int
+        /// Third terminal, used by three-terminal devices. For a BJT the terminal
+        /// convention is nodeA = collector, nodeB = emitter, nodeC = base.
+        public var nodeC: Int?
         /// Resistance, capacitance, inductance, or a source's fallback magnitude.
         public var value: Double
         public var phaseDegrees: Double
@@ -87,29 +122,35 @@ public struct LinearCircuit: Sendable {
         public var transient: Waveform?
         /// Shockley parameters for a diode element; nil for every other kind.
         public var diode: DiodeParameters?
+        /// Ebers-Moll parameters for a BJT element; nil for every other kind.
+        public var bjt: BJTParameters?
         public var name: String
 
         public init(
             kind: ElementKind,
             nodeA: Int,
             nodeB: Int,
+            nodeC: Int? = nil,
             value: Double,
             phaseDegrees: Double = 0,
             dcValue: Double? = nil,
             acValue: Double? = nil,
             transient: Waveform? = nil,
             diode: DiodeParameters? = nil,
+            bjt: BJTParameters? = nil,
             name: String
         ) {
             self.kind = kind
             self.nodeA = nodeA
             self.nodeB = nodeB
+            self.nodeC = nodeC
             self.value = value
             self.phaseDegrees = phaseDegrees
             self.dcValue = dcValue
             self.acValue = acValue
             self.transient = transient
             self.diode = diode
+            self.bjt = bjt
             self.name = name
         }
 
@@ -193,12 +234,26 @@ public struct LinearCircuit: Sendable {
 
     // MARK: - Nonlinear device support
 
-    public var hasDiode: Bool {
-        elements.contains { $0.kind == .diode }
+    /// Any nonlinear element forces an iterative (Newton-Raphson) solve.
+    public var hasNonlinear: Bool {
+        elements.contains { $0.kind == .diode || $0.kind == .bjt }
     }
 
-    private var diodeIndices: [Int] {
-        elements.indices.filter { elements[$0].kind == .diode }
+    private var nonlinearIndices: [Int] {
+        elements.indices.filter { elements[$0].kind == .diode || elements[$0].kind == .bjt }
+    }
+
+    /// Ordered terminal nodes of a nonlinear device. BJT order is
+    /// [base, collector, emitter] to match the characteristic derivation.
+    private func terminalNodes(for element: Element) -> [Int] {
+        switch element.kind {
+        case .diode:
+            return [element.nodeA, element.nodeB]
+        case .bjt:
+            return [element.nodeC ?? element.nodeB, element.nodeA, element.nodeB]
+        default:
+            return []
+        }
     }
 
     /// Shockley current and small-signal conductance at a junction voltage.
@@ -216,22 +271,138 @@ public struct LinearCircuit: Sendable {
         return (isat * (expValue - 1), isat * expValue / vt)
     }
 
-    /// Limits a Newton update to the diode's forward operating region (a form of
-    /// SPICE's pnjlim), which keeps the exponential from overshooting.
-    private func limitedDiodeVoltage(_ new: Double, previous: Double, element: Element) -> Double {
-        guard let model = element.diode, model.junctionVoltage > 0 else { return new }
-        let vt = model.junctionVoltage
-        let isat = model.effectiveSaturationCurrent
-        guard isat > 0 else { return new }
+    /// Terminal currents into a nonlinear device and the Jacobian
+    /// `J[i][j] = ∂I_i/∂V_j` at the given terminal voltages.
+    private func nonlinearCharacteristic(
+        _ element: Element,
+        terminals: [Double]
+    ) -> (currents: [Double], jacobian: [[Double]]) {
+        switch element.kind {
+        case .diode:
+            let (current, conductance) = diodeCurrentAndConductance(element, voltage: terminals[0] - terminals[1])
+            return ([current, -current], [[conductance, -conductance], [-conductance, conductance]])
+        case .bjt:
+            return bjtCharacteristic(element, terminals: terminals)
+        default:
+            let zero = [Double](repeating: 0, count: terminals.count)
+            return (zero, Array(repeating: zero, count: terminals.count))
+        }
+    }
+
+    /// Ebers-Moll transport characteristic for a BJT. Terminal order is
+    /// [base, collector, emitter]; terminal currents are those flowing *into*
+    /// the device. For a PNP both the controlling voltages and the currents flip.
+    private func bjtCharacteristic(
+        _ element: Element,
+        terminals: [Double]
+    ) -> (currents: [Double], jacobian: [[Double]]) {
+        guard let model = element.bjt else {
+            let zero = [Double](repeating: 0, count: 3)
+            return (zero, Array(repeating: zero, count: 3))
+        }
+        let sign = model.polarity == .pnp ? -1.0 : 1.0
+        let vt = model.thermalVoltage
+        let isat = model.saturationCurrent
+        let (vb, vc, ve) = (terminals[0], terminals[1], terminals[2])
+
+        let vbe = sign * (vb - ve)
+        let vbc = sign * (vb - vc)
+        let ebe = exp(min(vbe / vt, 80))
+        let ebc = exp(min(vbc / vt, 80))
+        let cbe = ebe - 1
+        let cbc = ebc - 1
+
+        let isBF = isat / model.forwardBeta
+        let isBR = isat / model.reverseBeta
+        let ibe = isBF * cbe
+        let ibc = isBR * cbc
+        let ict = isat * (cbe - cbc)
+
+        // Terminal currents in the polarity-flipped frame.
+        let baseCurrent = ibe + ibc
+        let collectorCurrent = ict - ibc
+        let emitterCurrent = -(ibe + ict)
+
+        let gbe = isBF * ebe / vt
+        let gbc = isBR * ebc / vt
+        let gm = isat * ebe / vt
+        let gmr = isat * ebc / vt
+
+        // Convert derivatives w.r.t. (vbe, vbc) into w.r.t. terminal voltages.
+        func rows(_ dVbe: Double, _ dVbc: Double) -> [Double] {
+            [dVbe + dVbc, -dVbc, -dVbe]
+        }
+        return (
+            [sign * baseCurrent, sign * collectorCurrent, sign * emitterCurrent],
+            [
+                rows(gbe, gbc),
+                rows(gm, -(gmr + gbc)),
+                rows(-(gbe + gm), gmr)
+            ]
+        )
+    }
+
+    /// Limits a junction voltage update (a form of SPICE's pnjlim), keeping the
+    /// exponential from overshooting the forward operating region.
+    private func limitedJunction(_ value: Double, previous: Double, vt: Double, isat: Double) -> Double {
+        guard vt > 0, isat > 0 else { return value }
         let critical = vt * log(vt / (2.0.squareRoot() * isat))
-        if new > critical, abs(new - previous) > 2 * vt {
+        if value > critical, abs(value - previous) > 2 * vt {
             if previous > 0 {
-                let arg = 1 + (new - previous) / vt
+                let arg = 1 + (value - previous) / vt
                 return arg > 0 ? previous + vt * log(arg) : critical
             }
-            return vt * log(max(new, .leastNormalMagnitude) / vt)
+            return vt * log(max(value, .leastNormalMagnitude) / vt)
         }
-        return max(new, -1_000)
+        return max(value, -1_000)
+    }
+
+    /// Applies junction limiting to raw terminal voltages from a solve.
+    private func limitedTerminals(_ element: Element, raw: [Double], previous: [Double]) -> [Double] {
+        switch element.kind {
+        case .diode:
+            guard let model = element.diode else { return raw }
+            let junction = limitedJunction(
+                raw[0] - raw[1],
+                previous: previous[0] - previous[1],
+                vt: model.junctionVoltage,
+                isat: model.effectiveSaturationCurrent
+            )
+            return [raw[1] + junction, raw[1]]
+        case .bjt:
+            guard let model = element.bjt else { return raw }
+            let sign = model.polarity == .pnp ? -1.0 : 1.0
+            let vbe = limitedJunction(
+                sign * (raw[0] - raw[2]),
+                previous: sign * (previous[0] - previous[2]),
+                vt: model.thermalVoltage,
+                isat: model.saturationCurrent
+            )
+            let vbc = limitedJunction(
+                sign * (raw[0] - raw[1]),
+                previous: sign * (previous[0] - previous[1]),
+                vt: model.thermalVoltage,
+                isat: model.saturationCurrent
+            )
+            let ve = raw[2]
+            let vb = ve + sign * vbe
+            let vc = vb - sign * vbc
+            return [vb, vc, ve]
+        default:
+            return raw
+        }
+    }
+
+    /// Terminal voltages of every nonlinear device at a solved point, usable as
+    /// a warm-start bias for the next Newton iteration (e.g. the next transient
+    /// step).
+    func nonlinearState(from solution: Solution) -> [Int: [Double]] {
+        var state: [Int: [Double]] = [:]
+        for index in nonlinearIndices {
+            let element = elements[index]
+            state[index] = terminalNodes(for: element).map { solution.nodeVoltages[$0].re }
+        }
+        return state
     }
 
     // MARK: - DC operating point
@@ -243,9 +414,9 @@ public struct LinearCircuit: Sendable {
 
     /// DC topology (capacitors open, inductors short) with time-domain source
     /// values. This is the initial condition for a transient run.
-    public func solveOperatingPoint(atTime time: Double, diodeBias: [Int: Double] = [:]) throws -> Solution {
+    public func solveOperatingPoint(atTime time: Double, nonlinearState: [Int: [Double]] = [:]) throws -> Solution {
         try validate()
-        return try solveNonlinear(mode: .operatingPoint(time: time), initialBias: diodeBias)
+        return try solveNonlinear(mode: .operatingPoint(time: time), initialState: nonlinearState)
     }
 
     // MARK: - AC solve at a single frequency (small-signal)
@@ -255,13 +426,13 @@ public struct LinearCircuit: Sendable {
         guard frequencyHz > 0, frequencyHz.isFinite else {
             throw CircuitSolveError.invalidElement("AC frequency")
         }
-        // Small-signal AC linearises each diode about the DC operating point.
-        var bias: [Int: Double] = [:]
-        if hasDiode {
-            let operatingPoint = try solveNonlinear(mode: .dc)
-            bias = diodeBias(from: operatingPoint)
+        // Small-signal AC linearises every nonlinear device about the DC
+        // operating point.
+        var state: [Int: [Double]] = [:]
+        if hasNonlinear {
+            state = nonlinearState(from: try solveNonlinear(mode: .dc))
         }
-        return try assembleOnce(mode: .ac(omega: 2 * .pi * frequencyHz), diodeBias: bias)
+        return try assembleOnce(mode: .ac(omega: 2 * .pi * frequencyHz), nonlinearState: state)
     }
 
     // MARK: - Transient step
@@ -274,7 +445,7 @@ public struct LinearCircuit: Sendable {
         time: Double,
         capacitorVoltage: [Double],
         inductorCurrent: [Double],
-        diodeBias: [Int: Double] = [:]
+        nonlinearState: [Int: [Double]] = [:]
     ) throws -> Solution {
         try validate()
         guard timestep > 0, timestep.isFinite else {
@@ -287,44 +458,38 @@ public struct LinearCircuit: Sendable {
                 capacitorVoltage: capacitorVoltage,
                 inductorCurrent: inductorCurrent
             ),
-            initialBias: diodeBias
+            initialState: nonlinearState
         )
-    }
-
-    private func diodeBias(from solution: Solution) -> [Int: Double] {
-        var bias: [Int: Double] = [:]
-        for index in diodeIndices {
-            let element = elements[index]
-            let voltage = solution.nodeVoltages[element.nodeA] - solution.nodeVoltages[element.nodeB]
-            bias[index] = voltage.re
-        }
-        return bias
     }
 
     /// Newton-Raphson for circuits with nonlinear elements; a single pass when
     /// the circuit is purely linear.
-    private func solveNonlinear(mode: AnalysisMode, initialBias: [Int: Double] = [:]) throws -> Solution {
-        let indices = diodeIndices
+    private func solveNonlinear(mode: AnalysisMode, initialState: [Int: [Double]] = [:]) throws -> Solution {
+        let indices = nonlinearIndices
         guard !indices.isEmpty else {
-            return try assembleOnce(mode: mode, diodeBias: initialBias)
+            return try assembleOnce(mode: mode, nonlinearState: initialState)
         }
 
-        var bias = initialBias
-        var solution = try assembleOnce(mode: mode, diodeBias: bias)
+        var state = initialState
+        var solution = try assembleOnce(mode: mode, nonlinearState: state)
         for _ in 0..<200 {
             var maxDelta = 0.0
             var maxVoltage = 0.0
-            var next: [Int: Double] = [:]
+            var next: [Int: [Double]] = [:]
             for index in indices {
                 let element = elements[index]
-                let raw = (solution.nodeVoltages[element.nodeA] - solution.nodeVoltages[element.nodeB]).re
-                maxVoltage = max(maxVoltage, abs(raw))
-                let limited = limitedDiodeVoltage(raw, previous: bias[index] ?? 0, element: element)
+                let terminals = terminalNodes(for: element)
+                let raw = terminals.map { solution.nodeVoltages[$0].re }
+                let previous = state[index] ?? [Double](repeating: 0, count: terminals.count)
+                let limited = limitedTerminals(element, raw: raw, previous: previous)
                 next[index] = limited
-                maxDelta = max(maxDelta, abs(limited - (bias[index] ?? 0)))
+                for (newValue, oldValue) in zip(limited, previous) {
+                    maxDelta = max(maxDelta, abs(newValue - oldValue))
+                }
+                maxVoltage = max(maxVoltage, limited.map(abs).max() ?? 0)
             }
-            bias = next
-            solution = try assembleOnce(mode: mode, diodeBias: bias)
+            state = next
+            solution = try assembleOnce(mode: mode, nonlinearState: state)
             if maxDelta < 1e-6 + 1e-3 * maxVoltage { return solution }
         }
         throw CircuitSolveError.didNotConverge(elements[indices[0]].name)
@@ -356,6 +521,18 @@ public struct LinearCircuit: Sendable {
                       model.area > 0 else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
+            case .bjt:
+                guard let model = element.bjt,
+                      model.saturationCurrent.isFinite,
+                      model.saturationCurrent > 0,
+                      model.forwardBeta.isFinite,
+                      model.forwardBeta > 1,
+                      model.reverseBeta.isFinite,
+                      model.reverseBeta > 0,
+                      model.thermalVoltage.isFinite,
+                      model.thermalVoltage > 0 else {
+                    throw CircuitSolveError.invalidElement(element.name)
+                }
             }
         }
     }
@@ -370,7 +547,7 @@ public struct LinearCircuit: Sendable {
         var voltage: Complex
     }
 
-    private func assembleOnce(mode: AnalysisMode, diodeBias: [Int: Double]) throws -> Solution {
+    private func assembleOnce(mode: AnalysisMode, nonlinearState: [Int: [Double]]) throws -> Solution {
         let nodeCount = nodeNames.count
         let nodeRows = nodeCount - 1
 
@@ -435,6 +612,32 @@ public struct LinearCircuit: Sendable {
             if let j = row(b) { rhs[j] = rhs[j] + current }
         }
 
+        // Stamps an N-terminal nonlinear device from its terminal currents and
+        // Jacobian at a linearisation point. `incremental` (AC) keeps only the
+        // Jacobian, giving the small-signal model with no bias offset.
+        func stampNonlinear(
+            nodes: [Int],
+            currents: [Double],
+            jacobian: [[Double]],
+            voltages: [Double],
+            incremental: Bool
+        ) {
+            for i in nodes.indices where i < jacobian.count {
+                for j in nodes.indices where j < jacobian[i].count {
+                    if let r = row(nodes[i]), let c = row(nodes[j]) {
+                        matrix[r][c] = matrix[r][c] + Complex(jacobian[i][j], 0)
+                    }
+                }
+                if !incremental, let r = row(nodes[i]), i < currents.count {
+                    var jv = 0.0
+                    for j in nodes.indices where j < jacobian[i].count && j < voltages.count {
+                        jv += jacobian[i][j] * voltages[j]
+                    }
+                    rhs[r] = rhs[r] - Complex(currents[i] - jv, 0)
+                }
+            }
+        }
+
         for (index, element) in elements.enumerated() {
             switch element.kind {
             case .resistor:
@@ -476,19 +679,17 @@ public struct LinearCircuit: Sendable {
                         phaseDegrees: sourcePhase(element)
                     )
                 )
-            case .diode:
-                let bias = diodeBias[index] ?? 0
-                let (current, conductance) = diodeCurrentAndConductance(element, voltage: bias)
-                stampAdmittance(a: element.nodeA, b: element.nodeB, y: Complex(conductance, 0))
-                // Nonlinear companion: I_eq = I(V) − g·V. AC is purely
-                // incremental (small-signal), so it keeps only the conductance.
-                if !mode.isAC {
-                    stampCurrentSource(
-                        a: element.nodeA,
-                        b: element.nodeB,
-                        current: Complex(current - conductance * bias, 0)
-                    )
-                }
+            case .diode, .bjt:
+                let nodes = terminalNodes(for: element)
+                let voltages = nonlinearState[index] ?? [Double](repeating: 0, count: nodes.count)
+                let characteristic = nonlinearCharacteristic(element, terminals: voltages)
+                stampNonlinear(
+                    nodes: nodes,
+                    currents: characteristic.currents,
+                    jacobian: characteristic.jacobian,
+                    voltages: voltages,
+                    incremental: mode.isAC
+                )
             }
         }
 
@@ -518,7 +719,7 @@ public struct LinearCircuit: Sendable {
         var elementCurrents = computeElementCurrents(
             nodeVoltages: nodeVoltages,
             mode: mode,
-            diodeBias: diodeBias,
+            nonlinearState: nonlinearState,
             sourceMagnitude: sourceMagnitude,
             sourcePhase: sourcePhase
         )
@@ -542,7 +743,7 @@ public struct LinearCircuit: Sendable {
     private func computeElementCurrents(
         nodeVoltages: [Complex],
         mode: AnalysisMode,
-        diodeBias: [Int: Double],
+        nonlinearState: [Int: [Double]],
         sourceMagnitude: (Element) -> Double,
         sourcePhase: (Element) -> Double
     ) -> [Complex] {
@@ -586,11 +787,26 @@ public struct LinearCircuit: Sendable {
             case .diode:
                 if mode.isAC {
                     // Small-signal current: g·Δv about the bias point.
-                    let (_, conductance) = diodeCurrentAndConductance(element, voltage: diodeBias[index] ?? 0)
+                    let bias = nonlinearState[index] ?? [0, 0]
+                    let (_, conductance) = diodeCurrentAndConductance(element, voltage: bias[0] - bias[1])
                     return v * Complex(conductance, 0)
                 }
                 let (current, _) = diodeCurrentAndConductance(element, voltage: v.re)
                 return Complex(current, 0)
+            case .bjt:
+                // Terminal order is [base, collector, emitter]; report the
+                // collector current into the device.
+                let terminals = terminalNodes(for: element)
+                if mode.isAC {
+                    let bias = nonlinearState[index] ?? [Double](repeating: 0, count: terminals.count)
+                    let characteristic = nonlinearCharacteristic(element, terminals: bias)
+                    let solved = terminals.map { voltage($0).re }
+                    let current = zip(characteristic.jacobian[1], solved).reduce(0.0) { $0 + $1.0 * $1.1 }
+                    return Complex(current, 0)
+                }
+                let solved = terminals.map { voltage($0).re }
+                let characteristic = nonlinearCharacteristic(element, terminals: solved)
+                return Complex(characteristic.currents[1], 0)
             }
         }
     }

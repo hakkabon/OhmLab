@@ -8,6 +8,8 @@ public enum ComponentSymbol: String, Sendable {
     case voltageSource
     case currentSource
     case diode
+    case npnTransistor
+    case pnpTransistor
     case ground
 }
 
@@ -74,6 +76,12 @@ public final class ComponentRegistry: Sendable {
         let twoTerminalPins = [
             PinDescriptor(id: "1", name: "1", position: CGPoint(x: -40, y: 0)),
             PinDescriptor(id: "2", name: "2", position: CGPoint(x: 40, y: 0))
+        ]
+        // Order is significant: collector, base, emitter.
+        let transistorPins = [
+            PinDescriptor(id: "collector", name: "C", position: CGPoint(x: 40, y: -40)),
+            PinDescriptor(id: "base", name: "B", position: CGPoint(x: -40, y: 0)),
+            PinDescriptor(id: "emitter", name: "E", position: CGPoint(x: 40, y: 40))
         ]
         registry = [
             "resistor": ComponentDescriptor(
@@ -150,6 +158,30 @@ public final class ComponentRegistry: Sendable {
                 parameters: [
                     ComponentParameterDescriptor(id: "saturationCurrent", name: "Saturation current", unit: "A", defaultValue: 1e-14),
                     ComponentParameterDescriptor(id: "emissionCoefficient", name: "Emission coefficient", unit: "", defaultValue: 1)
+                ]
+            ),
+            "npn-transistor": ComponentDescriptor(
+                id: "npn-transistor",
+                prefix: "Q",
+                displayName: "NPN Transistor",
+                symbol: .npnTransistor,
+                pins: transistorPins,
+                parameters: [
+                    ComponentParameterDescriptor(id: "saturationCurrent", name: "Saturation current", unit: "A", defaultValue: 1e-15),
+                    ComponentParameterDescriptor(id: "forwardBeta", name: "Forward beta", unit: "", defaultValue: 100),
+                    ComponentParameterDescriptor(id: "reverseBeta", name: "Reverse beta", unit: "", defaultValue: 1)
+                ]
+            ),
+            "pnp-transistor": ComponentDescriptor(
+                id: "pnp-transistor",
+                prefix: "Q",
+                displayName: "PNP Transistor",
+                symbol: .pnpTransistor,
+                pins: transistorPins,
+                parameters: [
+                    ComponentParameterDescriptor(id: "saturationCurrent", name: "Saturation current", unit: "A", defaultValue: 1e-15),
+                    ComponentParameterDescriptor(id: "forwardBeta", name: "Forward beta", unit: "", defaultValue: 100),
+                    ComponentParameterDescriptor(id: "reverseBeta", name: "Reverse beta", unit: "", defaultValue: 1)
                 ]
             ),
             "ground": ComponentDescriptor(

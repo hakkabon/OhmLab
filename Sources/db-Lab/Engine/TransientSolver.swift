@@ -39,7 +39,7 @@ public struct TransientSolver: Sendable {
         let operatingPoint = try circuit.solveOperatingPoint(atTime: startTime)
         var capacitorVoltage = [Double](repeating: 0, count: circuit.elements.count)
         var inductorCurrent = [Double](repeating: 0, count: circuit.elements.count)
-        var diodeVoltage: [Int: Double] = [:]
+        var nonlinearState = circuit.nonlinearState(from: operatingPoint)
         for (index, element) in circuit.elements.enumerated() {
             switch element.kind {
             case .capacitor:
@@ -48,11 +48,7 @@ public struct TransientSolver: Sendable {
                 capacitorVoltage[index] = voltage.re
             case .inductor:
                 inductorCurrent[index] = operatingPoint.elementCurrents[index].re
-            case .diode:
-                let voltage = operatingPoint.nodeVoltages[element.nodeA]
-                    - operatingPoint.nodeVoltages[element.nodeB]
-                diodeVoltage[index] = voltage.re
-            case .resistor, .voltageSource, .currentSource:
+            case .resistor, .voltageSource, .currentSource, .diode, .bjt:
                 break
             }
         }
@@ -81,8 +77,9 @@ public struct TransientSolver: Sendable {
                 time: time,
                 capacitorVoltage: capacitorVoltage,
                 inductorCurrent: inductorCurrent,
-                diodeBias: diodeVoltage
+                nonlinearState: nonlinearState
             )
+            nonlinearState = circuit.nonlinearState(from: solution)
             for (index, element) in circuit.elements.enumerated() {
                 switch element.kind {
                 case .capacitor:
@@ -91,11 +88,7 @@ public struct TransientSolver: Sendable {
                     capacitorVoltage[index] = voltage.re
                 case .inductor:
                     inductorCurrent[index] = solution.elementCurrents[index].re
-                case .diode:
-                    let voltage = solution.nodeVoltages[element.nodeA]
-                        - solution.nodeVoltages[element.nodeB]
-                    diodeVoltage[index] = voltage.re
-                case .resistor, .voltageSource, .currentSource:
+                case .resistor, .voltageSource, .currentSource, .diode, .bjt:
                     break
                 }
             }

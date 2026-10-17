@@ -91,6 +91,19 @@ public enum CircuitCompiler {
             return (a, b)
         }
 
+        func threeTerminalNodes(for symbol: SymbolInstance, descriptor: ComponentDescriptor) throws -> (collector: Int, base: Int, emitter: Int) {
+            guard descriptor.pins.count == 3 else {
+                throw CircuitCompileError.unsupportedComponent(
+                    reference: symbol.refDes,
+                    descriptor: descriptor.displayName
+                )
+            }
+            let collector = try node(for: PinRef(symbolId: symbol.id, pinId: descriptor.pins[0].id), reference: symbol.refDes)
+            let base = try node(for: PinRef(symbolId: symbol.id, pinId: descriptor.pins[1].id), reference: symbol.refDes)
+            let emitter = try node(for: PinRef(symbolId: symbol.id, pinId: descriptor.pins[2].id), reference: symbol.refDes)
+            return (collector, base, emitter)
+        }
+
         func parameter(_ name: String, descriptor: ComponentDescriptor, symbol: SymbolInstance) throws -> Double {
             guard descriptor.parameters.contains(where: { $0.id == name }),
                   let value = symbol.parameters[name], value.isFinite else {
@@ -208,6 +221,37 @@ public enum CircuitCompiler {
                     nodeB: b,
                     value: 0,
                     diode: .init(saturationCurrent: saturation, emissionCoefficient: emission),
+                    name: symbol.refDes
+                ))
+            case .npnTransistor, .pnpTransistor:
+                let (collector, base, emitter) = try threeTerminalNodes(for: symbol, descriptor: descriptor)
+                let saturation = try positive(
+                    try parameter("saturationCurrent", descriptor: descriptor, symbol: symbol),
+                    parameter: "saturation current",
+                    symbol: symbol
+                )
+                let forwardBeta = try positive(
+                    try parameter("forwardBeta", descriptor: descriptor, symbol: symbol),
+                    parameter: "forward beta",
+                    symbol: symbol
+                )
+                let reverseBeta = try positive(
+                    try parameter("reverseBeta", descriptor: descriptor, symbol: symbol),
+                    parameter: "reverse beta",
+                    symbol: symbol
+                )
+                elements.append(.init(
+                    kind: .bjt,
+                    nodeA: collector,
+                    nodeB: emitter,
+                    nodeC: base,
+                    value: 0,
+                    bjt: .init(
+                        polarity: descriptor.symbol == .pnpTransistor ? .pnp : .npn,
+                        saturationCurrent: saturation,
+                        forwardBeta: forwardBeta,
+                        reverseBeta: reverseBeta
+                    ),
                     name: symbol.refDes
                 ))
             }

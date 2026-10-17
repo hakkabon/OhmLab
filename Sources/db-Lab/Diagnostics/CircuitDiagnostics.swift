@@ -160,11 +160,19 @@ public enum CircuitDiagnostics {
                             symbolID: symbol.id
                         ))
                     }
-                case "resistance", "capacitance", "inductance", "saturationCurrent", "emissionCoefficient":
+                case "resistance", "capacitance", "inductance", "saturationCurrent", "emissionCoefficient", "reverseBeta":
                     if value <= 0 {
                         diagnostics.append(Diagnostic(
                             severity: .error,
                             message: "\(symbol.refDes) \(parameter.name.lowercased()) must be greater than zero.",
+                            symbolID: symbol.id
+                        ))
+                    }
+                case "forwardBeta":
+                    if value <= 1 {
+                        diagnostics.append(Diagnostic(
+                            severity: .error,
+                            message: "\(symbol.refDes) forward beta must be greater than one.",
                             symbolID: symbol.id
                         ))
                     }
@@ -283,9 +291,14 @@ public enum CircuitDiagnostics {
             for nodeID in nodeIDs {
                 refsByNet[nodeID, default: []].append(symbol.refDes)
             }
-            if descriptor.pins.count == 2, nodeIDs.count == 2, nodeIDs[0] != nodeIDs[1] {
-                adjacency[nodeIDs[0], default: []].insert(nodeIDs[1])
-                adjacency[nodeIDs[1], default: []].insert(nodeIDs[0])
+            // Join every terminal to the first, so a multi-terminal device (such
+            // as a transistor) connects all of the nets it touches.
+            let terminals = Array(Set(nodeIDs))
+            if terminals.count >= 2 {
+                for nodeID in terminals.dropFirst() {
+                    adjacency[terminals[0], default: []].insert(nodeID)
+                    adjacency[nodeID, default: []].insert(terminals[0])
+                }
             }
         }
 

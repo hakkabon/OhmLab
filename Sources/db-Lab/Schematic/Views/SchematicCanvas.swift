@@ -235,6 +235,32 @@ public class SchematicCanvas: PlatformView {
             path.addLine(to: CGPoint(x: 8, y: 10))
             path.move(to: CGPoint(x: 8, y: 0))
             path.addLine(to: CGPoint(x: 40, y: 0))
+        case .npnTransistor, .pnpTransistor:
+            // Base lead and bar.
+            path.move(to: CGPoint(x: -40, y: 0))
+            path.addLine(to: CGPoint(x: -10, y: 0))
+            path.move(to: CGPoint(x: -10, y: -16))
+            path.addLine(to: CGPoint(x: -10, y: 16))
+            // Collector lead up to its pin.
+            path.move(to: CGPoint(x: -10, y: -7))
+            path.addLine(to: CGPoint(x: 22, y: -26))
+            path.addLine(to: CGPoint(x: 40, y: -40))
+            // Emitter lead down to its pin.
+            path.move(to: CGPoint(x: -10, y: 7))
+            path.addLine(to: CGPoint(x: 22, y: 26))
+            path.addLine(to: CGPoint(x: 40, y: 40))
+            // Emitter arrow: outward for NPN, inward for PNP.
+            let outer = CGPoint(x: 22, y: 26)
+            let inner = CGPoint(x: 8, y: 15)
+            let tail = descriptor.symbol == .npnTransistor ? inner : outer
+            let head = descriptor.symbol == .npnTransistor ? outer : inner
+            let angle = atan2(head.y - tail.y, head.x - tail.x)
+            path.move(to: tail)
+            path.addLine(to: head)
+            path.move(to: head)
+            path.addLine(to: CGPoint(x: head.x - 8 * cos(angle - 0.5), y: head.y - 8 * sin(angle - 0.5)))
+            path.move(to: head)
+            path.addLine(to: CGPoint(x: head.x - 8 * cos(angle + 0.5), y: head.y - 8 * sin(angle + 0.5)))
         case .ground:
             path.move(to: CGPoint(x: 0, y: -20))
             path.addLine(to: CGPoint(x: 0, y: -8))
@@ -331,6 +357,9 @@ public class SchematicCanvas: PlatformView {
             )
         case .diode:
             return String(format: "IS=%.0e A", value)
+        case .npnTransistor, .pnpTransistor:
+            let beta = symbol.parameters["forwardBeta"] ?? 0
+            return String(format: "β=%.3g", beta)
         case .ground:
             return nil
         }

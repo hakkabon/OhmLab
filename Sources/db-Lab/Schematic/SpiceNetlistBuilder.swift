@@ -70,6 +70,29 @@ public enum SpiceNetlistBuilder {
             guard references.insert(normalizedReference).inserted else {
                 throw SpiceNetlistBuildError.duplicateReference(symbol.refDes)
             }
+            if descriptor.symbol == .npnTransistor || descriptor.symbol == .pnpTransistor {
+                guard descriptor.pins.count == 3,
+                      let collectorNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[0].id)],
+                      let baseNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[1].id)],
+                      let emitterNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[2].id)] else {
+                    throw SpiceNetlistBuildError.missingPin(reference: symbol.refDes, pin: "collector, base, or emitter")
+                }
+                let saturation = try parameter("saturationCurrent", descriptor: descriptor, symbol: symbol)
+                try validate(saturation, parameter: "saturation current", symbol: symbol)
+                let forwardBeta = try parameter("forwardBeta", descriptor: descriptor, symbol: symbol)
+                try validate(forwardBeta, parameter: "forward beta", symbol: symbol)
+                let reverseBeta = try parameter("reverseBeta", descriptor: descriptor, symbol: symbol)
+                try validate(reverseBeta, parameter: "reverse beta", symbol: symbol)
+                let modelName = "QMOD\(symbol.refDes.dropFirst())"
+                let type = descriptor.symbol == .pnpTransistor ? "PNP" : "NPN"
+                lines.append("\(symbol.refDes) \(collectorNode) \(baseNode) \(emitterNode) \(modelName)")
+                modelLines.append(
+                    ".model \(modelName) \(type)(IS=\(spiceNumber(saturation)) "
+                    + "BF=\(spiceNumber(forwardBeta)) BR=\(spiceNumber(reverseBeta)))"
+                )
+                continue
+            }
+
             guard descriptor.pins.count == 2,
                   let firstPin = descriptor.pins.first,
                   let secondPin = descriptor.pins.last,
@@ -129,6 +152,8 @@ public enum SpiceNetlistBuilder {
                 modelLines.append(
                     ".model \(modelName) D(IS=\(spiceNumber(saturation)) N=\(spiceNumber(emission)))"
                 )
+            case .npnTransistor, .pnpTransistor:
+                break // handled above
             case .ground:
                 break
             }
