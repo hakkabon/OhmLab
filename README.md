@@ -89,8 +89,9 @@ Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel w
 
 Interchange is netlist-level: db-Lab does not parse `.kicad_sch` itself, it borrows KiCad's exporter.
 
-*   **Import** — the **Import** button accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or (macOS) a `.kicad_sch` schematic, which is converted with `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). The resulting SPICE text is loaded into the netlist editor and can be run directly; anything the engine cannot model is reported in **Diagnostics** rather than blocking the import.
-*   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is.
+*   **Import** — the **Import** button (or **File ▸ Import Netlist or KiCad Schematic…**, ⇧⌘I, or dragging a file onto the window) accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or (macOS) a `.kicad_sch` schematic, which is converted with `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). The resulting SPICE text is loaded into the netlist editor and can be run directly; anything the engine cannot model is reported in **Diagnostics** rather than blocking the import. A banner records where the netlist came from and lists non-fatal parser notes; editing the netlist by hand clears it.
+*   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and **Export SPICE Netlist…** (**File ▸ …**, ⇧⌘E on macOS; the system share sheet on iPadOS) writes it to a `.cir` file.
+*   **Clipboard** — **Copy**/**Paste** on the netlist editor move netlists to and from the system pasteboard.
 
 Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements db-Lab does not support, so it is reported as an unsupported element rather than simulated.
 

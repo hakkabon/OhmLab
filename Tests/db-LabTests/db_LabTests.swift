@@ -1908,6 +1908,68 @@ R2 Net-_R2-Pad1_ 0 1k
     #expect(netlist.contains("DC 5"))
 }
 
+@Test @MainActor func netlistForExportPrefersSchematicProjection() throws {
+    let document = CircuitDocument()
+    let source = try #require(document.schematic.addComponent(descriptorId: "voltage-source", at: GridPoint(0, 0)))
+    document.schematic.setParameter(id: source.id, key: "dcVoltage", value: 7)
+    _ = document.schematic.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+    document.usesSchematic = true
+
+    #expect(try document.netlistForExport().contains("DC 7"))
+}
+
+@Test @MainActor func netlistForExportUsesNetlistText() throws {
+    let document = CircuitDocument()
+    document.importNetlist("V1 1 0 DC 9\nR1 1 0 1k\n.end")
+    #expect(try document.netlistForExport().contains("DC 9"))
+}
+
+@Test @MainActor func importNetlistRecordsProvenance() {
+    let document = CircuitDocument()
+    let source = CircuitDocument.ImportSource(fileName: "amp.cir", kind: .spiceNetlist)
+    document.importNetlist("V1 1 0 DC 1\nR1 1 0 1k\n.end", source: source)
+    #expect(document.usesSchematic == false)
+    #expect(document.importSource == source)
+}
+
+@Test @MainActor func editingNetlistClearsImportProvenance() {
+    let document = CircuitDocument()
+    document.importNetlist(
+        "V1 1 0 DC 1\nR1 1 0 1k\n.end",
+        source: CircuitDocument.ImportSource(fileName: "amp.cir", kind: .spiceNetlist)
+    )
+    #expect(document.importSource != nil)
+    document.netlistText += "\n* edited"
+    #expect(document.importSource == nil)
+}
+
+@Test @MainActor func importNetlistCollectsParserWarnings() {
+    let document = CircuitDocument()
+    document.importNetlist("V1 1 0 DC 1\nR1 1 0 1k\n.nodeset v(1)=0.5\n.end")
+    #expect(document.importWarnings.contains { $0.contains(".nodeset") })
+}
+
+@Test @MainActor func importDesignRecordsSourceFileName() throws {
+    let document = CircuitDocument()
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("amp-\(UUID().uuidString).cir")
+    try "V1 1 0 DC 4\nR1 1 0 1k\n.end".write(to: url, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    try document.importDesign(at: url)
+    #expect(document.importSource?.kind == .spiceNetlist)
+    #expect(document.importSource?.fileName == url.lastPathComponent)
+}
+
+@Test func writeNetlistRoundTrips() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("netlist-\(UUID().uuidString).cir")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let text = "V1 1 0 DC 3\nR1 1 0 1k\n.end"
+    try KiCadInterchange.writeNetlist(text, to: url)
+    #expect(try KiCadInterchange.readNetlist(at: url) == text)
+}
+
 #if os(macOS)
 @Test func kicadCLIExportArgumentsAreExact() {
     let schematic = URL(fileURLWithPath: "/tmp/x.kicad_sch")

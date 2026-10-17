@@ -30,11 +30,14 @@ struct CircuitSimulatorView: View {
 
     @State private var acQuantity: ACQuantity = .voltage
     @State private var isImporting = false
+    @State private var isExportingNetlist = false
+    @State private var isDropTargeted = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                importBanner
                 editor
 
                 if document.usesSchematic {
@@ -57,6 +60,27 @@ struct CircuitSimulatorView: View {
             .padding()
         }
         .navigationTitle(document.name)
+        .dropDestination(for: URL.self) { urls, _ in
+            handleDrop(urls)
+        } isTargeted: { isDropTargeted = $0 }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(4)
+                    .allowsHitTesting(false)
+            }
+        }
+        .fileExporter(
+            isPresented: $isExportingNetlist,
+            document: NetlistFileDocument(text: (try? document.netlistForExport()) ?? document.netlistText),
+            contentType: .spiceNetlist,
+            defaultFilename: document.name
+        ) { result in
+            if case .failure(let error) = result {
+                document.simulationError = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Header
@@ -144,12 +168,92 @@ struct CircuitSimulatorView: View {
                 .frame(minHeight: 380)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
-            GroupBox("SPICE Netlist") {
+            GroupBox {
                 TextEditor(text: $document.netlistText)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 200)
+            } label: {
+                HStack {
+                    Text("SPICE Netlist")
+                    Spacer()
+                    Button("Paste") { pasteNetlist() }
+                    Button("Clear") { document.netlistText = "" }
+                    Button("Copy") { copyToPasteboard(document.netlistText) }
+                    Button("Export…") { exportNetlist() }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
             }
         }
+    }
+
+    // MARK: - Import provenance
+
+    @ViewBuilder
+    private var importBanner: some View {
+        if let source = document.importSource {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Label(
+                            "Imported \(source.kind == .kicadSchematic ? "KiCad schematic" : "SPICE netlist")",
+                            systemImage: "square.and.arrow.down"
+                        )
+                        Text(source.fileName)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .font(.callout)
+
+                    if !document.importWarnings.isEmpty {
+                        Text("\(document.importWarnings.count) note\(document.importWarnings.count == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(document.importWarnings, id: \.self) { warning in
+                            Text("• \(warning)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func handleDrop(_ urls: [URL]) -> Bool {
+        guard let url = urls.first else { return false }
+        #if os(macOS)
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        #endif
+        do {
+            try document.importDesign(at: url)
+            return true
+        } catch {
+            document.simulationError = error.localizedDescription
+            return false
+        }
+    }
+
+    private func exportNetlist() {
+        #if os(macOS)
+        appState.exportNetlist(document: document)
+        #else
+        isExportingNetlist = true
+        #endif
+    }
+
+    private func pasteNetlist() {
+        #if os(macOS)
+        if let text = NSPasteboard.general.string(forType: .string) {
+            document.netlistText = text
+        }
+        #else
+        if let text = UIPasteboard.general.string {
+            document.netlistText = text
+        }
+        #endif
     }
 
     // MARK: - Netlist projection (export)
@@ -169,9 +273,13 @@ struct CircuitSimulatorView: View {
                     }
                     .frame(maxHeight: 120)
 
-                    Button("Use in Netlist editor") {
-                        document.netlistText = text
-                        document.usesSchematic = false
+                    HStack {
+                        Button("Use in Netlist editor") {
+                            document.netlistText = text
+                            document.usesSchematic = false
+                        }
+                        Button("Export Netlist…") { exportNetlist() }
+                        Button("Copy") { copyToPasteboard(text) }
                     }
                     .buttonStyle(.bordered)
                 }

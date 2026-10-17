@@ -15,6 +15,19 @@ final class CircuitDocument: ObservableObject, Identifiable {
     @Published var schematic: SchematicDocument = SchematicDocument()
     @Published var settings: AnalysisSettings = .default
 
+    /// Where the current netlist text came from, when it was imported rather
+    /// than typed. Cleared as soon as the netlist is edited by hand.
+    struct ImportSource: Equatable {
+        enum Kind: Equatable { case spiceNetlist, kicadSchematic }
+        let fileName: String
+        let kind: Kind
+    }
+    @Published var importSource: ImportSource?
+    /// Non-fatal notes from parsing an imported netlist (skipped includes,
+    /// ignored directives). Distinct from `diagnostics`, which also covers
+    /// hand-entered netlists and are always recomputed.
+    @Published var importWarnings: [String] = []
+
     // Results
     @Published var simulationResult: CircuitSimResult?
     @Published var isSimulating: Bool = false
@@ -32,6 +45,10 @@ final class CircuitDocument: ObservableObject, Identifiable {
     private var autosaveTask: Task<Void, Never>?
     private var diagnosticsTask: Task<Void, Never>?
 
+    /// Set while `importNetlist` is assigning `netlistText`, so the change
+    /// observer does not clear the provenance it is about to record.
+    private var applyingImport = false
+
     /// Opt-in so that documents created outside the app (e.g. in tests) never
     /// write to the shared recovery directory.
     var autosaveRecoveryEnabled = false
@@ -48,7 +65,15 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
         $netlistText
             .dropFirst()
-            .sink { [weak self] _ in self?.contentDidChange() }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                // Hand edits invalidate the import provenance; imports do not.
+                if !self.applyingImport {
+                    self.importSource = nil
+                    self.importWarnings = []
+                }
+                self.contentDidChange()
+            }
             .store(in: &cancellables)
 
         $settings
@@ -169,9 +194,19 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     /// Replaces the netlist with imported SPICE text and switches to netlist
     /// mode so it can be run immediately.
-    func importNetlist(_ text: String) {
+    func importNetlist(_ text: String, source: ImportSource? = nil) {
+        applyingImport = true
         netlistText = text
+        importSource = source
         usesSchematic = false
+        applyingImport = false
+        refreshImportWarnings()
+    }
+
+    /// The SPICE netlist to hand to another tool: the projection when editing a
+    /// schematic, otherwise the netlist text as entered.
+    func netlistForExport() throws -> String {
+        usesSchematic ? try SpiceNetlistBuilder.build(from: schematic) : netlistText
     }
 
     /// Imports either a KiCad schematic (`.kicad_sch`, macOS via `kicad-cli`) or
@@ -181,15 +216,26 @@ final class CircuitDocument: ObservableObject, Identifiable {
     /// the diagnostics panel reports anything the engine cannot run.
     func importDesign(at url: URL) throws {
         let ext = url.pathExtension.lowercased()
+        let source: ImportSource
         if KiCadInterchange.schematicExtensions.contains(ext) {
             let text = try KiCadInterchange.exportedNetlistText(at: url)
-            importNetlist(text)
+            source = ImportSource(fileName: url.lastPathComponent, kind: .kicadSchematic)
+            importNetlist(text, source: source)
         } else if KiCadInterchange.netlistExtensions.contains(ext) {
-            importNetlist(try KiCadInterchange.readNetlist(at: url))
+            source = ImportSource(fileName: url.lastPathComponent, kind: .spiceNetlist)
+            importNetlist(try KiCadInterchange.readNetlist(at: url), source: source)
         } else {
             throw KiCadInterchangeError.unsupportedFormat(url.lastPathComponent)
         }
         name = url.deletingPathExtension().lastPathComponent
+    }
+
+    private func refreshImportWarnings() {
+        guard let parsed = try? SpiceNetlistParser.parse(netlistText) else {
+            importWarnings = []
+            return
+        }
+        importWarnings = parsed.warnings
     }
 
     static func recovered(from file: CircuitFile) -> CircuitDocument {

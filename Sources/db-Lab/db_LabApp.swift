@@ -31,6 +31,22 @@ struct DbLabApp: App {
                 .keyboardShortcut("o", modifiers: [.command])
             }
 
+            CommandGroup(after: .newItem) {
+                Divider()
+
+                Button("Import Netlist or KiCad Schematic…") {
+                    appState.importDesign()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+
+                Button("Export SPICE Netlist…") {
+                    if let document = appState.selectedCircuitDocument {
+                        appState.exportNetlist(document: document)
+                    }
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+            }
+
             CommandGroup(replacing: .saveItem) {
                 Button("Save") {
                     if let document = appState.selectedCircuitDocument {

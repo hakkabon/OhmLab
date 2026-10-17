@@ -7,6 +7,13 @@
 // direction is a plain SPICE netlist, which KiCad/ngspice can open directly.
 
 import Foundation
+import UniformTypeIdentifiers
+
+extension UTType {
+    /// A SPICE netlist (`.cir`), falling back to plain text when the system has
+    /// no declaration for the extension.
+    public static let spiceNetlist = UTType(filenameExtension: "cir") ?? .plainText
+}
 
 public enum KiCadInterchangeError: LocalizedError {
     case unreadableFile(String)
@@ -110,5 +117,10 @@ public enum KiCadInterchange {
     @MainActor
     public static func exportNetlist(from document: SchematicDocument) throws -> String {
         try SpiceNetlistBuilder.build(from: document)
+    }
+
+    /// Writes netlist text to disk as UTF-8.
+    public static func writeNetlist(_ text: String, to url: URL) throws {
+        try text.write(to: url, atomically: true, encoding: .utf8)
     }
 }

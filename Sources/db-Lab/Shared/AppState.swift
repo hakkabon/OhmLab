@@ -58,6 +58,64 @@ final class AppState: ObservableObject {
         selectedSidebarItem = circuitDocuments.last.map { .circuit($0.id) }
     }
 
+    // MARK: – Interchange
+
+    /// Imports a SPICE netlist or KiCad schematic, into the selected document or
+    /// a fresh one when nothing is selected. macOS only: it drives an open panel.
+    func importDesign() {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "Choose a SPICE netlist (.cir, .net, .sp) or a KiCad schematic (.kicad_sch)."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let document: CircuitDocument
+        if let selected = selectedCircuitDocument {
+            document = selected
+        } else {
+            let created = CircuitDocument()
+            created.autosaveRecoveryEnabled = true
+            circuitDocuments.append(created)
+            document = created
+        }
+        do {
+            try document.importDesign(at: url)
+            selectedSidebarItem = .circuit(document.id)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        #else
+        lastError = "Importing files is available on macOS."
+        #endif
+    }
+
+    /// Writes the selected document's SPICE netlist to a file. macOS only; on
+    /// iPadOS the simulator view exports through the system share sheet.
+    func exportNetlist(document: CircuitDocument) {
+        let text: String
+        do {
+            text = try document.netlistForExport()
+        } catch {
+            lastError = error.localizedDescription
+            return
+        }
+        #if os(macOS)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = document.name
+        panel.message = "Export a SPICE netlist (.cir)."
+        panel.allowedContentTypes = [.spiceNetlist]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try KiCadInterchange.writeNetlist(text, to: url)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        #else
+        lastError = "Exporting is available on macOS. Use the Export button in the simulator on iPadOS."
+        #endif
+    }
+
     // MARK: – Persistence
 
     func save(document: CircuitDocument) {
