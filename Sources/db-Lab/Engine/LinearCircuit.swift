@@ -2,8 +2,9 @@
 // A dependency-free Modified Nodal Analysis (MNA) engine.
 //
 // Supported elements: resistor, capacitor, inductor, independent voltage source,
-// independent current source, a Shockley diode, and NPN/PNP bipolar transistors
-// (simplified Ebers-Moll transport model). The nonlinear devices force DC,
+// independent current source, a Shockley diode, NPN/PNP bipolar transistors
+// (simplified Ebers-Moll transport model), and N-MOS/P-MOS field-effect
+// transistors (Level 1 Shichman-Hodges). The nonlinear devices force DC,
 // operating-point, and transient solves through a damped Newton-Raphson
 // iteration that repeatedly linearises each device about its current bias point.
 // AC analysis linearises once about the DC operating point (small-signal). The
@@ -48,11 +49,17 @@ public struct LinearCircuit: Sendable {
         case currentSource
         case diode
         case bjt
+        case mosfet
     }
 
     public enum BJTPolarity: String, Sendable {
         case npn
         case pnp
+    }
+
+    public enum MOSFETPolarity: String, Sendable {
+        case nmos
+        case pmos
     }
 
     /// Simplified Ebers-Moll transport model. Early voltage is not modelled.
@@ -75,6 +82,37 @@ public struct LinearCircuit: Sendable {
             self.forwardBeta = forwardBeta
             self.reverseBeta = reverseBeta
             self.thermalVoltage = thermalVoltage
+        }
+    }
+
+    /// Level 1 Shichman-Hodges MOSFET parameters. `thresholdVoltage` is the
+    /// signed SPICE VTO (positive for an N-MOS, negative for a P-MOS); the
+    /// characteristic derives the positive threshold from the polarity. Body
+    /// effect is included through `bodyEffect` (GAMMA) and `surfacePotential`
+    /// (PHI); a GAMMA of zero disables it. Channel-length modulation is
+    /// modelled by `lambda`.
+    public struct MOSFETParameters: Sendable, Equatable {
+        public var polarity: MOSFETPolarity
+        public var thresholdVoltage: Double
+        public var transconductanceParameter: Double
+        public var channelLengthModulation: Double
+        public var bodyEffect: Double
+        public var surfacePotential: Double
+
+        public init(
+            polarity: MOSFETPolarity = .nmos,
+            thresholdVoltage: Double = 1,
+            transconductanceParameter: Double = 2e-5,
+            channelLengthModulation: Double = 0,
+            bodyEffect: Double = 0,
+            surfacePotential: Double = 0.6
+        ) {
+            self.polarity = polarity
+            self.thresholdVoltage = thresholdVoltage
+            self.transconductanceParameter = transconductanceParameter
+            self.channelLengthModulation = channelLengthModulation
+            self.bodyEffect = bodyEffect
+            self.surfacePotential = surfacePotential
         }
     }
 
@@ -107,9 +145,14 @@ public struct LinearCircuit: Sendable {
         public var kind: ElementKind
         public var nodeA: Int
         public var nodeB: Int
-        /// Third terminal, used by three-terminal devices. For a BJT the terminal
-        /// convention is nodeA = collector, nodeB = emitter, nodeC = base.
+        /// Third terminal, used by three- and four-terminal devices. For a BJT
+        /// the terminal convention is nodeA = collector, nodeB = emitter,
+        /// nodeC = base. For a MOSFET it is nodeA = drain, nodeB = source,
+        /// nodeC = gate.
         public var nodeC: Int?
+        /// Fourth terminal, used by four-terminal devices. For a MOSFET it is
+        /// the bulk (body) node.
+        public var nodeD: Int?
         /// Resistance, capacitance, inductance, or a source's fallback magnitude.
         public var value: Double
         public var phaseDegrees: Double
@@ -124,6 +167,8 @@ public struct LinearCircuit: Sendable {
         public var diode: DiodeParameters?
         /// Ebers-Moll parameters for a BJT element; nil for every other kind.
         public var bjt: BJTParameters?
+        /// Level 1 parameters for a MOSFET element; nil for every other kind.
+        public var mosfet: MOSFETParameters?
         public var name: String
 
         public init(
@@ -131,6 +176,7 @@ public struct LinearCircuit: Sendable {
             nodeA: Int,
             nodeB: Int,
             nodeC: Int? = nil,
+            nodeD: Int? = nil,
             value: Double,
             phaseDegrees: Double = 0,
             dcValue: Double? = nil,
@@ -138,12 +184,14 @@ public struct LinearCircuit: Sendable {
             transient: Waveform? = nil,
             diode: DiodeParameters? = nil,
             bjt: BJTParameters? = nil,
+            mosfet: MOSFETParameters? = nil,
             name: String
         ) {
             self.kind = kind
             self.nodeA = nodeA
             self.nodeB = nodeB
             self.nodeC = nodeC
+            self.nodeD = nodeD
             self.value = value
             self.phaseDegrees = phaseDegrees
             self.dcValue = dcValue
@@ -151,6 +199,7 @@ public struct LinearCircuit: Sendable {
             self.transient = transient
             self.diode = diode
             self.bjt = bjt
+            self.mosfet = mosfet
             self.name = name
         }
 
@@ -235,22 +284,30 @@ public struct LinearCircuit: Sendable {
     // MARK: - Nonlinear device support
 
     /// Any nonlinear element forces an iterative (Newton-Raphson) solve.
+    private static func isNonlinear(_ kind: ElementKind) -> Bool {
+        kind == .diode || kind == .bjt || kind == .mosfet
+    }
+
     public var hasNonlinear: Bool {
-        elements.contains { $0.kind == .diode || $0.kind == .bjt }
+        elements.contains { LinearCircuit.isNonlinear($0.kind) }
     }
 
     private var nonlinearIndices: [Int] {
-        elements.indices.filter { elements[$0].kind == .diode || elements[$0].kind == .bjt }
+        elements.indices.filter { LinearCircuit.isNonlinear(elements[$0].kind) }
     }
 
     /// Ordered terminal nodes of a nonlinear device. BJT order is
-    /// [base, collector, emitter] to match the characteristic derivation.
+    /// [base, collector, emitter] and MOSFET order is
+    /// [drain, gate, source, bulk] to match the characteristic derivations.
     private func terminalNodes(for element: Element) -> [Int] {
         switch element.kind {
         case .diode:
             return [element.nodeA, element.nodeB]
         case .bjt:
             return [element.nodeC ?? element.nodeB, element.nodeA, element.nodeB]
+        case .mosfet:
+            let source = element.nodeB
+            return [element.nodeA, element.nodeC ?? source, source, element.nodeD ?? source]
         default:
             return []
         }
@@ -283,6 +340,8 @@ public struct LinearCircuit: Sendable {
             return ([current, -current], [[conductance, -conductance], [-conductance, conductance]])
         case .bjt:
             return bjtCharacteristic(element, terminals: terminals)
+        case .mosfet:
+            return mosfetCharacteristic(element, terminals: terminals)
         default:
             let zero = [Double](repeating: 0, count: terminals.count)
             return (zero, Array(repeating: zero, count: terminals.count))
@@ -342,6 +401,74 @@ public struct LinearCircuit: Sendable {
         )
     }
 
+    /// Level 1 Shichman-Hodges MOSFET characteristic. Terminal order is
+    /// [drain, gate, source, bulk]; terminal currents are those flowing into
+    /// the device. A P-MOS is handled by flipping the controlling voltages and
+    /// the current with `sign`, exactly as the BJT characteristic does.
+    private func mosfetCharacteristic(
+        _ element: Element,
+        terminals: [Double]
+    ) -> (currents: [Double], jacobian: [[Double]]) {
+        let zeroRow = [Double](repeating: 0, count: 4)
+        guard let model = element.mosfet, model.transconductanceParameter > 0 else {
+            return (zeroRow, Array(repeating: zeroRow, count: 4))
+        }
+        let sign = model.polarity == .pmos ? -1.0 : 1.0
+        let (vd, vg, vs, vb) = (terminals[0], terminals[1], terminals[2], terminals[3])
+
+        // Control voltages in the sign-flipped (n-channel) frame.
+        let vgs = sign * (vg - vs)
+        let vds = sign * (vd - vs)
+        let vbs = sign * (vb - vs)
+
+        // Positive threshold, including the body effect.
+        let phi = max(model.surfacePotential, 1e-3)
+        let phiMinusVbs = max(phi - vbs, 1e-9)
+        let sqrtTerm = phiMinusVbs.squareRoot()
+        let threshold = sign * model.thresholdVoltage
+            + model.bodyEffect * (sqrtTerm - phi.squareRoot())
+        let overdrive = vgs - threshold
+        // d(overdrive)/d(vbs) = + GAMMA / (2·sqrt(PHI − vbs)).
+        let dOverdriveDVbs = model.bodyEffect / (2 * sqrtTerm)
+
+        // A tiny drain-source conductance keeps the nodal matrix non-singular
+        // when the device is cut off, matching SPICE's GMIN.
+        let gmin = 1e-12
+        var drainSourceCurrent = gmin * vds
+        var gVgs = 0.0
+        var gVds = gmin
+        var gVbs = 0.0
+
+        if overdrive > 0 {
+            let kp = model.transconductanceParameter
+            let lambdaFactor = 1 + model.channelLengthModulation * vds
+            if vds < overdrive {
+                // Triode (linear) region.
+                drainSourceCurrent += kp * (overdrive * vds - 0.5 * vds * vds) * lambdaFactor
+                gVgs = kp * vds * lambdaFactor
+                gVds = kp * (overdrive - vds) * lambdaFactor
+                    + kp * (overdrive * vds - 0.5 * vds * vds) * model.channelLengthModulation
+            } else {
+                // Saturation region.
+                drainSourceCurrent += 0.5 * kp * overdrive * overdrive * lambdaFactor
+                gVgs = kp * overdrive * lambdaFactor
+                gVds = 0.5 * kp * overdrive * overdrive * model.channelLengthModulation
+            }
+            gVbs = gVgs * dOverdriveDVbs
+        }
+
+        // The returned current is sign * Ids; the polarity sign cancels in its
+        // derivative, so the Jacobian rows are the "pure" derivatives with
+        // respect to terminal voltage.
+        let drainRow = [gVds, gVgs, -(gVgs + gVds + gVbs), gVbs]
+        let sourceRow = drainRow.map { -$0 }
+        let drainCurrent = sign * drainSourceCurrent
+        return (
+            [drainCurrent, 0, -drainCurrent, 0],
+            [drainRow, zeroRow, sourceRow, zeroRow]
+        )
+    }
+
     /// Limits a junction voltage update (a form of SPICE's pnjlim), keeping the
     /// exponential from overshooting the forward operating region.
     private func limitedJunction(_ value: Double, previous: Double, vt: Double, isat: Double) -> Double {
@@ -388,6 +515,10 @@ public struct LinearCircuit: Sendable {
             let vb = ve + sign * vbe
             let vc = vb - sign * vbc
             return [vb, vc, ve]
+        case .mosfet:
+            // The Level 1 characteristic is piecewise polynomial, so no
+            // exponential limiting is required.
+            return raw
         default:
             return raw
         }
@@ -531,6 +662,19 @@ public struct LinearCircuit: Sendable {
                       model.reverseBeta > 0,
                       model.thermalVoltage.isFinite,
                       model.thermalVoltage > 0 else {
+                    throw CircuitSolveError.invalidElement(element.name)
+                }
+            case .mosfet:
+                guard let model = element.mosfet,
+                      model.thresholdVoltage.isFinite,
+                      model.transconductanceParameter.isFinite,
+                      model.transconductanceParameter > 0,
+                      model.channelLengthModulation.isFinite,
+                      model.channelLengthModulation >= 0,
+                      model.bodyEffect.isFinite,
+                      model.bodyEffect >= 0,
+                      model.surfacePotential.isFinite,
+                      model.surfacePotential > 0 else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             }
@@ -679,7 +823,7 @@ public struct LinearCircuit: Sendable {
                         phaseDegrees: sourcePhase(element)
                     )
                 )
-            case .diode, .bjt:
+            case .diode, .bjt, .mosfet:
                 let nodes = terminalNodes(for: element)
                 let voltages = nonlinearState[index] ?? [Double](repeating: 0, count: nodes.count)
                 let characteristic = nonlinearCharacteristic(element, terminals: voltages)
@@ -807,6 +951,20 @@ public struct LinearCircuit: Sendable {
                 let solved = terminals.map { voltage($0).re }
                 let characteristic = nonlinearCharacteristic(element, terminals: solved)
                 return Complex(characteristic.currents[1], 0)
+            case .mosfet:
+                // Terminal order is [drain, gate, source, bulk]; report the
+                // drain current into the device.
+                let terminals = terminalNodes(for: element)
+                if mode.isAC {
+                    let bias = nonlinearState[index] ?? [Double](repeating: 0, count: terminals.count)
+                    let characteristic = nonlinearCharacteristic(element, terminals: bias)
+                    let solved = terminals.map { voltage($0).re }
+                    let current = zip(characteristic.jacobian[0], solved).reduce(0.0) { $0 + $1.0 * $1.1 }
+                    return Complex(current, 0)
+                }
+                let solved = terminals.map { voltage($0).re }
+                let characteristic = nonlinearCharacteristic(element, terminals: solved)
+                return Complex(characteristic.currents[0], 0)
             }
         }
     }

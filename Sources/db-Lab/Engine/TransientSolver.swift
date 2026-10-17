@@ -48,7 +48,7 @@ public struct TransientSolver: Sendable {
                 capacitorVoltage[index] = voltage.re
             case .inductor:
                 inductorCurrent[index] = operatingPoint.elementCurrents[index].re
-            case .resistor, .voltageSource, .currentSource, .diode, .bjt:
+            case .resistor, .voltageSource, .currentSource, .diode, .bjt, .mosfet:
                 break
             }
         }
@@ -88,7 +88,7 @@ public struct TransientSolver: Sendable {
                     capacitorVoltage[index] = voltage.re
                 case .inductor:
                     inductorCurrent[index] = solution.elementCurrents[index].re
-                case .resistor, .voltageSource, .currentSource, .diode, .bjt:
+                case .resistor, .voltageSource, .currentSource, .diode, .bjt, .mosfet:
                     break
                 }
             }

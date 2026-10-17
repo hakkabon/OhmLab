@@ -261,6 +261,41 @@ public class SchematicCanvas: PlatformView {
             path.addLine(to: CGPoint(x: head.x - 8 * cos(angle - 0.5), y: head.y - 8 * sin(angle - 0.5)))
             path.move(to: head)
             path.addLine(to: CGPoint(x: head.x - 8 * cos(angle + 0.5), y: head.y - 8 * sin(angle + 0.5)))
+        case .nmosTransistor, .pmosTransistor:
+            // Gate lead and plate.
+            path.move(to: CGPoint(x: -40, y: 0))
+            path.addLine(to: CGPoint(x: -18, y: 0))
+            path.move(to: CGPoint(x: -18, y: -15))
+            path.addLine(to: CGPoint(x: -18, y: 15))
+            // Channel, drawn in three segments to suggest enhancement mode.
+            path.move(to: CGPoint(x: -8, y: -15))
+            path.addLine(to: CGPoint(x: -8, y: -6))
+            path.move(to: CGPoint(x: -8, y: -3))
+            path.addLine(to: CGPoint(x: -8, y: 3))
+            path.move(to: CGPoint(x: -8, y: 6))
+            path.addLine(to: CGPoint(x: -8, y: 15))
+            // Drain (top) lead to its pin.
+            path.move(to: CGPoint(x: -8, y: -12))
+            path.addLine(to: CGPoint(x: 16, y: -12))
+            path.addLine(to: CGPoint(x: 40, y: -40))
+            // Source (bottom) lead to its pin.
+            path.move(to: CGPoint(x: -8, y: 12))
+            path.addLine(to: CGPoint(x: 16, y: 12))
+            path.addLine(to: CGPoint(x: 40, y: 40))
+            // Bulk (middle) lead to its pin.
+            path.move(to: CGPoint(x: -8, y: 0))
+            path.addLine(to: CGPoint(x: 16, y: 0))
+            path.addLine(to: CGPoint(x: 40, y: 0))
+            // Bulk arrow: toward the channel for N-MOS, away for P-MOS.
+            let arrowStart = descriptor.symbol == .nmosTransistor ? CGPoint(x: 4, y: 0) : CGPoint(x: -8, y: 0)
+            let arrowEnd = descriptor.symbol == .nmosTransistor ? CGPoint(x: -8, y: 0) : CGPoint(x: 4, y: 0)
+            let arrowAngle = atan2(arrowEnd.y - arrowStart.y, arrowEnd.x - arrowStart.x)
+            path.move(to: arrowStart)
+            path.addLine(to: arrowEnd)
+            path.move(to: arrowEnd)
+            path.addLine(to: CGPoint(x: arrowEnd.x - 7 * cos(arrowAngle - 0.5), y: arrowEnd.y - 7 * sin(arrowAngle - 0.5)))
+            path.move(to: arrowEnd)
+            path.addLine(to: CGPoint(x: arrowEnd.x - 7 * cos(arrowAngle + 0.5), y: arrowEnd.y - 7 * sin(arrowAngle + 0.5)))
         case .ground:
             path.move(to: CGPoint(x: 0, y: -20))
             path.addLine(to: CGPoint(x: 0, y: -8))
@@ -360,6 +395,9 @@ public class SchematicCanvas: PlatformView {
         case .npnTransistor, .pnpTransistor:
             let beta = symbol.parameters["forwardBeta"] ?? 0
             return String(format: "β=%.3g", beta)
+        case .nmosTransistor, .pmosTransistor:
+            let threshold = symbol.parameters["thresholdVoltage"] ?? 0
+            return String(format: "Vt=%.3g V", threshold)
         case .ground:
             return nil
         }

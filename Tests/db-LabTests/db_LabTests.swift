@@ -1359,6 +1359,257 @@ import Testing
     }
 }
 
+// MARK: - Phase 6: MOSFET (Level 1 Shichman-Hodges)
+
+@Test func mosfetNmosBiasesInSaturation() throws {
+    // +5 V through 1k to the drain; gate held at 3 V; source and bulk grounded.
+    let circuit = LinearCircuit(
+        nodeNames: ["0", "vdd", "drain", "gate"],
+        elements: [
+            .init(kind: .voltageSource, nodeA: 1, nodeB: 0, value: 5, name: "VDD"),
+            .init(kind: .resistor, nodeA: 1, nodeB: 2, value: 1_000, name: "RD"),
+            .init(kind: .voltageSource, nodeA: 3, nodeB: 0, value: 3, name: "VG"),
+            .init(
+                kind: .mosfet, nodeA: 2, nodeB: 0, nodeC: 3, nodeD: 0, value: 0,
+                mosfet: LinearCircuit.MOSFETParameters(
+                    polarity: .nmos, thresholdVoltage: 1, transconductanceParameter: 1e-3
+                ),
+                name: "M1"
+            ),
+        ]
+    )
+    let solution = try circuit.solveDC()
+    let vd = solution.nodeVoltages[2].re
+    let drainCurrent = solution.elementCurrents[3].re
+    // Saturation: Id = 0.5·KP·(Vgs − Vt)² = 0.5·1e-3·4 = 2 mA.
+    #expect(drainCurrent > 0)
+    #expect(abs(drainCurrent - 2e-3) < 1e-5)
+    #expect(abs(vd - (5 - 2e-3 * 1_000)) < 1e-3)
+}
+
+@Test func mosfetPmosBiasesInSaturation() throws {
+    // Source at +5 V, gate at 2 V, drain returned to ground through 1k.
+    let circuit = LinearCircuit(
+        nodeNames: ["0", "vdd", "drain", "gate"],
+        elements: [
+            .init(kind: .voltageSource, nodeA: 1, nodeB: 0, value: 5, name: "VDD"),
+            .init(kind: .resistor, nodeA: 2, nodeB: 0, value: 1_000, name: "RD"),
+            .init(kind: .voltageSource, nodeA: 3, nodeB: 0, value: 2, name: "VG"),
+            .init(
+                kind: .mosfet, nodeA: 2, nodeB: 1, nodeC: 3, nodeD: 1, value: 0,
+                mosfet: LinearCircuit.MOSFETParameters(
+                    polarity: .pmos, thresholdVoltage: -1, transconductanceParameter: 1e-3
+                ),
+                name: "M1"
+            ),
+        ]
+    )
+    let solution = try circuit.solveDC()
+    let vd = solution.nodeVoltages[2].re
+    let drainCurrent = solution.elementCurrents[3].re
+    // |Vsg| = 3, |Vt| = 1, overdrive 2; current flows out of the drain.
+    #expect(abs(drainCurrent + 2e-3) < 1e-5)
+    #expect(abs(vd - 2.0) < 1e-3)
+}
+
+@Test func mosfetBodyEffectLowersDrainCurrent() throws {
+    func drainCurrent(bulkVoltage: Double) throws -> Double {
+        let circuit = LinearCircuit(
+            nodeNames: ["0", "vdd", "drain", "gate", "bulk"],
+            elements: [
+                .init(kind: .voltageSource, nodeA: 1, nodeB: 0, value: 5, name: "VDD"),
+                .init(kind: .resistor, nodeA: 1, nodeB: 2, value: 1_000, name: "RD"),
+                .init(kind: .voltageSource, nodeA: 3, nodeB: 0, value: 3, name: "VG"),
+                .init(kind: .voltageSource, nodeA: 4, nodeB: 0, value: bulkVoltage, name: "VB"),
+                .init(
+                    kind: .mosfet, nodeA: 2, nodeB: 0, nodeC: 3, nodeD: 4, value: 0,
+                    mosfet: LinearCircuit.MOSFETParameters(
+                        polarity: .nmos, thresholdVoltage: 1,
+                        transconductanceParameter: 1e-3, bodyEffect: 0.5, surfacePotential: 0.6
+                    ),
+                    name: "M1"
+                ),
+            ]
+        )
+        return try circuit.solveDC().elementCurrents[4].re
+    }
+    let zeroBias = try drainCurrent(bulkVoltage: 0)
+    let reverseBias = try drainCurrent(bulkVoltage: -2)
+    // Reverse body bias raises the threshold, lowering the drain current.
+    #expect(reverseBias > 0)
+    #expect(reverseBias < zeroBias)
+}
+
+@Test func netlistParserReadsMOSFETModelAndElement() throws {
+    let netlist = """
+    VDD 1 0 DC 5
+    VG 3 0 DC 3
+    RD 1 2 1k
+    M1 2 3 0 0 NMOS1
+    .model NMOS1 NMOS(VTO=1 KP=1m LAMBDA=0.02)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let mosfet = try #require(parsed.circuit.elements.first { $0.name == "M1" })
+    #expect(mosfet.kind == .mosfet)
+    #expect(mosfet.mosfet?.polarity == .nmos)
+    #expect(abs((mosfet.mosfet?.thresholdVoltage ?? 0) - 1) < 1e-9)
+    #expect(abs((mosfet.mosfet?.transconductanceParameter ?? 0) - 1e-3) < 1e-15)
+    #expect(abs((mosfet.mosfet?.channelLengthModulation ?? 0) - 0.02) < 1e-15)
+    // Node convention: nodeA = drain, nodeB = source, nodeC = gate, nodeD = bulk.
+    #expect(parsed.circuit.nodeNames[mosfet.nodeA] == "2")
+    #expect(parsed.circuit.nodeNames[mosfet.nodeB] == "0")
+    #expect(parsed.circuit.nodeNames[try #require(mosfet.nodeC)] == "3")
+    #expect(parsed.circuit.nodeNames[try #require(mosfet.nodeD)] == "0")
+}
+
+@Test func netlistParserReadsPMOSModel() throws {
+    let netlist = """
+    VDD 1 0 DC 5
+    M1 1 2 0 0 PMOS1
+    .model PMOS1 PMOS(VTO=-1.5 KP=2m)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let mosfet = try #require(parsed.circuit.elements.first { $0.name == "M1" })
+    #expect(mosfet.mosfet?.polarity == .pmos)
+    #expect(abs((mosfet.mosfet?.thresholdVoltage ?? 0) + 1.5) < 1e-9)
+}
+
+@Test func netlistParseRejectsMOSFETWithUnknownModel() {
+    #expect(throws: (any Error).self) {
+        _ = try SpiceNetlistParser.parse("V1 1 0 DC 5\nM1 1 1 0 0 NOPE\n.end")
+    }
+}
+
+@Test func mosfetNetlistSolvesCommonSource() throws {
+    let netlist = """
+    VDD 1 0 DC 5
+    VG 3 0 DC 3
+    RD 1 2 1k
+    M1 2 3 0 0 NMOS1
+    .model NMOS1 NMOS(VTO=1 KP=1m)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let drain = try #require(result.dc?.nodes.first { $0.name == "2" }?.voltage)
+    #expect(abs(drain - 3) < 1e-2)
+}
+
+@Test func mosfetSmallSignalACProducesFiniteGain() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = true
+    settings.acStartFrequency = 100
+    settings.acStopFrequency = 10_000
+    settings.acPointsPerDecade = 2
+
+    let netlist = """
+    VDD 1 0 DC 5 AC 0
+    VG 3 0 DC 3 AC 1
+    RD 1 2 1k
+    M1 2 3 0 0 NMOS1
+    .model NMOS1 NMOS(VTO=1 KP=1m)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let ac = try #require(result.ac)
+    let drain = try #require(ac.nodes.first { $0.name == "2" })
+    #expect(drain.response.allSatisfy { $0.magnitudeDb.isFinite })
+    // Small-signal gain ~ gm·RD = (1e-3·2)·1e3 = 2.
+    #expect((drain.response.first?.magnitudeDb ?? -1_000) > -60)
+}
+
+@Test func mosfetTransientRespondsToGatePulse() throws {
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    settings.runTransient = true
+    settings.tranStep = 1e-5
+    settings.tranStop = 1e-3
+
+    let netlist = """
+    VDD 1 0 DC 5
+    VG 3 0 PULSE(0 5 0 1n 1n 5 10)
+    RD 1 2 1k
+    M1 2 3 0 0 NMOS1
+    .model NMOS1 NMOS(VTO=1 KP=1m)
+    .end
+    """
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let transient = try #require(result.transient)
+    let drain = try #require(transient.nodes.first { $0.name == "2" }?.values)
+    // While the gate is driven high the drain is pulled low.
+    #expect((drain.last ?? 5) < 1.5)
+    #expect((drain.last ?? 0) < (drain.first ?? 5))
+}
+
+@Test func compilerMapsMOSFETParametersAndPolarity() throws {
+    let mosfet = SymbolInstance(
+        descriptorId: "pmos-transistor",
+        refDes: "M1",
+        position: GridPoint(0, 0),
+        parameters: [
+            "thresholdVoltage": -1.5,
+            "transconductanceParameter": 5e-3,
+            "channelLengthModulation": 0.05,
+            "bodyEffect": 0.4,
+            "surfacePotential": 0.7,
+        ]
+    )
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let circuit = try CircuitCompiler.compile(symbols: [mosfet, ground], wires: [], labels: [])
+    let element = try #require(circuit.elements.first { $0.name == "M1" })
+    #expect(element.kind == .mosfet)
+    #expect(element.mosfet?.polarity == .pmos)
+    #expect(abs((element.mosfet?.thresholdVoltage ?? 0) + 1.5) < 1e-9)
+    #expect(abs((element.mosfet?.transconductanceParameter ?? 0) - 5e-3) < 1e-15)
+    #expect(abs((element.mosfet?.bodyEffect ?? 0) - 0.4) < 1e-9)
+}
+
+@Test @MainActor func netlistBuilderEmitsMOSFETAndModel() throws {
+    let document = SchematicDocument()
+    _ = document.addComponent(descriptorId: "nmos-transistor", at: GridPoint(0, 0))
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+    #expect(netlist.contains("M1 "))
+    #expect(netlist.contains(".model MMOD1 NMOS(VTO=1 KP=2E-05 LAMBDA=0 GAMMA=0 PHI=0.6)"))
+}
+
+@Test func netlistSubcircuitScopesMOSFETInstances() throws {
+    let netlist = """
+    .subckt INV vin vout vdd
+    M1 vout vin 0 0 NMOS1
+    RD vdd vout 1k
+    .ends
+    VDD vdd 0 DC 5
+    Vin in 0 DC 5
+    X1 in out vdd INV
+    .model NMOS1 NMOS(VTO=1 KP=1m)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(Set(parsed.circuit.elements.map(\.name)).isSuperset(of: ["X1.M1", "X1.RD"]))
+    let result = try SimulationEngine.solve(netlist: netlist, settings: .default)
+    let out = try #require(result.dc?.nodes.first { $0.name == "out" }?.voltage)
+    // The driven-high gate pulls the drain low through the pull-up resistor.
+    #expect(out > 0 && out < 1.5)
+}
+
+@Test func diagnosticsRejectInvalidTransconductance() {
+    var mosfet = SymbolInstance(descriptorId: "nmos-transistor", refDes: "M1", position: GridPoint(0, 0))
+    mosfet.parameters = ComponentRegistry.shared.descriptor(for: "nmos-transistor")!.defaultParameterValues
+    mosfet.parameters["transconductanceParameter"] = 0
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let diagnostics = CircuitDiagnostics.analyze(symbols: [mosfet, ground], wires: [], labels: [])
+    #expect(diagnostics.contains {
+        $0.severity == .error && $0.message.localizedCaseInsensitiveContains("transconductance parameter")
+    })
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

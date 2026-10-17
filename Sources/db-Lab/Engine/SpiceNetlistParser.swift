@@ -1,8 +1,8 @@
 // SpiceNetlistParser.swift
 // A small, well-scoped SPICE reader for the element set the solver supports:
 // R, C, L, independent V and I sources, diodes (D), bipolar transistors (Q),
-// and `.subckt` definitions instantiated with `X` elements, plus `.ac` and
-// `.tran` analysis cards.
+// MOSFETs (M), and `.subckt` definitions instantiated with `X` elements, plus
+// `.ac` and `.tran` analysis cards.
 //
 // This is intentionally not a full SPICE implementation. Unsupported cards are
 // reported instead of being silently ignored, so the UI can tell the user what
@@ -34,7 +34,7 @@ public enum SpiceParseError: LocalizedError {
         case .malformed(let line, let text):
             return "Line \(line): could not parse \"\(text)\"."
         case .unsupportedElement(let line, let name):
-            return "Line \(line): element \(name) is not supported yet (only R, C, L, V, I, D, Q, X)."
+            return "Line \(line): element \(name) is not supported yet (only R, C, L, V, I, D, Q, M, X)."
         case .unsupportedCard(let line, let text):
             return "Line \(line): directive \"\(text)\" is not supported."
         case .invalidValue(let line, let text):
@@ -70,6 +70,16 @@ private struct BJTModelDefinition {
     var saturationCurrent = 1e-15
     var forwardBeta = 100.0
     var reverseBeta = 1.0
+}
+
+/// A parsed MOSFET model from a `.model … NMOS(…)`/`PMOS(…)` card.
+private struct MOSFETModelDefinition {
+    var polarity: LinearCircuit.MOSFETPolarity = .nmos
+    var thresholdVoltage = 1.0
+    var transconductanceParameter = 2e-5
+    var channelLengthModulation = 0.0
+    var bodyEffect = 0.0
+    var surfacePotential = 0.6
 }
 
 /// A raw line of a `.subckt` body, kept with its source line number.
@@ -137,9 +147,11 @@ public enum SpiceNetlistParser {
         private var elements: [LinearCircuit.Element] = []
         private var diodeModels: [String: DiodeModelDefinition] = [:]
         private var bjtModels: [String: BJTModelDefinition] = [:]
+        private var mosfetModels: [String: MOSFETModelDefinition] = [:]
         private var subcircuits: [String: SubcircuitDefinition] = [:]
         private var pendingDiodes: [PendingDiode] = []
         private var pendingBJTs: [PendingBJT] = []
+        private var pendingMOSFETs: [PendingMOSFET] = []
         private var analysis = SpiceAnalysisCard.none
         private var sawContent = false
 
@@ -157,6 +169,16 @@ public enum SpiceNetlistParser {
             var collector: Int
             var base: Int
             var emitter: Int
+            var model: String
+            var line: Int
+        }
+
+        private struct PendingMOSFET {
+            var name: String
+            var drain: Int
+            var gate: Int
+            var source: Int
+            var bulk: Int
             var model: String
             var line: Int
         }
@@ -198,7 +220,13 @@ public enum SpiceNetlistParser {
                     }
                     sawContent = true
                 case ".model":
-                    try SpiceNetlistParser.parseModel(stripped, line: lineNumber, into: &diodeModels, bjtModels: &bjtModels)
+                    try SpiceNetlistParser.parseModel(
+                        stripped,
+                        line: lineNumber,
+                        into: &diodeModels,
+                        bjtModels: &bjtModels,
+                        mosfetModels: &mosfetModels
+                    )
                     sawContent = true
                     open?.body.append(SubcircuitLine(text: stripped, number: lineNumber))
                 case _ where open != nil:
@@ -377,6 +405,18 @@ public enum SpiceNetlistParser {
                     model: tokens[4].uppercased(),
                     line: line.number
                 ))
+            case "M":
+                // M<name> <drain> <gate> <source> <bulk> <model>
+                guard tokens.count >= 6 else { throw SpiceParseError.malformed(line: line.number, text: stripped) }
+                pendingMOSFETs.append(PendingMOSFET(
+                    name: localName,
+                    drain: resolveNode(tokens[1], scope: scope),
+                    gate: resolveNode(tokens[2], scope: scope),
+                    source: resolveNode(tokens[3], scope: scope),
+                    bulk: resolveNode(tokens[4], scope: scope),
+                    model: tokens[5].uppercased(),
+                    line: line.number
+                ))
             case "X":
                 try instantiate(tokens: tokens, scope: scope, line: line)
             default:
@@ -508,6 +548,29 @@ public enum SpiceNetlistParser {
                         saturationCurrent: definition.saturationCurrent,
                         forwardBeta: definition.forwardBeta,
                         reverseBeta: definition.reverseBeta
+                    ),
+                    name: pending.name
+                ))
+            }
+
+            for pending in pendingMOSFETs {
+                guard let definition = mosfetModels[pending.model] else {
+                    throw SpiceParseError.missingModel(line: pending.line, name: pending.model)
+                }
+                elements.append(.init(
+                    kind: .mosfet,
+                    nodeA: pending.drain,
+                    nodeB: pending.source,
+                    nodeC: pending.gate,
+                    nodeD: pending.bulk,
+                    value: 0,
+                    mosfet: LinearCircuit.MOSFETParameters(
+                        polarity: definition.polarity,
+                        thresholdVoltage: definition.thresholdVoltage,
+                        transconductanceParameter: definition.transconductanceParameter,
+                        channelLengthModulation: definition.channelLengthModulation,
+                        bodyEffect: definition.bodyEffect,
+                        surfacePotential: definition.surfacePotential
                     ),
                     name: pending.name
                 ))
@@ -790,13 +853,15 @@ public enum SpiceNetlistParser {
         analysis.tranStart = start
     }
 
-    /// Parses `.model <name> D(<params>)` or `.model <name> NPN|PNP(<params>)`.
-    /// Unknown parameters are ignored so standard cards load.
+    /// Parses `.model <name> D(<params>)`, `.model <name> NPN|PNP(<params>)`, or
+    /// `.model <name> NMOS|PMOS(<params>)`. Unknown parameters are ignored so
+    /// standard cards load.
     private static func parseModel(
         _ text: String,
         line: Int,
         into models: inout [String: DiodeModelDefinition],
-        bjtModels: inout [String: BJTModelDefinition]
+        bjtModels: inout [String: BJTModelDefinition],
+        mosfetModels: inout [String: MOSFETModelDefinition]
     ) throws {
         var body = text
         if body.lowercased().hasPrefix(".model") {
@@ -832,6 +897,16 @@ public enum SpiceNetlistParser {
             if let bf = values["BF"] { definition.forwardBeta = bf }
             if let br = values["BR"] { definition.reverseBeta = br }
             bjtModels[name] = definition
+        case "NMOS", "PMOS":
+            var definition = MOSFETModelDefinition()
+            definition.polarity = type == "PMOS" ? .pmos : .nmos
+            definition.thresholdVoltage = definition.polarity == .pmos ? -1 : 1
+            if let vto = values["VTO"] { definition.thresholdVoltage = vto }
+            if let kp = values["KP"] { definition.transconductanceParameter = kp }
+            if let lambda = values["LAMBDA"] { definition.channelLengthModulation = lambda }
+            if let gamma = values["GAMMA"] { definition.bodyEffect = gamma }
+            if let phi = values["PHI"] { definition.surfacePotential = phi }
+            mosfetModels[name] = definition
         default:
             throw SpiceParseError.unsupportedCard(line: line, text: text)
         }

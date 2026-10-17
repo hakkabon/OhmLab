@@ -104,6 +104,20 @@ public enum CircuitCompiler {
             return (collector, base, emitter)
         }
 
+        func fourTerminalNodes(for symbol: SymbolInstance, descriptor: ComponentDescriptor) throws -> (drain: Int, gate: Int, source: Int, bulk: Int) {
+            guard descriptor.pins.count == 4 else {
+                throw CircuitCompileError.unsupportedComponent(
+                    reference: symbol.refDes,
+                    descriptor: descriptor.displayName
+                )
+            }
+            let drain = try node(for: PinRef(symbolId: symbol.id, pinId: descriptor.pins[0].id), reference: symbol.refDes)
+            let gate = try node(for: PinRef(symbolId: symbol.id, pinId: descriptor.pins[1].id), reference: symbol.refDes)
+            let source = try node(for: PinRef(symbolId: symbol.id, pinId: descriptor.pins[2].id), reference: symbol.refDes)
+            let bulk = try node(for: PinRef(symbolId: symbol.id, pinId: descriptor.pins[3].id), reference: symbol.refDes)
+            return (drain, gate, source, bulk)
+        }
+
         func parameter(_ name: String, descriptor: ComponentDescriptor, symbol: SymbolInstance) throws -> Double {
             guard descriptor.parameters.contains(where: { $0.id == name }),
                   let value = symbol.parameters[name], value.isFinite else {
@@ -251,6 +265,47 @@ public enum CircuitCompiler {
                         saturationCurrent: saturation,
                         forwardBeta: forwardBeta,
                         reverseBeta: reverseBeta
+                    ),
+                    name: symbol.refDes
+                ))
+            case .nmosTransistor, .pmosTransistor:
+                let (drain, gate, source, bulk) = try fourTerminalNodes(for: symbol, descriptor: descriptor)
+                let threshold = try parameter("thresholdVoltage", descriptor: descriptor, symbol: symbol)
+                guard threshold.isFinite else {
+                    throw CircuitCompileError.invalidParameter(reference: symbol.refDes, parameter: "threshold voltage")
+                }
+                let transconductance = try positive(
+                    try parameter("transconductanceParameter", descriptor: descriptor, symbol: symbol),
+                    parameter: "transconductance parameter",
+                    symbol: symbol
+                )
+                let modulation = try parameter("channelLengthModulation", descriptor: descriptor, symbol: symbol)
+                guard modulation >= 0 else {
+                    throw CircuitCompileError.invalidParameter(reference: symbol.refDes, parameter: "channel-length modulation")
+                }
+                let bodyEffect = try parameter("bodyEffect", descriptor: descriptor, symbol: symbol)
+                guard bodyEffect >= 0 else {
+                    throw CircuitCompileError.invalidParameter(reference: symbol.refDes, parameter: "body effect")
+                }
+                let surfacePotential = try positive(
+                    try parameter("surfacePotential", descriptor: descriptor, symbol: symbol),
+                    parameter: "surface potential",
+                    symbol: symbol
+                )
+                elements.append(.init(
+                    kind: .mosfet,
+                    nodeA: drain,
+                    nodeB: source,
+                    nodeC: gate,
+                    nodeD: bulk,
+                    value: 0,
+                    mosfet: .init(
+                        polarity: descriptor.symbol == .pmosTransistor ? .pmos : .nmos,
+                        thresholdVoltage: threshold,
+                        transconductanceParameter: transconductance,
+                        channelLengthModulation: modulation,
+                        bodyEffect: bodyEffect,
+                        surfacePotential: surfacePotential
                     ),
                     name: symbol.refDes
                 ))

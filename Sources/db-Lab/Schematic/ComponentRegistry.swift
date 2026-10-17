@@ -10,6 +10,8 @@ public enum ComponentSymbol: String, Sendable {
     case diode
     case npnTransistor
     case pnpTransistor
+    case nmosTransistor
+    case pmosTransistor
     case ground
 }
 
@@ -82,6 +84,13 @@ public final class ComponentRegistry: Sendable {
             PinDescriptor(id: "collector", name: "C", position: CGPoint(x: 40, y: -40)),
             PinDescriptor(id: "base", name: "B", position: CGPoint(x: -40, y: 0)),
             PinDescriptor(id: "emitter", name: "E", position: CGPoint(x: 40, y: 40))
+        ]
+        // Order is significant: drain, gate, source, bulk.
+        let mosfetPins = [
+            PinDescriptor(id: "drain", name: "D", position: CGPoint(x: 40, y: -40)),
+            PinDescriptor(id: "gate", name: "G", position: CGPoint(x: -40, y: 0)),
+            PinDescriptor(id: "source", name: "S", position: CGPoint(x: 40, y: 40)),
+            PinDescriptor(id: "bulk", name: "B", position: CGPoint(x: 40, y: 0))
         ]
         registry = [
             "resistor": ComponentDescriptor(
@@ -184,6 +193,22 @@ public final class ComponentRegistry: Sendable {
                     ComponentParameterDescriptor(id: "reverseBeta", name: "Reverse beta", unit: "", defaultValue: 1)
                 ]
             ),
+            "nmos-transistor": ComponentDescriptor(
+                id: "nmos-transistor",
+                prefix: "M",
+                displayName: "N-MOSFET",
+                symbol: .nmosTransistor,
+                pins: mosfetPins,
+                parameters: Self.mosfetParameters(thresholdVoltage: 1)
+            ),
+            "pmos-transistor": ComponentDescriptor(
+                id: "pmos-transistor",
+                prefix: "M",
+                displayName: "P-MOSFET",
+                symbol: .pmosTransistor,
+                pins: mosfetPins,
+                parameters: Self.mosfetParameters(thresholdVoltage: -1)
+            ),
             "ground": ComponentDescriptor(
                 id: "ground",
                 prefix: "GND",
@@ -191,6 +216,18 @@ public final class ComponentRegistry: Sendable {
                 symbol: .ground,
                 pins: [PinDescriptor(id: "1", name: "1", position: CGPoint(x: 0, y: -20))]
             )
+        ]
+    }
+
+    /// Shared Level 1 parameter set for the N- and P-MOSFET descriptors. The
+    /// only difference is the sign of the threshold voltage.
+    private static func mosfetParameters(thresholdVoltage: Double) -> [ComponentParameterDescriptor] {
+        [
+            ComponentParameterDescriptor(id: "thresholdVoltage", name: "Threshold voltage", unit: "V", defaultValue: thresholdVoltage),
+            ComponentParameterDescriptor(id: "transconductanceParameter", name: "Transconductance parameter", unit: "A/V²", defaultValue: 2e-5),
+            ComponentParameterDescriptor(id: "channelLengthModulation", name: "Channel-length modulation", unit: "1/V", defaultValue: 0),
+            ComponentParameterDescriptor(id: "bodyEffect", name: "Body effect", unit: "√V", defaultValue: 0),
+            ComponentParameterDescriptor(id: "surfacePotential", name: "Surface potential", unit: "V", defaultValue: 0.6)
         ]
     }
 

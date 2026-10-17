@@ -92,6 +92,36 @@ public enum SpiceNetlistBuilder {
                 )
                 continue
             }
+            if descriptor.symbol == .nmosTransistor || descriptor.symbol == .pmosTransistor {
+                guard descriptor.pins.count == 4,
+                      let drainNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[0].id)],
+                      let gateNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[1].id)],
+                      let sourceNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[2].id)],
+                      let bulkNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[3].id)] else {
+                    throw SpiceNetlistBuildError.missingPin(reference: symbol.refDes, pin: "drain, gate, source, or bulk")
+                }
+                let threshold = try parameter("thresholdVoltage", descriptor: descriptor, symbol: symbol)
+                guard threshold.isFinite else {
+                    throw SpiceNetlistBuildError.invalidParameter(reference: symbol.refDes, parameter: "thresholdVoltage")
+                }
+                let transconductance = try parameter("transconductanceParameter", descriptor: descriptor, symbol: symbol)
+                try validate(transconductance, parameter: "transconductance parameter", symbol: symbol)
+                let modulation = try parameter("channelLengthModulation", descriptor: descriptor, symbol: symbol)
+                try validate(modulation, parameter: "channel-length modulation", symbol: symbol, allowsZero: true)
+                let bodyEffect = try parameter("bodyEffect", descriptor: descriptor, symbol: symbol)
+                try validate(bodyEffect, parameter: "body effect", symbol: symbol, allowsZero: true)
+                let surfacePotential = try parameter("surfacePotential", descriptor: descriptor, symbol: symbol)
+                try validate(surfacePotential, parameter: "surface potential", symbol: symbol)
+                let modelName = "MMOD\(symbol.refDes.dropFirst())"
+                let type = descriptor.symbol == .pmosTransistor ? "PMOS" : "NMOS"
+                lines.append("\(symbol.refDes) \(drainNode) \(gateNode) \(sourceNode) \(bulkNode) \(modelName)")
+                modelLines.append(
+                    ".model \(modelName) \(type)(VTO=\(spiceNumber(threshold)) "
+                    + "KP=\(spiceNumber(transconductance)) LAMBDA=\(spiceNumber(modulation)) "
+                    + "GAMMA=\(spiceNumber(bodyEffect)) PHI=\(spiceNumber(surfacePotential)))"
+                )
+                continue
+            }
 
             guard descriptor.pins.count == 2,
                   let firstPin = descriptor.pins.first,
@@ -153,6 +183,8 @@ public enum SpiceNetlistBuilder {
                     ".model \(modelName) D(IS=\(spiceNumber(saturation)) N=\(spiceNumber(emission)))"
                 )
             case .npnTransistor, .pnpTransistor:
+                break // handled above
+            case .nmosTransistor, .pmosTransistor:
                 break // handled above
             case .ground:
                 break

@@ -1,6 +1,6 @@
 # db-Lab
 
-**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, and bipolar transistors**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
+**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, and MOSFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
 The Swift package builds and runs by itself — no Rust toolchain required. A future `audio-spice-core` (Rust/UniFFI) engine can be linked in behind the same interface, but it is not needed for the milestone.
 
@@ -23,7 +23,7 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 *   *Note: Visual wire crossings without an explicit junction or endpoint-to-wire connection are intentionally ignored, preventing accidental shorts.*
 
 ### Layer 3: The Netlist Layer (The Projection)
-This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I, D, Q).
+This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I, D, Q, M).
 *   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets.
 *   **Value Parsing:** Converts strings like `4.7k` or `10u` into floating-point values.
 *   **Import/Export:** A `.ac`-aware netlist reader lets you edit SPICE directly; the schematic projects back to a readable SPICE netlist.
@@ -34,7 +34,7 @@ The simulation layer is a **native Swift linear solver**:
 *   **AC Analysis:** Decade, octave, or linear sweeps of complex node voltages and element currents → magnitude (dB) and phase over frequency.
 *   **DC Operating Point:** Capacitors open, inductors short (0 V branch); node voltages plus per-element voltage and current.
 *   **Transient Analysis:** Backward-Euler time stepping with companion models for C and L, seeded by the operating point at the start time. Sources support `PULSE`, `SIN`, and `PWL` shapes.
-*   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance) and NPN/PNP bipolar transistors (simplified Ebers-Moll transport model: saturation current, forward/reverse beta; no Early effect). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal). The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block.
+*   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance), NPN/PNP bipolar transistors (simplified Ebers-Moll transport model: saturation current, forward/reverse beta; no Early effect), and N-MOS/P-MOS field-effect transistors (Level 1 Shichman-Hodges: threshold voltage, transconductance parameter `KP`, channel-length modulation `LAMBDA`, body effect `GAMMA`, surface potential `PHI`). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal). The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block (4×4 for the MOSFET).
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
 ## Key Frontend Features
@@ -59,9 +59,11 @@ The simulation layer is a **native Swift linear solver**:
 | Diode | D | Shockley model: saturation current (`IS`), emission coefficient (`N`), optional series resistance (`RS`, netlist) |
 | NPN transistor | Q | Ebers-Moll transport model: saturation current (`IS`), forward beta (`BF`), reverse beta (`BR`) |
 | PNP transistor | Q | Same model, polarity reversed |
+| N-MOSFET | M | Level 1 Shichman-Hodges: threshold voltage (`VTO`), transconductance parameter (`KP`), channel-length modulation (`LAMBDA`), body effect (`GAMMA`), surface potential (`PHI`); four terminals drain/gate/source/bulk |
+| P-MOSFET | M | Same model, polarity reversed (`VTO` is negative) |
 | Ground | GND | Maps to node 0 |
 
-Other nonlinear devices (MOSFET, JFET), switches, and transformers are intentionally out of scope for this milestone and are reported rather than silently ignored.
+Other nonlinear devices (JFET), switches, and transformers are intentionally out of scope for this milestone and are reported rather than silently ignored.
 
 ### Subcircuits (netlist)
 
@@ -98,7 +100,7 @@ cd db-Lab
 swift run
 ```
 
-Create a circuit, place components (R, C, L, V, I, D, Q, ground), draw wires, and press **Run**. The DC operating point, AC magnitude/phase plots, and transient waveforms all come from the built-in solver.
+Create a circuit, place components (R, C, L, V, I, D, Q, M, ground), draw wires, and press **Run**. The DC operating point, AC magnitude/phase plots, and transient waveforms all come from the built-in solver.
 
 ## Workflows
 
@@ -110,7 +112,7 @@ Create a circuit, place components (R, C, L, V, I, D, Q, ground), draw wires, an
 5. Configure DC/AC/transient settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view. Transient runs plot selected node voltages and element currents over time.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I, D, Q with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Unsupported cards are reported rather than ignored.
+Enter or paste SPICE (R, C, L, V, I, D, Q, M with `.ac dec|oct|lin` and `.tran`), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Unsupported cards are reported rather than ignored.
 
 ## Document format
 
