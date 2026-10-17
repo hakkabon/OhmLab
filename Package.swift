@@ -1,5 +1,5 @@
 // swift-tools-version: 6.0
-// db-Lab Package.swift
+// OhmLab Package.swift
 //
 // Build configuration:
 //   • Default:          Pure-Swift build with the built-in linear MNA engine
@@ -16,7 +16,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "db-Lab",
+    name: "OhmLab",
 
     // ── Supported platforms ──────────────────────────────────────────────────
     platforms: [
@@ -26,7 +26,7 @@ let package = Package(
 
     // ── Products ─────────────────────────────────────────────────────────────
     products: [
-        .executable(name: "db-Lab", targets: ["db-Lab"]),
+        .executable(name: "OhmLab", targets: ["OhmLab"]),
     ],
 
     // ── Dependencies ─────────────────────────────────────────────────────────
@@ -38,12 +38,12 @@ let package = Package(
     targets: [
         // ── Main app ─────────────────────────────────────────────────────────
         .executableTarget(
-            name: "db-Lab",
+            name: "OhmLab",
             dependencies: [
                 // Uncomment once the XCFramework has been built:
                 // "DbEngineFFI",
             ],
-            path: "Sources/db-Lab",
+            path: "Sources/OhmLab",
             swiftSettings: [
                 // Uncomment to activate the real UniFFI engine path:
                 // .define("UNIFFI_AVAILABLE"),
@@ -52,9 +52,9 @@ let package = Package(
 
         // ── Tests ─────────────────────────────────────────────────────────────
         .testTarget(
-            name: "db-LabTests",
-            dependencies: ["db-Lab"],
-            path: "Tests/db-LabTests"
+            name: "OhmLabTests",
+            dependencies: ["OhmLab"],
+            path: "Tests/OhmLabTests"
         ),
 
         // ── UniFFI-generated bindings (uncomment after running build script) ──

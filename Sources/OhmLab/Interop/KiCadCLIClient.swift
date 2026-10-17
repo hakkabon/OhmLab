@@ -88,7 +88,7 @@ public enum KiCadCLIClient {
         }
 
         let output = FileManager.default.temporaryDirectory
-            .appendingPathComponent("db-lab-\(UUID().uuidString).cir")
+            .appendingPathComponent("ohmlab-\(UUID().uuidString).cir")
         defer { try? FileManager.default.removeItem(at: output) }
 
         let process = Process()

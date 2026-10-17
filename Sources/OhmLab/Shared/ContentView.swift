@@ -16,7 +16,7 @@ struct ContentView: View {
         .frame(minWidth: 1000, minHeight: 650)
         #endif
         .alert(
-            "db-Lab",
+            "OhmLab",
             isPresented: Binding(
                 get: { appState.lastError != nil },
                 set: { if !$0 { appState.lastError = nil } }
@@ -72,7 +72,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("db-Lab")
+        .navigationTitle("OhmLab")
         .toolbar {
             ToolbarItemGroup {
                 Menu {
@@ -99,7 +99,7 @@ struct WelcomeView: View {
                 .frame(width: 80, height: 80)
                 .foregroundStyle(.secondary)
 
-            Text("db-Lab")
+            Text("OhmLab")
                 .font(.largeTitle)
                 .bold()
 

@@ -52,7 +52,7 @@ public enum SpiceNetlistBuilder {
             }
         }
 
-        var lines = ["* Generated from db-Lab schematic"]
+        var lines = ["* Generated from OhmLab schematic"]
         var modelLines: [String] = []
         var references = Set<String>()
         for symbol in document.symbols.sorted(by: { $0.refDes < $1.refDes }) {

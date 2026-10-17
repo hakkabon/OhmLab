@@ -1,7 +1,7 @@
 // KiCadInterchange.swift
 // Netlist-level interchange with KiCad (and other SPICE tools).
 //
-// db-Lab does not parse `.kicad_sch` natively; instead it borrows KiCad's own
+// OhmLab does not parse `.kicad_sch` natively; instead it borrows KiCad's own
 // exporter (`kicad-cli sch export netlist --format spice`) to obtain a SPICE
 // netlist, then reads that with the hardened netlist parser. The reverse
 // direction is a plain SPICE netlist, which KiCad/ngspice can open directly.

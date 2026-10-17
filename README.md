@@ -1,12 +1,12 @@
-# db-Lab
+# OhmLab
 
-**db-Lab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, and MOSFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
+**OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, and MOSFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
 The Swift package builds and runs by itself — no Rust toolchain required. A future `audio-spice-core` (Rust/UniFFI) engine can be linked in behind the same interface, but it is not needed for the milestone.
 
 ## Architecture: The Four-Layer Model
 
-Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `db-Lab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
+Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
 
 ### Layer 1: The Schematic Model (Source of Truth)
 This layer represents the visual document that is saved to disk. It contains all geometric and visual context:
@@ -45,7 +45,7 @@ The simulation layer is a **native Swift linear solver**:
 *   **Real Analysis, Real Results:** The DC/AC/transient/DC-sweep results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data. Node voltages and element currents are both plottable as Bode plots, time-domain waveforms, or DC transfer curves, and results can be copied out as CSV.
 *   **Diagnostics as Guidance:** The document is validated continuously — missing ground, duplicate/invalid references, invalid values, floating pins, and shorts are reported inline with the affected component named.
 *   **KiCad / ngspice Interchange:** Import a SPICE netlist (or, on macOS, a KiCad `.kicad_sch` via `kicad-cli`); export a netlist KiCad and ngspice accept.
-*   **Durable Documents:** Circuits serialize to versioned `.dblab` JSON, with open/save and crash recovery of unsaved edits.
+*   **Durable Documents:** Circuits serialize to versioned `.ohmlab` JSON, with open/save and crash recovery of unsaved edits.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
 
 ## Supported elements (passive)
@@ -87,18 +87,18 @@ Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel w
 
 ### KiCad interchange
 
-Interchange is netlist-level: db-Lab does not parse `.kicad_sch` itself, it borrows KiCad's exporter.
+Interchange is netlist-level: OhmLab does not parse `.kicad_sch` itself, it borrows KiCad's exporter.
 
 *   **Import** — the **Import** button (or **File ▸ Import Netlist or KiCad Schematic…**, ⇧⌘I, or dragging a file onto the window) accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or (macOS) a `.kicad_sch` schematic, which is converted with `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). The resulting SPICE text is loaded into the netlist editor and can be run directly; anything the engine cannot model is reported in **Diagnostics** rather than blocking the import. A banner records where the netlist came from and lists non-fatal parser notes; editing the netlist by hand clears it.
 *   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and **Export SPICE Netlist…** (**File ▸ …**, ⇧⌘E on macOS; the system share sheet on iPadOS) writes it to a `.cir` file.
 *   **Clipboard** — **Copy**/**Paste** on the netlist editor move netlists to and from the system pasteboard.
 
-Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements db-Lab does not support, so it is reported as an unsupported element rather than simulated.
+Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements OhmLab does not support, so it is reported as an unsupported element rather than simulated.
 
 ## Project Structure
 
 ```text
-Sources/db-Lab/
+Sources/OhmLab/
 ├── Shared/                       # App state, navigation, EngineClient facade
 ├── Schematic/                    # Layer 1 + Layer 2 + Layer 3
 │   ├── Models.swift              # Schematic document, net labels, undo/redo
@@ -115,7 +115,7 @@ Sources/db-Lab/
 │   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
 │   └── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
 ├── Diagnostics/                  # Pre-simulation validation
-├── Persistence/                  # Versioned .dblab file format + recovery
+├── Persistence/                  # Versioned .ohmlab file format + recovery
 ├── Interop/                      # KiCad/ngspice interchange (kicad-cli bridge)
 └── Circuit/                      # Simulator UI and document model
 ```
@@ -123,7 +123,7 @@ Sources/db-Lab/
 ## Quick Start
 
 ```bash
-cd db-Lab
+cd OhmLab
 swift run
 ```
 
@@ -143,7 +143,7 @@ Enter or paste SPICE (R, C, L, V, I, D, Q, M with `.ac dec|oct|lin`, `.tran`, `.
 
 ## Document format
 
-`.dblab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. Each open document mirrors its unsaved edits to its own recovery slot, so several drafts survive a crash and are offered on the next launch. `CircuitFileStore.migrate` upgrades older files in place — schema v2 splits a legacy source's single magnitude into separate DC and AC parameters. Future schema upgrades belong there too.
+`.ohmlab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. Each open document mirrors its unsaved edits to its own recovery slot, so several drafts survive a crash and are offered on the next launch. `CircuitFileStore.migrate` upgrades older files in place — schema v2 splits a legacy source's single magnitude into separate DC and AC parameters. Future schema upgrades belong there too.
 
 ## Requirements
 - macOS 14+

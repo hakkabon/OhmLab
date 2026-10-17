@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import db_Lab
+@testable import OhmLab
 
 // MARK: - Connectivity (Layer 2)
 

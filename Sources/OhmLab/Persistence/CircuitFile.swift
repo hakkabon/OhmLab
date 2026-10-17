@@ -1,7 +1,7 @@
 // CircuitFile.swift
 // Durable, versioned document format and a small file store.
 //
-// A `.dblab` file is JSON holding a schema version, the schematic geometry, and
+// A `.ohmlab` file is JSON holding a schema version, the schematic geometry, and
 // the analysis settings. The schema version lets future format changes migrate
 // old documents instead of discarding them. Unsaved edits are mirrored to a
 // recovery slot so a crash does not lose work.
@@ -149,16 +149,16 @@ public enum CircuitFileError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unsupportedVersion(let version):
-            return "This document was created by a newer version of db-Lab (format \(version)) and cannot be opened."
+            return "This document was created by a newer version of OhmLab (format \(version)) and cannot be opened."
         case .corrupt:
-            return "The document is not a valid db-Lab circuit file."
+            return "The document is not a valid OhmLab circuit file."
         }
     }
 }
 
 public enum CircuitFileStore {
     /// File extension used for saved circuits.
-    public static let fileExtension = "dblab"
+    public static let fileExtension = "ohmlab"
 
     public static func encode(_ file: CircuitFile) throws -> Data {
         let encoder = JSONEncoder()
@@ -235,7 +235,7 @@ public enum CircuitFileStore {
             appropriateFor: nil,
             create: true
         ) else { return nil }
-        let directory = base.appendingPathComponent("db-Lab", isDirectory: true)
+        let directory = base.appendingPathComponent("OhmLab", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }

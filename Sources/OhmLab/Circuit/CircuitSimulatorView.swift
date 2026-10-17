@@ -429,7 +429,7 @@ struct CircuitSimulatorView: View {
     @ViewBuilder
     private func results(_ result: CircuitSimResult) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Solved by the db-Lab linear engine.", systemImage: "checkmark.seal")
+            Label("Solved by the OhmLab linear engine.", systemImage: "checkmark.seal")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

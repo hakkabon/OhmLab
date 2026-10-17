@@ -1,5 +1,5 @@
-// db_LabApp.swift
-// db-Lab — SwiftUI frontend for the db-Engine simulation backend.
+// OhmLabApp.swift
+// OhmLab — SwiftUI frontend for the db-Engine simulation backend.
 //
 // Circuit simulator entry point.
 //
@@ -10,7 +10,7 @@
 import SwiftUI
 
 @main
-struct DbLabApp: App {
+struct OhmLabApp: App {
     @StateObject private var appState = AppState()
 
     var body: some Scene {
