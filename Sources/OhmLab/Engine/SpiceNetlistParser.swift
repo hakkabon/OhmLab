@@ -64,6 +64,8 @@ private struct DiodeModelDefinition {
     var saturationCurrent = 1e-14
     var emissionCoefficient = 1.0
     var seriesResistance = 0.0
+    var activationEnergy = 1.11
+    var saturationCurrentTemperatureExponent = 3.0
 }
 
 /// A parsed BJT model from a `.model … NPN(…)`/`PNP(…)` card.
@@ -72,6 +74,9 @@ private struct BJTModelDefinition {
     var saturationCurrent = 1e-15
     var forwardBeta = 100.0
     var reverseBeta = 1.0
+    var activationEnergy = 1.11
+    var saturationCurrentTemperatureExponent = 3.0
+    var betaTemperatureExponent = 0.0
 }
 
 /// A parsed MOSFET model from a `.model … NMOS(…)`/`PMOS(…)` card.
@@ -82,6 +87,8 @@ private struct MOSFETModelDefinition {
     var channelLengthModulation = 0.0
     var bodyEffect = 0.0
     var surfacePotential = 0.6
+    var mobilityTemperatureExponent = -1.5
+    var thresholdTemperatureCoefficient = 0.0
 }
 
 /// A raw line of a `.subckt` body, kept with its source line number.
@@ -121,6 +128,10 @@ public struct SpiceStepSpec: Sendable, Equatable {
         self.parameter = parameter
         self.values = values
     }
+
+    /// True for a `.step temp …` sweep, which varies the solver temperature
+    /// rather than substituting a `.param`.
+    public var isTemperature: Bool { parameter.uppercased() == "TEMP" }
 }
 
 public struct SpiceAnalysisCard: Sendable, Equatable {
@@ -196,6 +207,8 @@ public enum SpiceNetlistParser {
         private var pendingBJTs: [PendingBJT] = []
         private var pendingMOSFETs: [PendingMOSFET] = []
         private var analysis = SpiceAnalysisCard.none
+        /// Solver controls gathered from `.options` and `.temp` cards.
+        private var solverOptions = SolverOptions.default
         private var sawContent = false
         /// Global `.param` values, visible everywhere including subcircuits.
         private var globalParameters: [String: Double]
@@ -318,7 +331,11 @@ public enum SpiceNetlistParser {
             guard nodeIndex["0"] != nil else { throw SpiceParseError.missingGround }
 
             return ParsedSpiceNetlist(
-                circuit: LinearCircuit(nodeNames: nodeNames, elements: elements),
+                circuit: LinearCircuit(
+                    nodeNames: nodeNames,
+                    elements: elements,
+                    solverOptions: solverOptions.sanitized()
+                ),
                 analysis: analysis,
                 warnings: warnings,
                 initialConditions: initialConditions
@@ -386,10 +403,9 @@ public enum SpiceNetlistParser {
             case ".ic":
                 try processInitialConditions(tokens: tokens, line: line, text: text)
             case ".options", ".option":
-                // Accepted and ignored: solver options are not user-tunable here.
-                break
+                applyOptions(tokens: tokens, line: line)
             case ".temp":
-                warnings.append("Ignored .temp: temperature-dependent models are not yet supported.")
+                applyTemperature(tokens: tokens, line: line)
             case let card where SpiceNetlistParser.ignorableCards.contains(card):
                 // Informational or output-selection cards from KiCad/ngspice.
                 break
@@ -464,6 +480,41 @@ public enum SpiceNetlistParser {
             }
         }
 
+        /// Parses the recognised numeric `.options`: `reltol`, `abstol`,
+        /// `vntol`, `gmin`, `itl1`, `temp`, and `tnom`. Unknown options (and
+        /// boolean flags such as `acct`) are accepted and ignored so standard
+        /// netlists load.
+        private func applyOptions(tokens: [String], line: Int) {
+            for token in tokens.dropFirst() {
+                let pair = token.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2,
+                      let value = try? SpiceNetlistParser.parseNumber(String(pair[1]), line: line) else {
+                    continue
+                }
+                switch pair[0].lowercased() {
+                case "reltol": solverOptions.relativeTolerance = value
+                case "abstol": solverOptions.absoluteCurrentTolerance = value
+                case "vntol": solverOptions.absoluteVoltageTolerance = value
+                case "gmin": solverOptions.minimumConductance = value
+                case "itl1": solverOptions.maximumIterations = Int(value)
+                case "temp": solverOptions.temperatureCelsius = value
+                case "tnom": solverOptions.nominalTemperatureCelsius = value
+                default: break
+                }
+            }
+        }
+
+        /// Parses `.temp <value>` (the first value wins; SPICE's multi-value
+        /// form is not modelled). An unparseable card is reported, not fatal.
+        private func applyTemperature(tokens: [String], line: Int) {
+            guard tokens.count >= 2,
+                  let value = try? SpiceNetlistParser.parseNumber(tokens[1], line: line) else {
+                warnings.append("Ignored .temp: expected a temperature in degrees Celsius.")
+                return
+            }
+            solverOptions.temperatureCelsius = value
+        }
+
         /// Parses `.dc <src> <start> <stop> <step> [<src2> …]` into nested axes.
         private func processDCSweep(tokens: [String], line: Int, text: String) throws {
             let body = Array(tokens.dropFirst())
@@ -515,9 +566,27 @@ public enum SpiceNetlistParser {
                     analysis.step = SpiceStepSpec(parameter: name, values: values)
                 }
             case "temp":
-                warnings.append("Ignored .step temp: temperature-dependent models are not yet supported.")
+                // `.step temp <start> <stop> <incr>` or `.step temp list <v…>`.
+                // The stepped temperature overrides any `.temp` card per value.
+                let values: [Double]
+                if body.count >= 3, body[1].lowercased() == "list" {
+                    values = try body.dropFirst(2).map {
+                        try SpiceNetlistParser.parseNumber($0, line: line)
+                    }
+                } else if body.count >= 4 {
+                    let start = try SpiceNetlistParser.parseNumber(body[1], line: line)
+                    let stop = try SpiceNetlistParser.parseNumber(body[2], line: line)
+                    let increment = try SpiceNetlistParser.parseNumber(body[3], line: line)
+                    values = SpiceNetlistParser.linearSweep(from: start, to: stop, step: increment)
+                } else {
+                    throw SpiceParseError.invalidAnalysis(line: line, text: text)
+                }
+                guard !values.isEmpty else {
+                    throw SpiceParseError.invalidAnalysis(line: line, text: text)
+                }
+                analysis.step = SpiceStepSpec(parameter: "TEMP", values: values)
             default:
-                warnings.append("Ignored .step \(kind): only '.step param' is supported.")
+                warnings.append("Ignored .step \(kind): only '.step param' and '.step temp' are supported.")
             }
         }
 
@@ -761,7 +830,9 @@ public enum SpiceNetlistParser {
                 let parameters = LinearCircuit.DiodeParameters(
                     saturationCurrent: definition.saturationCurrent,
                     emissionCoefficient: definition.emissionCoefficient,
-                    area: pending.area
+                    area: pending.area,
+                    saturationCurrentTemperatureExponent: definition.saturationCurrentTemperatureExponent,
+                    activationEnergy: definition.activationEnergy
                 )
                 if definition.seriesResistance > 0 {
                     let internalNode = nodeNames.count
@@ -807,7 +878,10 @@ public enum SpiceNetlistParser {
                         polarity: definition.polarity,
                         saturationCurrent: definition.saturationCurrent,
                         forwardBeta: definition.forwardBeta,
-                        reverseBeta: definition.reverseBeta
+                        reverseBeta: definition.reverseBeta,
+                        saturationCurrentTemperatureExponent: definition.saturationCurrentTemperatureExponent,
+                        activationEnergy: definition.activationEnergy,
+                        betaTemperatureExponent: definition.betaTemperatureExponent
                     ),
                     name: pending.name
                 ))
@@ -830,7 +904,9 @@ public enum SpiceNetlistParser {
                         transconductanceParameter: definition.transconductanceParameter,
                         channelLengthModulation: definition.channelLengthModulation,
                         bodyEffect: definition.bodyEffect,
-                        surfacePotential: definition.surfacePotential
+                        surfacePotential: definition.surfacePotential,
+                        mobilityTemperatureExponent: definition.mobilityTemperatureExponent,
+                        thresholdTemperatureCoefficient: definition.thresholdTemperatureCoefficient
                     ),
                     name: pending.name
                 ))
@@ -1201,6 +1277,8 @@ public enum SpiceNetlistParser {
             if let isat = values["IS"] { definition.saturationCurrent = isat }
             if let n = values["N"] { definition.emissionCoefficient = n }
             if let rs = values["RS"] { definition.seriesResistance = rs }
+            if let eg = values["EG"] { definition.activationEnergy = eg }
+            if let xti = values["XTI"] { definition.saturationCurrentTemperatureExponent = xti }
             models[name] = definition
         case "NPN", "PNP":
             var definition = BJTModelDefinition()
@@ -1208,6 +1286,9 @@ public enum SpiceNetlistParser {
             if let isat = values["IS"] { definition.saturationCurrent = isat }
             if let bf = values["BF"] { definition.forwardBeta = bf }
             if let br = values["BR"] { definition.reverseBeta = br }
+            if let eg = values["EG"] { definition.activationEnergy = eg }
+            if let xti = values["XTI"] { definition.saturationCurrentTemperatureExponent = xti }
+            if let xtb = values["XTB"] { definition.betaTemperatureExponent = xtb }
             bjtModels[name] = definition
         case "NMOS", "PMOS":
             var definition = MOSFETModelDefinition()
@@ -1218,6 +1299,8 @@ public enum SpiceNetlistParser {
             if let lambda = values["LAMBDA"] { definition.channelLengthModulation = lambda }
             if let gamma = values["GAMMA"] { definition.bodyEffect = gamma }
             if let phi = values["PHI"] { definition.surfacePotential = phi }
+            if let bex = values["BEX"] { definition.mobilityTemperatureExponent = bex }
+            if let tcv = values["TCV"] { definition.thresholdTemperatureCoefficient = tcv }
             mosfetModels[name] = definition
         default:
             throw SpiceParseError.unsupportedCard(line: line, text: text)

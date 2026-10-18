@@ -425,9 +425,12 @@ enum SimulationEngine {
         for stepValue in step.values {
             let parsed = try SpiceNetlistParser.parse(
                 netlist,
-                parameterOverrides: [step.parameter: stepValue]
+                parameterOverrides: step.isTemperature ? [:] : [step.parameter: stepValue]
             )
-            let circuit = parsed.circuit
+            var circuit = parsed.circuit
+            if step.isTemperature {
+                circuit.solverOptions.temperatureCelsius = stepValue
+            }
             let sources = Set(circuit.sourceNames.map { $0.uppercased() })
             for axis in axes where !sources.contains(axis.name.uppercased()) {
                 throw CircuitSimulationError.unknownSweepSource(axis.name)
@@ -441,7 +444,7 @@ enum SimulationEngine {
                 try assertFinite(solution)
                 points.append(makeSweepPoint(
                     circuit: circuit,
-                    axes: axes,
+                    axes: allAxes,
                     coordinates: [stepValue] + inner,
                     solution: solution
                 ))

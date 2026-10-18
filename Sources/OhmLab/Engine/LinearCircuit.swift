@@ -108,25 +108,39 @@ public struct LinearCircuit: Sendable {
     }
 
     /// Simplified Ebers-Moll transport model. Early voltage is not modelled.
+    /// Temperature dependence follows SPICE: the saturation current scales with
+    /// `XTI`/`EG`, and the betas with `XTB`.
     public struct BJTParameters: Sendable, Equatable {
         public var polarity: BJTPolarity
         public var saturationCurrent: Double
         public var forwardBeta: Double
         public var reverseBeta: Double
         public var thermalVoltage: Double
+        /// `XTI`: saturation-current temperature exponent.
+        public var saturationCurrentTemperatureExponent: Double
+        /// `EG`: activation energy in electron-volts.
+        public var activationEnergy: Double
+        /// `XTB`: beta temperature exponent.
+        public var betaTemperatureExponent: Double
 
         public init(
             polarity: BJTPolarity = .npn,
             saturationCurrent: Double = 1e-15,
             forwardBeta: Double = 100,
             reverseBeta: Double = 1,
-            thermalVoltage: Double = 0.025_852
+            thermalVoltage: Double = 0.025_852,
+            saturationCurrentTemperatureExponent: Double = 3,
+            activationEnergy: Double = 1.11,
+            betaTemperatureExponent: Double = 0
         ) {
             self.polarity = polarity
             self.saturationCurrent = saturationCurrent
             self.forwardBeta = forwardBeta
             self.reverseBeta = reverseBeta
             self.thermalVoltage = thermalVoltage
+            self.saturationCurrentTemperatureExponent = saturationCurrentTemperatureExponent
+            self.activationEnergy = activationEnergy
+            self.betaTemperatureExponent = betaTemperatureExponent
         }
     }
 
@@ -135,7 +149,9 @@ public struct LinearCircuit: Sendable {
     /// characteristic derives the positive threshold from the polarity. Body
     /// effect is included through `bodyEffect` (GAMMA) and `surfacePotential`
     /// (PHI); a GAMMA of zero disables it. Channel-length modulation is
-    /// modelled by `lambda`.
+    /// modelled by `lambda`. Temperature dependence follows SPICE: the
+    /// transconductance parameter scales with `BEX` and the threshold shifts
+    /// with `TCV`.
     public struct MOSFETParameters: Sendable, Equatable {
         public var polarity: MOSFETPolarity
         public var thresholdVoltage: Double
@@ -143,6 +159,10 @@ public struct LinearCircuit: Sendable {
         public var channelLengthModulation: Double
         public var bodyEffect: Double
         public var surfacePotential: Double
+        /// `BEX`: mobility temperature exponent (applied to `KP`).
+        public var mobilityTemperatureExponent: Double
+        /// `TCV`: threshold-voltage temperature coefficient, in volts/°C.
+        public var thresholdTemperatureCoefficient: Double
 
         public init(
             polarity: MOSFETPolarity = .nmos,
@@ -150,7 +170,9 @@ public struct LinearCircuit: Sendable {
             transconductanceParameter: Double = 2e-5,
             channelLengthModulation: Double = 0,
             bodyEffect: Double = 0,
-            surfacePotential: Double = 0.6
+            surfacePotential: Double = 0.6,
+            mobilityTemperatureExponent: Double = -1.5,
+            thresholdTemperatureCoefficient: Double = 0
         ) {
             self.polarity = polarity
             self.thresholdVoltage = thresholdVoltage
@@ -158,32 +180,39 @@ public struct LinearCircuit: Sendable {
             self.channelLengthModulation = channelLengthModulation
             self.bodyEffect = bodyEffect
             self.surfacePotential = surfacePotential
+            self.mobilityTemperatureExponent = mobilityTemperatureExponent
+            self.thresholdTemperatureCoefficient = thresholdTemperatureCoefficient
         }
     }
 
     /// Shockley diode parameters. `saturationCurrent` is scaled by `area`.
+    /// Temperature dependence follows SPICE: the saturation current scales with
+    /// `XTI`/`EG`.
     public struct DiodeParameters: Sendable, Equatable {
         public var saturationCurrent: Double
         public var emissionCoefficient: Double
         public var thermalVoltage: Double
         public var area: Double
+        /// `XTI`: saturation-current temperature exponent.
+        public var saturationCurrentTemperatureExponent: Double
+        /// `EG`: activation energy in electron-volts.
+        public var activationEnergy: Double
 
         public init(
             saturationCurrent: Double = 1e-14,
             emissionCoefficient: Double = 1,
             thermalVoltage: Double = 0.025_852,
-            area: Double = 1
+            area: Double = 1,
+            saturationCurrentTemperatureExponent: Double = 3,
+            activationEnergy: Double = 1.11
         ) {
             self.saturationCurrent = saturationCurrent
             self.emissionCoefficient = emissionCoefficient
             self.thermalVoltage = thermalVoltage
             self.area = area
+            self.saturationCurrentTemperatureExponent = saturationCurrentTemperatureExponent
+            self.activationEnergy = activationEnergy
         }
-
-        /// Effective saturation current, including the area multiplier.
-        var effectiveSaturationCurrent: Double { saturationCurrent * area }
-        /// Thermal voltage times the emission coefficient.
-        var junctionVoltage: Double { emissionCoefficient * thermalVoltage }
     }
 
     public struct Element: Sendable {
@@ -265,10 +294,17 @@ public struct LinearCircuit: Sendable {
     /// Node names indexed by node number; index 0 is always the ground reference.
     public var nodeNames: [String]
     public var elements: [Element]
+    /// Numerical controls (tolerances, `gmin`, temperature, iteration cap).
+    public var solverOptions: SolverOptions
 
-    public init(nodeNames: [String], elements: [Element]) {
+    public init(
+        nodeNames: [String],
+        elements: [Element],
+        solverOptions: SolverOptions = .default
+    ) {
         self.nodeNames = nodeNames
         self.elements = elements
+        self.solverOptions = solverOptions.sanitized()
     }
 
     public var nodeCount: Int { nodeNames.count }
@@ -358,19 +394,95 @@ public struct LinearCircuit: Sendable {
         }
     }
 
-    /// Shockley current and small-signal conductance at a junction voltage.
+    // MARK: - Temperature-dependent model evaluation
+
+    /// SPICE temperature scaling of a saturation current:
+    /// `IS(T) = IS · (T/Tnom)^exponent · exp( ((T/Tnom) − 1)·EG / VT(T) )`,
+    /// where `rawThermalVoltage` is `k·T/q` at the operating temperature and
+    /// `EG` is given in electron-volts. Equals `saturationCurrent` at the
+    /// nominal temperature.
+    private static func temperatureScaledSaturationCurrent(
+        _ saturationCurrent: Double,
+        exponent: Double,
+        activationEnergy: Double,
+        rawThermalVoltage: Double,
+        options: SolverOptions
+    ) -> Double {
+        let temperature = options.temperatureKelvin
+        let nominal = options.nominalTemperatureKelvin
+        guard temperature > 0, nominal > 0, rawThermalVoltage > 0 else { return saturationCurrent }
+        let ratio = temperature / nominal
+        guard ratio != 1 else { return saturationCurrent }
+        // The energy exponent is dimensionless; clamp it so an extreme
+        // temperature cannot overflow the exponential.
+        let energyExponent = (ratio - 1) * activationEnergy / rawThermalVoltage
+        let factor = pow(ratio, exponent) * exp(min(max(energyExponent, -80), 80))
+        return saturationCurrent * factor
+    }
+
+    /// Saturation current (including area) and emission-coefficient thermal
+    /// voltage of a diode at the operating temperature.
+    private func diodeOperatingPoint(_ model: DiodeParameters) -> (isat: Double, junctionVt: Double) {
+        let rawVt = model.thermalVoltage * solverOptions.thermalScale
+        let emission = max(model.emissionCoefficient, 1e-12)
+        let isat = Self.temperatureScaledSaturationCurrent(
+            model.saturationCurrent,
+            exponent: model.saturationCurrentTemperatureExponent / emission,
+            activationEnergy: model.activationEnergy,
+            rawThermalVoltage: rawVt,
+            options: solverOptions
+        ) * model.area
+        return (isat, emission * rawVt)
+    }
+
+    /// Saturation current, forward/reverse beta, and thermal voltage of a BJT
+    /// at the operating temperature.
+    private func bjtOperatingPoint(
+        _ model: BJTParameters
+    ) -> (isat: Double, forwardBeta: Double, reverseBeta: Double, vt: Double) {
+        let vt = model.thermalVoltage * solverOptions.thermalScale
+        let isat = Self.temperatureScaledSaturationCurrent(
+            model.saturationCurrent,
+            exponent: model.saturationCurrentTemperatureExponent,
+            activationEnergy: model.activationEnergy,
+            rawThermalVoltage: vt,
+            options: solverOptions
+        )
+        let ratio = solverOptions.thermalScale
+        let betaScale = ratio > 0 ? pow(ratio, model.betaTemperatureExponent) : 1
+        return (isat, model.forwardBeta * betaScale, model.reverseBeta * betaScale, vt)
+    }
+
+    /// Threshold voltage and transconductance parameter of a MOSFET at the
+    /// operating temperature.
+    private func mosfetOperatingPoint(
+        _ model: MOSFETParameters
+    ) -> (thresholdVoltage: Double, transconductanceParameter: Double) {
+        let ratio = solverOptions.thermalScale
+        let kp = ratio > 0
+            ? model.transconductanceParameter * pow(ratio, model.mobilityTemperatureExponent)
+            : model.transconductanceParameter
+        let vto = model.thresholdVoltage
+            - model.thresholdTemperatureCoefficient
+                * (solverOptions.temperatureCelsius - solverOptions.nominalTemperatureCelsius)
+        return (vto, kp)
+    }
+
+    /// Shockley current and small-signal conductance at a junction voltage. The
+    /// saturation current and thermal voltage are evaluated at the operating
+    /// temperature, and a `gmin` leakage conductance is included.
     private func diodeCurrentAndConductance(
         _ element: Element,
         voltage: Double
     ) -> (current: Double, conductance: Double) {
         guard let model = element.diode else { return (0, 0) }
-        let vt = model.junctionVoltage
+        let (isat, vt) = diodeOperatingPoint(model)
         guard vt > 0 else { return (0, 0) }
-        let isat = model.effectiveSaturationCurrent
+        let gmin = solverOptions.minimumConductance
         // Clamp the exponent so extreme forward bias cannot overflow.
         let exponent = min(voltage / vt, 80)
         let expValue = exp(exponent)
-        return (isat * (expValue - 1), isat * expValue / vt)
+        return (isat * (expValue - 1) + gmin * voltage, isat * expValue / vt + gmin)
     }
 
     /// Terminal currents into a nonlinear device and the Jacobian
@@ -405,8 +517,8 @@ public struct LinearCircuit: Sendable {
             return (zero, Array(repeating: zero, count: 3))
         }
         let sign = model.polarity == .pnp ? -1.0 : 1.0
-        let vt = model.thermalVoltage
-        let isat = model.saturationCurrent
+        let (isat, forwardBeta, reverseBeta, vt) = bjtOperatingPoint(model)
+        let gmin = solverOptions.minimumConductance
         let (vb, vc, ve) = (terminals[0], terminals[1], terminals[2])
 
         let vbe = sign * (vb - ve)
@@ -416,10 +528,10 @@ public struct LinearCircuit: Sendable {
         let cbe = ebe - 1
         let cbc = ebc - 1
 
-        let isBF = isat / model.forwardBeta
-        let isBR = isat / model.reverseBeta
-        let ibe = isBF * cbe
-        let ibc = isBR * cbc
+        let isBF = isat / forwardBeta
+        let isBR = isat / reverseBeta
+        let ibe = isBF * cbe + gmin * vbe
+        let ibc = isBR * cbc + gmin * vbc
         let ict = isat * (cbe - cbc)
 
         // Terminal currents in the polarity-flipped frame.
@@ -427,8 +539,8 @@ public struct LinearCircuit: Sendable {
         let collectorCurrent = ict - ibc
         let emitterCurrent = -(ibe + ict)
 
-        let gbe = isBF * ebe / vt
-        let gbc = isBR * ebc / vt
+        let gbe = isBF * ebe / vt + gmin
+        let gbc = isBR * ebc / vt + gmin
         let gm = isat * ebe / vt
         let gmr = isat * ebc / vt
 
@@ -459,6 +571,7 @@ public struct LinearCircuit: Sendable {
             return (zeroRow, Array(repeating: zeroRow, count: 4))
         }
         let sign = model.polarity == .pmos ? -1.0 : 1.0
+        let (thresholdVoltage, transconductanceParameter) = mosfetOperatingPoint(model)
         let (vd, vg, vs, vb) = (terminals[0], terminals[1], terminals[2], terminals[3])
 
         // Control voltages in the sign-flipped (n-channel) frame.
@@ -470,7 +583,7 @@ public struct LinearCircuit: Sendable {
         let phi = max(model.surfacePotential, 1e-3)
         let phiMinusVbs = max(phi - vbs, 1e-9)
         let sqrtTerm = phiMinusVbs.squareRoot()
-        let threshold = sign * model.thresholdVoltage
+        let threshold = sign * thresholdVoltage
             + model.bodyEffect * (sqrtTerm - phi.squareRoot())
         let overdrive = vgs - threshold
         // d(overdrive)/d(vbs) = + GAMMA / (2·sqrt(PHI − vbs)).
@@ -478,14 +591,14 @@ public struct LinearCircuit: Sendable {
 
         // A tiny drain-source conductance keeps the nodal matrix non-singular
         // when the device is cut off, matching SPICE's GMIN.
-        let gmin = 1e-12
+        let gmin = solverOptions.minimumConductance
         var drainSourceCurrent = gmin * vds
         var gVgs = 0.0
         var gVds = gmin
         var gVbs = 0.0
 
         if overdrive > 0 {
-            let kp = model.transconductanceParameter
+            let kp = transconductanceParameter
             let lambdaFactor = 1 + model.channelLengthModulation * vds
             if vds < overdrive {
                 // Triode (linear) region.
@@ -534,27 +647,29 @@ public struct LinearCircuit: Sendable {
         switch element.kind {
         case .diode:
             guard let model = element.diode else { return raw }
+            let (isat, vt) = diodeOperatingPoint(model)
             let junction = limitedJunction(
                 raw[0] - raw[1],
                 previous: previous[0] - previous[1],
-                vt: model.junctionVoltage,
-                isat: model.effectiveSaturationCurrent
+                vt: vt,
+                isat: isat
             )
             return [raw[1] + junction, raw[1]]
         case .bjt:
             guard let model = element.bjt else { return raw }
             let sign = model.polarity == .pnp ? -1.0 : 1.0
+            let (isat, _, _, vt) = bjtOperatingPoint(model)
             let vbe = limitedJunction(
                 sign * (raw[0] - raw[2]),
                 previous: sign * (previous[0] - previous[2]),
-                vt: model.thermalVoltage,
-                isat: model.saturationCurrent
+                vt: vt,
+                isat: isat
             )
             let vbc = limitedJunction(
                 sign * (raw[0] - raw[1]),
                 previous: sign * (previous[0] - previous[1]),
-                vt: model.thermalVoltage,
-                isat: model.saturationCurrent
+                vt: vt,
+                isat: isat
             )
             let ve = raw[2]
             let vb = ve + sign * vbe
@@ -668,18 +783,24 @@ public struct LinearCircuit: Sendable {
     }
 
     /// Newton-Raphson for circuits with nonlinear elements; a single pass when
-    /// the circuit is purely linear.
+    /// the circuit is purely linear. Convergence is judged on both the terminal
+    /// voltage and device current updates using the configured tolerances
+    /// (`VNTOL`/`RELTOL` for voltage, `ABSTOL`/`RELTOL` for current), and the
+    /// iteration count is capped by `ITL1`.
     private func solveNonlinear(mode: AnalysisMode, initialState: [Int: [Double]] = [:]) throws -> Solution {
         let indices = nonlinearIndices
         guard !indices.isEmpty else {
             return try assembleOnce(mode: mode, nonlinearState: initialState)
         }
 
+        let options = solverOptions
         var state = initialState
         var solution = try assembleOnce(mode: mode, nonlinearState: state)
-        for _ in 0..<200 {
-            var maxDelta = 0.0
+        for _ in 0..<options.maximumIterations {
+            var maxVoltageDelta = 0.0
             var maxVoltage = 0.0
+            var maxCurrentDelta = 0.0
+            var maxCurrent = 0.0
             var next: [Int: [Double]] = [:]
             for index in indices {
                 let element = elements[index]
@@ -689,13 +810,25 @@ public struct LinearCircuit: Sendable {
                 let limited = limitedTerminals(element, raw: raw, previous: previous)
                 next[index] = limited
                 for (newValue, oldValue) in zip(limited, previous) {
-                    maxDelta = max(maxDelta, abs(newValue - oldValue))
+                    maxVoltageDelta = max(maxVoltageDelta, abs(newValue - oldValue))
                 }
                 maxVoltage = max(maxVoltage, limited.map(abs).max() ?? 0)
+
+                let currentsBefore = nonlinearCharacteristic(element, terminals: previous).currents
+                let currentsAfter = nonlinearCharacteristic(element, terminals: limited).currents
+                for (newValue, oldValue) in zip(currentsAfter, currentsBefore) {
+                    maxCurrentDelta = max(maxCurrentDelta, abs(newValue - oldValue))
+                }
+                maxCurrent = max(maxCurrent, currentsAfter.map(abs).max() ?? 0)
             }
             state = next
             solution = try assembleOnce(mode: mode, nonlinearState: state)
-            if maxDelta < 1e-6 + 1e-3 * maxVoltage { return solution }
+
+            let voltageConverged = maxVoltageDelta
+                < options.absoluteVoltageTolerance + options.relativeTolerance * maxVoltage
+            let currentConverged = maxCurrentDelta
+                < options.absoluteCurrentTolerance + options.relativeTolerance * maxCurrent
+            if voltageConverged && currentConverged { return solution }
         }
         throw CircuitSolveError.didNotConverge(elements[indices[0]].name)
     }
@@ -723,7 +856,9 @@ public struct LinearCircuit: Sendable {
                       model.thermalVoltage.isFinite,
                       model.thermalVoltage > 0,
                       model.area.isFinite,
-                      model.area > 0 else {
+                      model.area > 0,
+                      model.activationEnergy.isFinite,
+                      model.saturationCurrentTemperatureExponent.isFinite else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             case .bjt:
@@ -735,7 +870,10 @@ public struct LinearCircuit: Sendable {
                       model.reverseBeta.isFinite,
                       model.reverseBeta > 0,
                       model.thermalVoltage.isFinite,
-                      model.thermalVoltage > 0 else {
+                      model.thermalVoltage > 0,
+                      model.activationEnergy.isFinite,
+                      model.saturationCurrentTemperatureExponent.isFinite,
+                      model.betaTemperatureExponent.isFinite else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             case .mosfet:
@@ -748,7 +886,9 @@ public struct LinearCircuit: Sendable {
                       model.bodyEffect.isFinite,
                       model.bodyEffect >= 0,
                       model.surfacePotential.isFinite,
-                      model.surfacePotential > 0 else {
+                      model.surfacePotential > 0,
+                      model.mobilityTemperatureExponent.isFinite,
+                      model.thresholdTemperatureCoefficient.isFinite else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             }

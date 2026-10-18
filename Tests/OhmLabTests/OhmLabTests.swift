@@ -1788,10 +1788,11 @@ import Testing
     #expect(parsed.warnings.contains { $0.localizedCaseInsensitiveContains("ground") })
 }
 
-@Test func netlistTempCardWarnsInsteadOfFailing() throws {
+@Test func netlistTempCardSetsOperatingTemperature() throws {
     let netlist = "V1 1 0 DC 1\nR1 1 0 1k\n.temp 50\n.end"
     let parsed = try SpiceNetlistParser.parse(netlist)
-    #expect(parsed.warnings.contains { $0.localizedCaseInsensitiveContains("temperature") })
+    #expect(parsed.warnings.isEmpty)
+    #expect(abs(parsed.circuit.solverOptions.temperatureCelsius - 50) < 1e-9)
 }
 
 @Test func csvIncludesSweepSection() throws {
@@ -2001,6 +2002,237 @@ func kicadCLIExportsARealSchematic() throws {
     #expect(throws: SpiceParseError.self) { try KiCadInterchange.parseNetlist(text) }
 }
 #endif
+
+// MARK: - Phase 10: numerical robustness & fidelity
+
+@Test func solverOptionsCardIsParsed() throws {
+    let netlist = """
+    V1 1 0 DC 1
+    R1 1 0 1k
+    .options reltol=1e-4 abstol=1e-14 vntol=1e-8 gmin=1e-10 itl1=42 temp=75 tnom=25
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let options = parsed.circuit.solverOptions
+    #expect(abs(options.relativeTolerance - 1e-4) < 1e-18)
+    #expect(abs(options.absoluteCurrentTolerance - 1e-14) < 1e-24)
+    #expect(abs(options.absoluteVoltageTolerance - 1e-8) < 1e-22)
+    #expect(abs(options.minimumConductance - 1e-10) < 1e-20)
+    #expect(options.maximumIterations == 42)
+    #expect(abs(options.temperatureCelsius - 75) < 1e-9)
+    #expect(abs(options.nominalTemperatureCelsius - 25) < 1e-9)
+}
+
+@Test func unknownOptionsAreAcceptedSilently() throws {
+    let netlist = "V1 1 0 DC 1\nR1 1 0 1k\n.options acct op list\n.end"
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(parsed.warnings.isEmpty)
+}
+
+@Test func defaultSolverOptionsMatchSpiceDefaults() {
+    let options = SolverOptions.default
+    #expect(abs(options.relativeTolerance - 1e-3) < 1e-18)
+    #expect(abs(options.absoluteCurrentTolerance - 1e-12) < 1e-24)
+    #expect(abs(options.absoluteVoltageTolerance - 1e-6) < 1e-18)
+    #expect(abs(options.minimumConductance - 1e-12) < 1e-24)
+    #expect(abs(options.temperatureCelsius - 27) < 1e-9)
+    // At the nominal temperature the model thermal voltage is unchanged.
+    #expect(abs(options.thermalScale - 1) < 1e-12)
+}
+
+@Test func nonsensicalOptionsAreSanitized() {
+    let options = SolverOptions(
+        relativeTolerance: -1,
+        absoluteCurrentTolerance: 0,
+        absoluteVoltageTolerance: .nan,
+        minimumConductance: -3,
+        maximumIterations: 0,
+        temperatureCelsius: -500,
+        nominalTemperatureCelsius: 27
+    ).sanitized()
+    #expect(options.relativeTolerance == SolverOptions.default.relativeTolerance)
+    #expect(options.absoluteCurrentTolerance == SolverOptions.default.absoluteCurrentTolerance)
+    #expect(options.absoluteVoltageTolerance == SolverOptions.default.absoluteVoltageTolerance)
+    #expect(options.minimumConductance == SolverOptions.default.minimumConductance)
+    #expect(options.maximumIterations == 1)
+    #expect(options.temperatureCelsius == SolverOptions.default.temperatureCelsius)
+}
+
+@Test func gminOptionSetsDiodeReverseLeakage() throws {
+    let netlist = """
+    V1 1 0 DC -1
+    D1 1 0 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .options gmin=1e-6
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let solution = try parsed.circuit.solveDC()
+    let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "D1" })
+    // Reverse bias: the current is dominated by the gmin leakage, -gmin·V.
+    #expect(abs(solution.elementCurrents[index].re - (-1e-6)) < 1e-9)
+}
+
+@Test func iterationCapForcesNonConvergence() throws {
+    let netlist = """
+    I1 0 1 DC 1m
+    D1 1 0 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .options itl1=1
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(throws: CircuitSolveError.self) {
+        _ = try parsed.circuit.solveDC()
+    }
+}
+
+@Test func diodeForwardDropFallsWithTemperature() throws {
+    func diodeNodeVoltage(temperature: Double) throws -> Double {
+        let netlist = """
+        I1 0 1 DC 1m
+        D1 1 0 DMOD
+        .model DMOD D(IS=1e-14 N=1)
+        .temp \(temperature)
+        .end
+        """
+        let parsed = try SpiceNetlistParser.parse(netlist)
+        return try parsed.circuit.solveDC().voltage(node: 1).re
+    }
+    let cold = try diodeNodeVoltage(temperature: 27)
+    let hot = try diodeNodeVoltage(temperature: 127)
+    // A fixed forward current needs a smaller drop when hot: IS(T) grows faster
+    // than the thermal voltage, giving the diode its negative temperature
+    // coefficient.
+    #expect(hot < cold - 0.1)
+}
+
+@Test func diodeReverseLeakageRisesWithTemperature() throws {
+    func reverseCurrent(temperature: Double) throws -> Double {
+        let netlist = """
+        V1 1 0 DC -1
+        D1 1 0 DMOD
+        .model DMOD D(IS=1e-14 N=1)
+        .temp \(temperature)
+        .end
+        """
+        let parsed = try SpiceNetlistParser.parse(netlist)
+        let solution = try parsed.circuit.solveDC()
+        let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "D1" })
+        return solution.elementCurrents[index].re
+    }
+    let cold = try reverseCurrent(temperature: 27)
+    let hot = try reverseCurrent(temperature: 127)
+    // Reverse leakage is dominated by -IS(T), which rises sharply with heat.
+    #expect(abs(hot) > 100 * abs(cold))
+}
+
+@Test func temperatureDependenceIsIdentityAtNominalTemperature() throws {
+    let netlist = """
+    V1 1 0 DC -1
+    D1 1 0 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .options gmin=1e-18
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(abs(parsed.circuit.solverOptions.temperatureCelsius - 27) < 1e-9)
+    let solution = try parsed.circuit.solveDC()
+    let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "D1" })
+    // At the nominal temperature IS(T) = IS, so the reverse current is -IS.
+    #expect(abs(solution.elementCurrents[index].re - (-1e-14)) < 1e-17)
+}
+
+@Test func modelTemperatureParametersAreParsed() throws {
+    let netlist = """
+    V1 1 0 DC 1
+    D1 1 0 DMOD
+    Q1 1 1 0 QMOD
+    M1 1 1 0 0 MMOD
+    .model DMOD D(IS=1e-14 N=1 XTI=2.5 EG=1.2)
+    .model QMOD NPN(IS=1e-15 BF=100 XTI=3.5 EG=1.1 XTB=1.5)
+    .model MMOD NMOS(VTO=1 KP=1m BEX=-2 TCV=-2m)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let diode = try #require(parsed.circuit.elements.first { $0.name == "D1" }?.diode)
+    #expect(abs(diode.saturationCurrentTemperatureExponent - 2.5) < 1e-9)
+    #expect(abs(diode.activationEnergy - 1.2) < 1e-9)
+    let bjt = try #require(parsed.circuit.elements.first { $0.name == "Q1" }?.bjt)
+    #expect(abs(bjt.saturationCurrentTemperatureExponent - 3.5) < 1e-9)
+    #expect(abs(bjt.activationEnergy - 1.1) < 1e-9)
+    #expect(abs(bjt.betaTemperatureExponent - 1.5) < 1e-9)
+    let mosfet = try #require(parsed.circuit.elements.first { $0.name == "M1" }?.mosfet)
+    #expect(abs(mosfet.mobilityTemperatureExponent - (-2)) < 1e-9)
+    #expect(abs(mosfet.thresholdTemperatureCoefficient - (-2e-3)) < 1e-12)
+}
+
+@Test func bjtCollectorCurrentRisesWithTemperature() throws {
+    func collectorCurrent(temperature: Double) throws -> Double {
+        let netlist = """
+        VCC 2 0 DC 5
+        VBB 1 0 DC 0.65
+        RC 2 3 1k
+        Q1 3 1 0 QMOD
+        .model QMOD NPN(IS=1e-15 BF=100)
+        .temp \(temperature)
+        .end
+        """
+        let parsed = try SpiceNetlistParser.parse(netlist)
+        let solution = try parsed.circuit.solveDC()
+        let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "Q1" })
+        return solution.elementCurrents[index].re
+    }
+    let cold = try collectorCurrent(temperature: 27)
+    let hot = try collectorCurrent(temperature: 100)
+    // IS(T) rises with heat, so a fixed base bias drives more collector current.
+    #expect(hot > cold)
+}
+
+@Test func mosfetDrainCurrentFallsWithTemperature() throws {
+    func drainCurrent(temperature: Double) throws -> Double {
+        let netlist = """
+        VDD 1 0 DC 5
+        VG 2 0 DC 2
+        M1 1 2 0 0 MMOD
+        .model MMOD NMOS(VTO=1 KP=1m LAMBDA=0)
+        .temp \(temperature)
+        .end
+        """
+        let parsed = try SpiceNetlistParser.parse(netlist)
+        let solution = try parsed.circuit.solveDC()
+        let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "M1" })
+        return solution.elementCurrents[index].re
+    }
+    let cold = try drainCurrent(temperature: 27)
+    let hot = try drainCurrent(temperature: 127)
+    // The default mobility exponent BEX = -1.5 lowers KP as temperature rises.
+    #expect(hot < cold)
+    #expect(hot > 0)
+}
+
+@Test func stepTempSweepProducesTemperatureAxis() throws {
+    let netlist = """
+    I1 0 1 DC 1m
+    D1 1 0 DMOD
+    .model DMOD D(IS=1e-14 N=1)
+    .step temp 27 127 100
+    .end
+    """
+    var settings = AnalysisSettings.default
+    settings.runAC = false
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let sweep = try #require(result.sweep)
+    #expect(sweep.axes.count == 1)
+    #expect(sweep.axes[0].name == "TEMP")
+    #expect(sweep.axes[0].values == [27, 127])
+    #expect(sweep.points.count == 2)
+    #expect(sweep.points[0].coordinates.map(\.name) == ["TEMP"])
+    #expect(sweep.points[0].coordinates.map(\.value) == [27])
+    let first = try #require(sweep.points.first?.nodes.first { $0.name == "1" }?.voltage)
+    let second = try #require(sweep.points.last?.nodes.first { $0.name == "1" }?.voltage)
+    #expect(second < first)
+}
 
 // MARK: - Helpers
 
