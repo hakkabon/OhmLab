@@ -168,7 +168,7 @@ public enum CircuitDiagnostics {
                             symbolID: symbol.id
                         ))
                     }
-                case "resistance", "capacitance", "inductance", "saturationCurrent", "emissionCoefficient", "reverseBeta", "transconductanceParameter", "surfacePotential":
+                case "resistance", "capacitance", "inductance", "saturationCurrent", "emissionCoefficient", "reverseBeta", "transconductanceParameter", "surfacePotential", "gateSaturationCurrent":
                     if value <= 0 {
                         diagnostics.append(Diagnostic(
                             severity: .error,

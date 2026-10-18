@@ -14,6 +14,9 @@ final class CircuitDocument: ObservableObject, Identifiable {
     @Published var netlistText: String = defaultNetlist
     @Published var schematic: SchematicDocument = SchematicDocument()
     @Published var settings: AnalysisSettings = .default
+    /// Imported vendor model libraries, visible to netlist parsing without an
+    /// explicit `.include`.
+    @Published var modelLibraries: [SpiceModelLibrary] = []
 
     /// Where the current netlist text came from, when it was imported rather
     /// than typed. Cleared as soon as the netlist is edited by hand.
@@ -81,6 +84,11 @@ final class CircuitDocument: ObservableObject, Identifiable {
             .sink { [weak self] _ in self?.contentDidChange() }
             .store(in: &cancellables)
 
+        $modelLibraries
+            .dropFirst()
+            .sink { [weak self] _ in self?.contentDidChange() }
+            .store(in: &cancellables)
+
         $usesSchematic
             .dropFirst()
             .sink { [weak self] _ in
@@ -124,7 +132,7 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     private func netlistDiagnostics() -> [Diagnostic] {
         do {
-            _ = try SpiceNetlistParser.parse(netlistText)
+            _ = try SpiceNetlistParser.parse(netlistText, libraries: modelLibraries)
             return []
         } catch {
             return [Diagnostic(severity: .error, message: error.localizedDescription)]
@@ -151,7 +159,8 @@ final class CircuitDocument: ObservableObject, Identifiable {
             } else {
                 result = try await EngineClient.shared.simulate(
                     netlist: netlistText,
-                    settings: settings
+                    settings: settings,
+                    libraries: modelLibraries
                 )
             }
             simulationResult = result
@@ -224,6 +233,10 @@ final class CircuitDocument: ObservableObject, Identifiable {
         } else if KiCadInterchange.netlistExtensions.contains(ext) {
             source = ImportSource(fileName: url.lastPathComponent, kind: .spiceNetlist)
             importNetlist(try KiCadInterchange.readNetlist(at: url), source: source)
+        } else if Self.modelLibraryExtensions.contains(ext) {
+            try importModelLibrary(at: url)
+            name = url.deletingPathExtension().lastPathComponent
+            return
         } else {
             throw KiCadInterchangeError.unsupportedFormat(url.lastPathComponent)
         }
@@ -231,12 +244,34 @@ final class CircuitDocument: ObservableObject, Identifiable {
     }
 
     private func refreshImportWarnings() {
-        guard let parsed = try? SpiceNetlistParser.parse(netlistText) else {
+        guard let parsed = try? SpiceNetlistParser.parse(netlistText, libraries: modelLibraries) else {
             importWarnings = []
             return
         }
         importWarnings = parsed.warnings
     }
+
+    /// Imports a vendor model library from disk so its `.model`/`.subckt` cards
+    /// are available to the netlist. Returns the number of model definitions
+    /// the file contributed.
+    @discardableResult
+    func importModelLibrary(at url: URL) throws -> Int {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let library = try SpiceModelLibrary.parse(
+            text,
+            name: url.deletingPathExtension().lastPathComponent,
+            sourcePath: url.path
+        )
+        modelLibraries.append(library)
+        return library.models.count
+    }
+
+    func removeModelLibrary(id: UUID) {
+        modelLibraries.removeAll { $0.id == id }
+    }
+
+    /// File extensions treated as vendor model libraries by `importDesign`.
+    static let modelLibraryExtensions: Set<String> = ["lib", "mod"]
 
     static func recovered(from file: CircuitFile) -> CircuitDocument {
         let document = CircuitDocument()

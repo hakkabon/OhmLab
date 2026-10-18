@@ -122,6 +122,33 @@ public enum SpiceNetlistBuilder {
                 )
                 continue
             }
+            if descriptor.symbol == .njfTransistor || descriptor.symbol == .pjfTransistor {
+                guard descriptor.pins.count == 3,
+                      let drainNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[0].id)],
+                      let gateNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[1].id)],
+                      let sourceNode = nodeByPin[PinRef(symbolId: symbol.id, pinId: descriptor.pins[2].id)] else {
+                    throw SpiceNetlistBuildError.missingPin(reference: symbol.refDes, pin: "drain, gate, or source")
+                }
+                let threshold = try parameter("thresholdVoltage", descriptor: descriptor, symbol: symbol)
+                guard threshold.isFinite else {
+                    throw SpiceNetlistBuildError.invalidParameter(reference: symbol.refDes, parameter: "thresholdVoltage")
+                }
+                let transconductance = try parameter("transconductanceParameter", descriptor: descriptor, symbol: symbol)
+                try validate(transconductance, parameter: "transconductance parameter", symbol: symbol)
+                let modulation = try parameter("channelLengthModulation", descriptor: descriptor, symbol: symbol)
+                try validate(modulation, parameter: "channel-length modulation", symbol: symbol, allowsZero: true)
+                let gateSaturation = try parameter("gateSaturationCurrent", descriptor: descriptor, symbol: symbol)
+                try validate(gateSaturation, parameter: "gate saturation current", symbol: symbol)
+                let modelName = "JMOD\(symbol.refDes.dropFirst())"
+                let type = descriptor.symbol == .pjfTransistor ? "PJF" : "NJF"
+                lines.append("\(symbol.refDes) \(drainNode) \(gateNode) \(sourceNode) \(modelName)")
+                modelLines.append(
+                    ".model \(modelName) \(type)(VTO=\(spiceNumber(threshold)) "
+                    + "BETA=\(spiceNumber(transconductance)) LAMBDA=\(spiceNumber(modulation)) "
+                    + "IS=\(spiceNumber(gateSaturation)))"
+                )
+                continue
+            }
 
             guard descriptor.pins.count == 2,
                   let firstPin = descriptor.pins.first,
@@ -185,6 +212,8 @@ public enum SpiceNetlistBuilder {
             case .npnTransistor, .pnpTransistor:
                 break // handled above
             case .nmosTransistor, .pmosTransistor:
+                break // handled above
+            case .njfTransistor, .pjfTransistor:
                 break // handled above
             case .ground:
                 break

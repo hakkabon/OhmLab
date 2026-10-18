@@ -1,6 +1,6 @@
 # OhmLab
 
-**OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, and MOSFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
+**OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, MOSFETs, and JFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
 The Swift package builds and runs by itself — no Rust toolchain required. A future `audio-spice-core` (Rust/UniFFI) engine can be linked in behind the same interface, but it is not needed for the milestone.
 
@@ -23,7 +23,7 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 *   *Note: Visual wire crossings without an explicit junction or endpoint-to-wire connection are intentionally ignored, preventing accidental shorts.*
 
 ### Layer 3: The Netlist Layer (The Projection)
-This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I, D, Q, M).
+This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I, D, Q, M, J).
 *   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets. `gnd`, `ground`, and `agnd` are normalized to node `0` (a note is recorded), and node names are trimmed of stray whitespace.
 *   **Value Parsing:** Converts strings like `4.7k` or `10u` into floating-point values, and evaluates `{…}` expressions over `.param` values.
 *   **Import/Export:** A `.ac`- and `.dc`-aware netlist reader lets you edit SPICE directly; the schematic projects back to a readable SPICE netlist.
@@ -36,7 +36,7 @@ The simulation layer is a **native Swift linear solver**:
 *   **Transient Analysis:** Backward-Euler time stepping with companion models for C and L, seeded by the operating point at the start time (a `.ic` card may override starting node voltages and inductor currents). Sources support `PULSE`, `SIN`, and `PWL` shapes.
 *   **DC Sweep:** `.dc <src> <start> <stop> <step>` sweeps an independent source (nested sweeps are supported); `.step param <name> list <v…>` / `.step param <name> <start> <stop> <step>` re-parses the netlist per value. Each operating point is returned with its sweep coordinates, plotted, and exported to CSV.
 *   **Fourier Analysis:** `.four <freq> <var…>` (e.g. `.four 1k v(2) i(V1)`) reports the DC component and the first nine harmonics of a transient signal over the last full period, with each harmonic's magnitude, phase, normalized magnitude/phase, and total harmonic distortion (THD). Because the transient trace is piecewise linear, every harmonic is integrated in closed form on each segment (no resampling grid), so there is no interpolation error. Results appear in the UI and in the CSV export.
-*   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance), NPN/PNP bipolar transistors (simplified Ebers-Moll transport model: saturation current, forward/reverse beta; no Early effect), and N-MOS/P-MOS field-effect transistors (Level 1 Shichman-Hodges: threshold voltage, transconductance parameter `KP`, channel-length modulation `LAMBDA`, body effect `GAMMA`, surface potential `PHI`). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal). The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block (4×4 for the MOSFET). Convergence is judged on both the terminal-voltage and device-current updates. Every model carries SPICE's temperature parameters (`XTI`, `EG` for diodes/transistors, `XTB` for transistor betas, `BEX`/`TCV` for MOSFETs).
+*   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance), NPN/PNP bipolar transistors (simplified Ebers-Moll transport model: saturation current, forward/reverse beta; no Early effect), and N-MOS/P-MOS field-effect transistors (Level 1 Shichman-Hodges: threshold voltage, transconductance parameter `KP`, channel-length modulation `LAMBDA`, body effect `GAMMA`, surface potential `PHI`), plus N-JFET/P-JFET junction field-effect transistors (Shichman-Hodges square law with a gate-junction Shockley current). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal). The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block (4×4 for the MOSFET, 3×3 for the JFET). Convergence is judged on both the terminal-voltage and device-current updates. Every model carries SPICE's temperature parameters (`XTI`, `EG` for diodes/transistors, `XTB` for transistor betas, `BEX`/`TCV` for MOSFETs and JFETs).
 *   **Solver Options & Temperature:** `.options reltol⏐abstol⏐vntol⏐gmin⏐itl1⏐temp⏐tnom` are honoured: the tolerances drive the Newton convergence test, `itl1` caps the iteration count, `gmin` is the junction/channel leakage conductance that keeps cutoff non-singular, and the operating temperature (`temp`, from a `.temp` card or `.options`) scales each device model. Temperature dependence follows SPICE: diode/BJT saturation current and thermal voltage (`IS(T)` from `IS`, `XTI`, `EG`), BJT betas (`XTB`), and MOSFET level-1 `KP(T)` (`BEX`) and `VTO(T)` (`TCV`). Non-physical values fall back to their defaults.
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
@@ -65,9 +65,11 @@ The simulation layer is a **native Swift linear solver**:
 | PNP transistor | Q | Same model, polarity reversed |
 | N-MOSFET | M | Level 1 Shichman-Hodges: threshold voltage (`VTO`), transconductance parameter (`KP`), channel-length modulation (`LAMBDA`), body effect (`GAMMA`), surface potential (`PHI`); four terminals drain/gate/source/bulk |
 | P-MOSFET | M | Same model, polarity reversed (`VTO` is negative) |
+| N-JFET | J | Shichman-Hodges junction FET: threshold voltage (`VTO`, negative), transconductance parameter (`BETA`), channel-length modulation (`LAMBDA`), gate-junction saturation current (`IS`); three terminals drain/gate/source |
+| P-JFET | J | Same model, polarity reversed (`VTO` is positive) |
 | Ground | GND | Maps to node 0 |
 
-Other nonlinear devices (JFET), switches, and transformers are intentionally out of scope for this milestone and are reported rather than silently ignored.
+Switches, controlled sources, and transformers are intentionally out of scope for this milestone and are reported rather than silently ignored.
 
 ### Subcircuits (netlist)
 
@@ -117,6 +119,7 @@ Sources/OhmLab/
 │   ├── FourierAnalysis.swift     # `.four` harmonics and THD
 │   ├── Waveform.swift            # PULSE / SIN / PWL source shapes
 │   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
+│   ├── ModelLibrary.swift        # Vendor `.model`/`.subckt` import + registry
 │   └── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
 ├── Diagnostics/                  # Pre-simulation validation
 ├── Persistence/                  # Versioned .ohmlab file format + recovery
@@ -143,7 +146,7 @@ Create a circuit, place components (R, C, L, V, I, D, Q, M, ground), draw wires,
 5. Configure DC/AC/transient settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view. Transient runs plot selected node voltages and element currents over time.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I, D, Q, M with `.ac dec|oct|lin`, `.tran`, `.dc`, `.step param`, and `.four`), or use **Import** to load a SPICE netlist (or a KiCad `.kicad_sch` on macOS), then **Run**. Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Parameter (`.param`/`{…}`), include (`.include`/`.lib`), and initial-condition (`.ic`) cards are supported; unsupported cards are reported rather than ignored. Device models accept SPICE's temperature parameters (`XTI`, `EG`, `XTB` for diodes/transistors; `BEX`, `TCV` for MOSFETs) and the operating temperature is set with `.temp` or `.options temp=…`.
+Enter or paste SPICE (R, C, L, V, I, D, Q, M, J with `.ac dec|oct|lin`, `.tran`, `.dc`, `.step param`, and `.four`), or use **Import** to load a SPICE netlist (or a KiCad `.kicad_sch` on macOS), then **Run**. Vendor model files can be loaded as libraries so their `.model`/`.subckt` cards are visible without an explicit `.include` (cards written in the netlist itself still take precedence). Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. JFETs use `J<name> <drain> <gate> <source> <model>` with a `.model JNJF NJF(VTO=-2 BETA=1m LAMBDA=0)` (or `PJF(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Parameter (`.param`/`{…}`), include (`.include`/`.lib`), and initial-condition (`.ic`) cards are supported; unsupported cards are reported rather than ignored. Device models accept SPICE's temperature parameters (`XTI`, `EG`, `XTB` for diodes/transistors; `BEX`, `TCV` for MOSFETs and JFETs) and the operating temperature is set with `.temp` or `.options temp=…`.
 
 ## Document format
 

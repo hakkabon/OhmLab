@@ -137,12 +137,14 @@ enum SimulationEngine {
 
     static func solve(
         netlist: String,
-        settings: AnalysisSettings
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary] = []
     ) throws -> CircuitSimResult {
         guard !netlist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CircuitSimulationError.emptyNetlist
         }
-        let parsed = try SpiceNetlistParser.parse(netlist)
+        let include = SpiceLibraryManager(libraries: libraries).includeResolver()
+        let parsed = try SpiceNetlistParser.parse(netlist, include: include, libraries: libraries)
 
         // Prefer analysis settings entered in the UI; fall back to the `.ac`
         // card when the UI settings are left at their defaults and none supplied.
@@ -186,7 +188,8 @@ enum SimulationEngine {
                 netlist: netlist,
                 step: step,
                 axes: axes,
-                settings: effective
+                settings: effective,
+                libraries: libraries
             )
             if effective.runAC || effective.runTransient {
                 result.warnings.append(
@@ -476,7 +479,8 @@ enum SimulationEngine {
         netlist: String,
         step: SpiceStepSpec,
         axes: [SpiceSweepAxis],
-        settings: AnalysisSettings
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary]
     ) throws -> CircuitSimResult.SweepResult {
         var points: [CircuitSimResult.SweepPoint] = []
         let stepAxis = SpiceSweepAxis(name: step.parameter, values: step.values)
@@ -494,7 +498,8 @@ enum SimulationEngine {
         for stepValue in step.values {
             let parsed = try SpiceNetlistParser.parse(
                 netlist,
-                parameterOverrides: step.isTemperature ? [:] : [step.parameter: stepValue]
+                parameterOverrides: step.isTemperature ? [:] : [step.parameter: stepValue],
+                libraries: libraries
             )
             var circuit = parsed.circuit
             if step.isTemperature {
@@ -589,10 +594,11 @@ final class EngineClient: ObservableObject {
 
     func simulate(
         netlist: String,
-        settings: AnalysisSettings
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary] = []
     ) async throws -> CircuitSimResult {
         try await Task.detached(priority: .userInitiated) {
-            try SimulationEngine.solve(netlist: netlist, settings: settings)
+            try SimulationEngine.solve(netlist: netlist, settings: settings, libraries: libraries)
         }.value
     }
 }

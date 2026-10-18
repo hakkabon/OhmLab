@@ -12,6 +12,8 @@ public enum ComponentSymbol: String, Sendable {
     case pnpTransistor
     case nmosTransistor
     case pmosTransistor
+    case njfTransistor
+    case pjfTransistor
     case ground
 }
 
@@ -91,6 +93,12 @@ public final class ComponentRegistry: Sendable {
             PinDescriptor(id: "gate", name: "G", position: CGPoint(x: -40, y: 0)),
             PinDescriptor(id: "source", name: "S", position: CGPoint(x: 40, y: 40)),
             PinDescriptor(id: "bulk", name: "B", position: CGPoint(x: 40, y: 0))
+        ]
+        // Order is significant: drain, gate, source.
+        let jfetPins = [
+            PinDescriptor(id: "drain", name: "D", position: CGPoint(x: 40, y: -40)),
+            PinDescriptor(id: "gate", name: "G", position: CGPoint(x: -40, y: 0)),
+            PinDescriptor(id: "source", name: "S", position: CGPoint(x: 40, y: 40))
         ]
         registry = [
             "resistor": ComponentDescriptor(
@@ -209,6 +217,22 @@ public final class ComponentRegistry: Sendable {
                 pins: mosfetPins,
                 parameters: Self.mosfetParameters(thresholdVoltage: -1)
             ),
+            "njfet-transistor": ComponentDescriptor(
+                id: "njfet-transistor",
+                prefix: "J",
+                displayName: "N-JFET",
+                symbol: .njfTransistor,
+                pins: jfetPins,
+                parameters: Self.jfetParameters(thresholdVoltage: -2)
+            ),
+            "pjfet-transistor": ComponentDescriptor(
+                id: "pjfet-transistor",
+                prefix: "J",
+                displayName: "P-JFET",
+                symbol: .pjfTransistor,
+                pins: jfetPins,
+                parameters: Self.jfetParameters(thresholdVoltage: 2)
+            ),
             "ground": ComponentDescriptor(
                 id: "ground",
                 prefix: "GND",
@@ -228,6 +252,17 @@ public final class ComponentRegistry: Sendable {
             ComponentParameterDescriptor(id: "channelLengthModulation", name: "Channel-length modulation", unit: "1/V", defaultValue: 0),
             ComponentParameterDescriptor(id: "bodyEffect", name: "Body effect", unit: "√V", defaultValue: 0),
             ComponentParameterDescriptor(id: "surfacePotential", name: "Surface potential", unit: "V", defaultValue: 0.6)
+        ]
+    }
+
+    /// Shared Shichman-Hodges parameter set for the N- and P-JFET descriptors.
+    /// The only difference is the sign of the threshold voltage.
+    private static func jfetParameters(thresholdVoltage: Double) -> [ComponentParameterDescriptor] {
+        [
+            ComponentParameterDescriptor(id: "thresholdVoltage", name: "Threshold voltage", unit: "V", defaultValue: thresholdVoltage),
+            ComponentParameterDescriptor(id: "transconductanceParameter", name: "Transconductance parameter", unit: "A/V²", defaultValue: 1e-4),
+            ComponentParameterDescriptor(id: "channelLengthModulation", name: "Channel-length modulation", unit: "1/V", defaultValue: 0),
+            ComponentParameterDescriptor(id: "gateSaturationCurrent", name: "Gate saturation current", unit: "A", defaultValue: 1e-14)
         ]
     }
 

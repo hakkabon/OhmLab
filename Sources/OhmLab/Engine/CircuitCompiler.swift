@@ -309,6 +309,41 @@ public enum CircuitCompiler {
                     ),
                     name: symbol.refDes
                 ))
+            case .njfTransistor, .pjfTransistor:
+                let nodes = try threeTerminalNodes(for: symbol, descriptor: descriptor)
+                let threshold = try parameter("thresholdVoltage", descriptor: descriptor, symbol: symbol)
+                guard threshold.isFinite else {
+                    throw CircuitCompileError.invalidParameter(reference: symbol.refDes, parameter: "threshold voltage")
+                }
+                let transconductance = try positive(
+                    try parameter("transconductanceParameter", descriptor: descriptor, symbol: symbol),
+                    parameter: "transconductance parameter",
+                    symbol: symbol
+                )
+                let modulation = try parameter("channelLengthModulation", descriptor: descriptor, symbol: symbol)
+                guard modulation >= 0 else {
+                    throw CircuitCompileError.invalidParameter(reference: symbol.refDes, parameter: "channel-length modulation")
+                }
+                let gateSaturation = try positive(
+                    try parameter("gateSaturationCurrent", descriptor: descriptor, symbol: symbol),
+                    parameter: "gate saturation current",
+                    symbol: symbol
+                )
+                elements.append(.init(
+                    kind: .jfet,
+                    nodeA: nodes.collector,
+                    nodeB: nodes.emitter,
+                    nodeC: nodes.base,
+                    value: 0,
+                    jfet: .init(
+                        polarity: descriptor.symbol == .pjfTransistor ? .pjf : .njf,
+                        thresholdVoltage: threshold,
+                        transconductanceParameter: transconductance,
+                        channelLengthModulation: modulation,
+                        gateSaturationCurrent: gateSaturation
+                    ),
+                    name: symbol.refDes
+                ))
             }
         }
 

@@ -1,7 +1,8 @@
 // SpiceNetlistParser.swift
 // A small, well-scoped SPICE reader for the element set the solver supports:
 // R, C, L, independent V and I sources, diodes (D), bipolar transistors (Q),
-// MOSFETs (M), and `.subckt` definitions instantiated with `X` elements. It
+// MOSFETs (M), JFETs (J), and `.subckt` definitions instantiated with `X`
+// elements. It
 // understands the `.ac`, `.tran`, and `.dc` analysis cards, `.step param`, the
 // `.param`, `.options`, `.include`/`.lib`, and `.ic` control cards, and treats
 // common ground aliases (`gnd`, `ground`) as node 0.
@@ -36,7 +37,7 @@ public enum SpiceParseError: LocalizedError {
         case .malformed(let line, let text):
             return "Line \(line): could not parse \"\(text)\"."
         case .unsupportedElement(let line, let name):
-            return "Line \(line): element \(name) is not supported yet (only R, C, L, V, I, D, Q, M, X)."
+            return "Line \(line): element \(name) is not supported yet (only R, C, L, V, I, D, Q, M, J, X)."
         case .unsupportedCard(let line, let text):
             return "Line \(line): directive \"\(text)\" is not supported."
         case .invalidValue(let line, let text):
@@ -60,7 +61,7 @@ public enum SpiceParseError: LocalizedError {
 }
 
 /// A parsed diode model from a `.model … D(…)` card.
-private struct DiodeModelDefinition {
+struct DiodeModelDefinition {
     var saturationCurrent = 1e-14
     var emissionCoefficient = 1.0
     var seriesResistance = 0.0
@@ -69,7 +70,7 @@ private struct DiodeModelDefinition {
 }
 
 /// A parsed BJT model from a `.model … NPN(…)`/`PNP(…)` card.
-private struct BJTModelDefinition {
+struct BJTModelDefinition {
     var polarity: LinearCircuit.BJTPolarity = .npn
     var saturationCurrent = 1e-15
     var forwardBeta = 100.0
@@ -80,7 +81,7 @@ private struct BJTModelDefinition {
 }
 
 /// A parsed MOSFET model from a `.model … NMOS(…)`/`PMOS(…)` card.
-private struct MOSFETModelDefinition {
+struct MOSFETModelDefinition {
     var polarity: LinearCircuit.MOSFETPolarity = .nmos
     var thresholdVoltage = 1.0
     var transconductanceParameter = 2e-5
@@ -91,14 +92,27 @@ private struct MOSFETModelDefinition {
     var thresholdTemperatureCoefficient = 0.0
 }
 
+/// A parsed JFET model from a `.model … NJF(…)`/`PJF(…)` card.
+struct JFETModelDefinition {
+    var polarity: LinearCircuit.JFETPolarity = .njf
+    var thresholdVoltage = -2.0
+    var transconductanceParameter = 1e-4
+    var channelLengthModulation = 0.0
+    var gateSaturationCurrent = 1e-14
+    var mobilityTemperatureExponent = -1.5
+    var thresholdTemperatureCoefficient = 0.0
+    var activationEnergy = 1.11
+    var saturationCurrentTemperatureExponent = 3.0
+}
+
 /// A raw line of a `.subckt` body, kept with its source line number.
-private struct SubcircuitLine {
+struct SubcircuitLine {
     var text: String
     var number: Int
 }
 
 /// A parsed `.subckt <name> <ports…> [params: k=v …]` … `.ends` definition.
-private struct SubcircuitDefinition {
+struct SubcircuitDefinition {
     var name: String
     var ports: [String]
     /// Ordered parameter defaults, kept as unevaluated expressions so later
@@ -106,6 +120,18 @@ private struct SubcircuitDefinition {
     var parameterDefaults: [(key: String, expression: String)]
     var body: [SubcircuitLine]
     var line: Int
+}
+
+/// Model and subcircuit definitions extracted from a text (a netlist or an
+/// imported vendor model library). Used to seed the parser so a library's
+/// `.model`/`.subckt` cards are visible without an explicit `.include`, while
+/// cards in the netlist itself still take precedence.
+struct LibraryDefinitions {
+    var diodeModels: [String: DiodeModelDefinition] = [:]
+    var bjtModels: [String: BJTModelDefinition] = [:]
+    var mosfetModels: [String: MOSFETModelDefinition] = [:]
+    var jfetModels: [String: JFETModelDefinition] = [:]
+    var subcircuits: [String: SubcircuitDefinition] = [:]
 }
 
 /// One axis of a `.dc` sweep: an independent source name and its sampled values.
@@ -200,9 +226,68 @@ public enum SpiceNetlistParser {
     public static func parse(
         _ text: String,
         include: SpiceIncludeResolver? = nil,
-        parameterOverrides: [String: Double] = [:]
+        parameterOverrides: [String: Double] = [:],
+        libraries: [SpiceModelLibrary] = []
     ) throws -> ParsedSpiceNetlist {
-        try Parser(parameterOverrides: parameterOverrides).run(text, include: include)
+        var seed = LibraryDefinitions()
+        for library in libraries {
+            seed.diodeModels.merge(library.definitions.diodeModels) { _, new in new }
+            seed.bjtModels.merge(library.definitions.bjtModels) { _, new in new }
+            seed.mosfetModels.merge(library.definitions.mosfetModels) { _, new in new }
+            seed.jfetModels.merge(library.definitions.jfetModels) { _, new in new }
+            seed.subcircuits.merge(library.definitions.subcircuits) { _, new in new }
+        }
+        return try Parser(parameterOverrides: parameterOverrides, seed: seed).run(text, include: include)
+    }
+
+    /// Extracts every `.model` card and `.subckt` block from a text without
+    /// building a circuit. Used to import vendor model libraries, whose cards
+    /// then become visible to `parse(_:include:parameterOverrides:libraries:)`.
+    /// Malformed cards are skipped and reported as warnings rather than aborting.
+    static func scanDefinitions(_ text: String) -> (definitions: LibraryDefinitions, warnings: [String]) {
+        var definitions = LibraryDefinitions()
+        var warnings: [String] = []
+        var open: SubcircuitDefinition?
+        for (offset, rawLine) in text.components(separatedBy: .newlines).enumerated() {
+            let lineNumber = offset + 1
+            let stripped = stripComment(rawLine).trimmingCharacters(in: .whitespaces)
+            if stripped.isEmpty || stripped.hasPrefix("*") { continue }
+            let tokens = splitTokens(stripped)
+            guard let first = tokens.first else { continue }
+            switch first.lowercased() {
+            case ".subckt":
+                do {
+                    open = try Parser.makeSubcircuit(tokens: tokens, line: lineNumber, text: stripped)
+                } catch {
+                    warnings.append("Skipped malformed .subckt on line \(lineNumber).")
+                    open = nil
+                }
+            case ".ends":
+                if let finished = open {
+                    definitions.subcircuits[finished.name.uppercased()] = finished
+                }
+                open = nil
+            case ".model":
+                do {
+                    try parseModel(
+                        stripped,
+                        line: lineNumber,
+                        into: &definitions.diodeModels,
+                        bjtModels: &definitions.bjtModels,
+                        mosfetModels: &definitions.mosfetModels,
+                        jfetModels: &definitions.jfetModels
+                    )
+                } catch {
+                    warnings.append("Skipped unsupported model card on line \(lineNumber).")
+                }
+                open?.body.append(SubcircuitLine(text: stripped, number: lineNumber))
+            case _ where open != nil:
+                open?.body.append(SubcircuitLine(text: stripped, number: lineNumber))
+            default:
+                break
+            }
+        }
+        return (definitions, warnings)
     }
 
     // MARK: - Parser
@@ -217,10 +302,12 @@ public enum SpiceNetlistParser {
         private var diodeModels: [String: DiodeModelDefinition] = [:]
         private var bjtModels: [String: BJTModelDefinition] = [:]
         private var mosfetModels: [String: MOSFETModelDefinition] = [:]
+        private var jfetModels: [String: JFETModelDefinition] = [:]
         private var subcircuits: [String: SubcircuitDefinition] = [:]
         private var pendingDiodes: [PendingDiode] = []
         private var pendingBJTs: [PendingBJT] = []
         private var pendingMOSFETs: [PendingMOSFET] = []
+        private var pendingJFETs: [PendingJFET] = []
         private var analysis = SpiceAnalysisCard.none
         /// Solver controls gathered from `.options` and `.temp` cards.
         private var solverOptions = SolverOptions.default
@@ -235,12 +322,17 @@ public enum SpiceNetlistParser {
         private var warnings: [String] = []
         private var aliasedGrounds: Set<String> = []
 
-        init(parameterOverrides: [String: Double]) {
+        init(parameterOverrides: [String: Double], seed: LibraryDefinitions = LibraryDefinitions()) {
             let overrides = Dictionary(
                 uniqueKeysWithValues: parameterOverrides.map { ($0.key.uppercased(), $0.value) }
             )
             self.parameterOverrides = overrides
             self.globalParameters = overrides
+            self.diodeModels = seed.diodeModels
+            self.bjtModels = seed.bjtModels
+            self.mosfetModels = seed.mosfetModels
+            self.jfetModels = seed.jfetModels
+            self.subcircuits = seed.subcircuits
         }
 
         private struct PendingDiode {
@@ -267,6 +359,15 @@ public enum SpiceNetlistParser {
             var gate: Int
             var source: Int
             var bulk: Int
+            var model: String
+            var line: Int
+        }
+
+        private struct PendingJFET {
+            var name: String
+            var drain: Int
+            var gate: Int
+            var source: Int
             var model: String
             var line: Int
         }
@@ -300,7 +401,7 @@ public enum SpiceNetlistParser {
                     if let existing = open {
                         throw SpiceParseError.unterminatedSubcircuit(line: existing.line, name: existing.name)
                     }
-                    open = try makeSubcircuit(tokens: tokens, line: lineNumber, text: stripped)
+                    open = try Parser.makeSubcircuit(tokens: tokens, line: lineNumber, text: stripped)
                     sawContent = true
                 case ".ends":
                     if let finished = open {
@@ -314,7 +415,8 @@ public enum SpiceNetlistParser {
                         line: lineNumber,
                         into: &diodeModels,
                         bjtModels: &bjtModels,
-                        mosfetModels: &mosfetModels
+                        mosfetModels: &mosfetModels,
+                        jfetModels: &jfetModels
                     )
                     sawContent = true
                     open?.body.append(SubcircuitLine(text: stripped, number: lineNumber))
@@ -607,7 +709,7 @@ public enum SpiceNetlistParser {
             }
         }
 
-        private func makeSubcircuit(tokens: [String], line: Int, text: String) throws -> SubcircuitDefinition {
+        static func makeSubcircuit(tokens: [String], line: Int, text: String) throws -> SubcircuitDefinition {
             guard tokens.count >= 2 else { throw SpiceParseError.malformed(line: line, text: text) }
             let name = tokens[1]
             var ports: [String] = []
@@ -765,6 +867,17 @@ public enum SpiceNetlistParser {
                     source: resolveNode(tokens[3], scope: scope),
                     bulk: resolveNode(tokens[4], scope: scope),
                     model: tokens[5].uppercased(),
+                    line: line.number
+                ))
+            case "J":
+                // J<name> <drain> <gate> <source> <model>
+                guard tokens.count >= 5 else { throw SpiceParseError.malformed(line: line.number, text: stripped) }
+                pendingJFETs.append(PendingJFET(
+                    name: localName,
+                    drain: resolveNode(tokens[1], scope: scope),
+                    gate: resolveNode(tokens[2], scope: scope),
+                    source: resolveNode(tokens[3], scope: scope),
+                    model: tokens[4].uppercased(),
                     line: line.number
                 ))
             case "X":
@@ -932,12 +1045,37 @@ public enum SpiceNetlistParser {
                     name: pending.name
                 ))
             }
+
+            for pending in pendingJFETs {
+                guard let definition = jfetModels[pending.model] else {
+                    throw SpiceParseError.missingModel(line: pending.line, name: pending.model)
+                }
+                elements.append(.init(
+                    kind: .jfet,
+                    nodeA: pending.drain,
+                    nodeB: pending.source,
+                    nodeC: pending.gate,
+                    value: 0,
+                    jfet: LinearCircuit.JFETParameters(
+                        polarity: definition.polarity,
+                        thresholdVoltage: definition.thresholdVoltage,
+                        transconductanceParameter: definition.transconductanceParameter,
+                        channelLengthModulation: definition.channelLengthModulation,
+                        gateSaturationCurrent: definition.gateSaturationCurrent,
+                        mobilityTemperatureExponent: definition.mobilityTemperatureExponent,
+                        thresholdTemperatureCoefficient: definition.thresholdTemperatureCoefficient,
+                        saturationCurrentTemperatureExponent: definition.saturationCurrentTemperatureExponent,
+                        activationEnergy: definition.activationEnergy
+                    ),
+                    name: pending.name
+                ))
+            }
         }
     }
 
     // MARK: - Helpers
 
-    private static func stripComment(_ line: String) -> String {
+    static func stripComment(_ line: String) -> String {
         if let semicolon = line.firstIndex(of: ";") {
             return String(line[line.startIndex..<semicolon])
         }
@@ -998,7 +1136,7 @@ public enum SpiceNetlistParser {
 
     /// Splits a line on whitespace, but never inside `{…}`, so parameter
     /// expressions like `{R + R}` remain a single token.
-    private static func splitTokens(_ text: String) -> [String] {
+    static func splitTokens(_ text: String) -> [String] {
         var tokens: [String] = []
         var current = ""
         var depth = 0
@@ -1282,12 +1420,13 @@ public enum SpiceNetlistParser {
     /// Parses `.model <name> D(<params>)`, `.model <name> NPN|PNP(<params>)`, or
     /// `.model <name> NMOS|PMOS(<params>)`. Unknown parameters are ignored so
     /// standard cards load.
-    private static func parseModel(
+    static func parseModel(
         _ text: String,
         line: Int,
         into models: inout [String: DiodeModelDefinition],
         bjtModels: inout [String: BJTModelDefinition],
-        mosfetModels: inout [String: MOSFETModelDefinition]
+        mosfetModels: inout [String: MOSFETModelDefinition],
+        jfetModels: inout [String: JFETModelDefinition]
     ) throws {
         var body = text
         if body.lowercased().hasPrefix(".model") {
@@ -1340,6 +1479,19 @@ public enum SpiceNetlistParser {
             if let bex = values["BEX"] { definition.mobilityTemperatureExponent = bex }
             if let tcv = values["TCV"] { definition.thresholdTemperatureCoefficient = tcv }
             mosfetModels[name] = definition
+        case "NJF", "PJF":
+            var definition = JFETModelDefinition()
+            definition.polarity = type == "PJF" ? .pjf : .njf
+            definition.thresholdVoltage = definition.polarity == .pjf ? 2 : -2
+            if let vto = values["VTO"] { definition.thresholdVoltage = vto }
+            if let beta = values["BETA"] { definition.transconductanceParameter = beta }
+            if let lambda = values["LAMBDA"] { definition.channelLengthModulation = lambda }
+            if let isat = values["IS"] { definition.gateSaturationCurrent = isat }
+            if let bex = values["BEX"] { definition.mobilityTemperatureExponent = bex }
+            if let tcv = values["TCV"] { definition.thresholdTemperatureCoefficient = tcv }
+            if let eg = values["EG"] { definition.activationEnergy = eg }
+            if let xti = values["XTI"] { definition.saturationCurrentTemperatureExponent = xti }
+            jfetModels[name] = definition
         default:
             throw SpiceParseError.unsupportedCard(line: line, text: text)
         }

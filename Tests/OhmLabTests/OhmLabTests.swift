@@ -2403,6 +2403,217 @@ func kicadCLIExportsARealSchematic() throws {
     #expect(csv.contains("harmonic_magnitude"))
 }
 
+// MARK: - Phase 12: Model libraries & JFET devices
+
+@Test func jfetCardIsParsed() throws {
+    let netlist = """
+    VDD 1 0 DC 10
+    J1 1 0 0 JMOD
+    .model JMOD NJF(VTO=-2 BETA=1m LAMBDA=0 IS=1e-14)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let element = try #require(parsed.circuit.elements.first { $0.name == "J1" })
+    #expect(element.kind == .jfet)
+    #expect(element.jfet?.polarity == .njf)
+    #expect(abs((element.jfet?.thresholdVoltage ?? 0) + 2) < 1e-9)
+    #expect(abs((element.jfet?.transconductanceParameter ?? 0) - 1e-3) < 1e-12)
+}
+
+@Test func jfetDrainCurrentMatchesSquareLaw() throws {
+    let netlist = """
+    VDD 1 0 DC 10
+    J1 1 0 0 JMOD
+    .model JMOD NJF(VTO=-2 BETA=1m LAMBDA=0)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let solution = try parsed.circuit.solveDC()
+    let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "J1" })
+    // Saturation: Id = BETA*(Vgs - Vt)^2 = 1e-3 * 2^2 = 4 mA.
+    #expect(abs(solution.elementCurrents[index].re - 4e-3) < 5e-5)
+}
+
+@Test func pjfetMirrorsNjfet() throws {
+    let netlist = """
+    VDD 1 0 DC -10
+    J1 1 0 0 JMOD
+    .model JMOD PJF(VTO=2 BETA=1m LAMBDA=0)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    let solution = try parsed.circuit.solveDC()
+    let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "J1" })
+    // The polarity sign flips the drain current for the P-device.
+    #expect(abs(solution.elementCurrents[index].re + 4e-3) < 5e-5)
+}
+
+@Test func jfetConductionIsSymmetricInDrainAndSource() throws {
+    func drainCurrent(drain: String, source: String) throws -> Double {
+        let netlist = """
+        VDD 1 0 DC 10
+        J1 \(drain) 0 \(source) JMOD
+        .model JMOD NJF(VTO=-2 BETA=1m)
+        .end
+        """
+        let parsed = try SpiceNetlistParser.parse(netlist)
+        let solution = try parsed.circuit.solveDC()
+        let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "J1" })
+        return solution.elementCurrents[index].re
+    }
+    let forward = try drainCurrent(drain: "1", source: "0")
+    let reverse = try drainCurrent(drain: "0", source: "1")
+    #expect(abs(forward + reverse) < 5e-5)
+}
+
+@Test func jfetDrainCurrentFallsWithTemperature() throws {
+    func drainCurrent(temperature: Double) throws -> Double {
+        let netlist = """
+        VDD 1 0 DC 10
+        J1 1 0 0 JMOD
+        .model JMOD NJF(VTO=-2 BETA=1m LAMBDA=0)
+        .temp \(temperature)
+        .end
+        """
+        let parsed = try SpiceNetlistParser.parse(netlist)
+        let solution = try parsed.circuit.solveDC()
+        let index = try #require(parsed.circuit.elements.firstIndex { $0.name == "J1" })
+        return solution.elementCurrents[index].re
+    }
+    let cold = try drainCurrent(temperature: 27)
+    let hot = try drainCurrent(temperature: 127)
+    // BEX = -1.5 lowers BETA as the temperature rises.
+    #expect(hot < cold)
+    #expect(hot > 0)
+}
+
+@Test func compilerMapsJFETParametersAndPolarity() throws {
+    let jfet = SymbolInstance(
+        descriptorId: "pjfet-transistor",
+        refDes: "J1",
+        position: GridPoint(0, 0),
+        parameters: [
+            "thresholdVoltage": 1.5,
+            "transconductanceParameter": 2e-3,
+            "channelLengthModulation": 0.02,
+            "gateSaturationCurrent": 1e-13,
+        ]
+    )
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let circuit = try CircuitCompiler.compile(symbols: [jfet, ground], wires: [], labels: [])
+    let element = try #require(circuit.elements.first { $0.name == "J1" })
+    #expect(element.kind == .jfet)
+    #expect(element.jfet?.polarity == .pjf)
+    #expect(abs((element.jfet?.thresholdVoltage ?? 0) - 1.5) < 1e-9)
+    #expect(abs((element.jfet?.transconductanceParameter ?? 0) - 2e-3) < 1e-15)
+    #expect(abs((element.jfet?.channelLengthModulation ?? 0) - 0.02) < 1e-12)
+}
+
+@Test @MainActor func netlistBuilderEmitsJFETAndModel() throws {
+    let document = SchematicDocument()
+    _ = document.addComponent(descriptorId: "njfet-transistor", at: GridPoint(0, 0))
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-2, 1))
+
+    let netlist = try SpiceNetlistBuilder.build(from: document)
+    #expect(netlist.contains("J1 "))
+    #expect(netlist.contains(".model JMOD1 NJF("))
+}
+
+@Test func registryExposesJFETDescriptors() {
+    #expect(ComponentRegistry.shared.descriptor(for: "njfet-transistor")?.symbol == .njfTransistor)
+    #expect(ComponentRegistry.shared.descriptor(for: "pjfet-transistor")?.symbol == .pjfTransistor)
+}
+
+@Test func diagnosticsRejectInvalidGateSaturationCurrent() {
+    var jfet = SymbolInstance(descriptorId: "njfet-transistor", refDes: "J1", position: GridPoint(0, 0))
+    jfet.parameters = ComponentRegistry.shared.descriptor(for: "njfet-transistor")!.defaultParameterValues
+    jfet.parameters["gateSaturationCurrent"] = 0
+    let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+
+    let diagnostics = CircuitDiagnostics.analyze(symbols: [jfet, ground], wires: [], labels: [])
+    #expect(diagnostics.contains {
+        $0.severity == .error && $0.message.localizedCaseInsensitiveContains("gate saturation current")
+    })
+}
+
+@Test func modelLibraryScansModelsAndSubcircuits() throws {
+    let text = """
+    * Vendor models
+    .model BC547 NPN(IS=1e-14 BF=200)
+    .model 2N5457 NJF(VTO=-2 BETA=1m)
+    .subckt opamp in out
+    R1 in out 1k
+    .ends
+    """
+    let library = try SpiceModelLibrary.parse(text, name: "Vendor")
+    #expect(library.name == "Vendor")
+    #expect(library.models.count == 2)
+    #expect(library.models.contains { $0.name == "BC547" && $0.kind == .bjt })
+    #expect(library.models.contains { $0.name == "2N5457" && $0.kind == .jfet })
+    #expect(library.subcircuitNames == ["OPAMP"])
+    #expect(!library.isEmpty)
+}
+
+@Test func modelLibraryWithNoDefinitionsThrows() {
+    #expect(throws: SpiceModelLibraryError.self) {
+        _ = try SpiceModelLibrary.parse("* just a comment\n", name: "Empty")
+    }
+}
+
+@Test func importedLibraryModelIsVisibleWithoutInclude() throws {
+    let library = try SpiceModelLibrary.parse(
+        ".model VENDORJ NJF(VTO=-2 BETA=1m LAMBDA=0)",
+        name: "vendor"
+    )
+    let netlist = """
+    VDD 1 0 DC 10
+    J1 1 0 0 VENDORJ
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist, libraries: [library])
+    let element = try #require(parsed.circuit.elements.first { $0.name == "J1" })
+    #expect(abs((element.jfet?.thresholdVoltage ?? 0) + 2) < 1e-9)
+}
+
+@Test func netlistModelOverridesImportedLibrary() throws {
+    let library = try SpiceModelLibrary.parse(".model QMOD NPN(IS=1e-15 BF=100)", name: "vendor")
+    let netlist = """
+    Q1 1 0 0 QMOD
+    .model QMOD NPN(IS=1e-15 BF=250)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist, libraries: [library])
+    let element = try #require(parsed.circuit.elements.first { $0.name == "Q1" })
+    #expect(abs((element.bjt?.forwardBeta ?? 0) - 250) < 1e-9)
+}
+
+@Test @MainActor func documentImportsModelLibraryFromFile() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vendor-\(UUID().uuidString).lib")
+    try ".model JTEST NJF(VTO=-2 BETA=1m)\n".write(to: url, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let document = CircuitDocument()
+    let count = try document.importModelLibrary(at: url)
+    #expect(count == 1)
+    #expect(document.modelLibraries.count == 1)
+    #expect(document.modelLibraries.first?.models.first?.name == "JTEST")
+}
+
+@Test @MainActor func importDesignLoadsModelLibraryFile() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("design-\(UUID().uuidString).lib")
+    try ".model DLIB D(IS=1e-14)\n".write(to: url, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let document = CircuitDocument()
+    try document.importDesign(at: url)
+    #expect(document.modelLibraries.count == 1)
+    #expect(document.modelLibraries.first?.models.first?.name == "DLIB")
+    #expect(document.name == url.deletingPathExtension().lastPathComponent)
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

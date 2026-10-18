@@ -296,6 +296,32 @@ public class SchematicCanvas: PlatformView {
             path.addLine(to: CGPoint(x: arrowEnd.x - 7 * cos(arrowAngle - 0.5), y: arrowEnd.y - 7 * sin(arrowAngle - 0.5)))
             path.move(to: arrowEnd)
             path.addLine(to: CGPoint(x: arrowEnd.x - 7 * cos(arrowAngle + 0.5), y: arrowEnd.y - 7 * sin(arrowAngle + 0.5)))
+        case .njfTransistor, .pjfTransistor:
+            // Gate lead and plate.
+            path.move(to: CGPoint(x: -40, y: 0))
+            path.addLine(to: CGPoint(x: -18, y: 0))
+            path.move(to: CGPoint(x: -18, y: -15))
+            path.addLine(to: CGPoint(x: -18, y: 15))
+            // Channel: a single continuous bar for a depletion device.
+            path.move(to: CGPoint(x: -8, y: -15))
+            path.addLine(to: CGPoint(x: -8, y: 15))
+            // Drain (top) and source (bottom) leads to their pins.
+            path.move(to: CGPoint(x: -8, y: -12))
+            path.addLine(to: CGPoint(x: 16, y: -12))
+            path.addLine(to: CGPoint(x: 40, y: -40))
+            path.move(to: CGPoint(x: -8, y: 12))
+            path.addLine(to: CGPoint(x: 16, y: 12))
+            path.addLine(to: CGPoint(x: 40, y: 40))
+            // Gate arrow: toward the channel for N-JFET, away for P-JFET.
+            let gateTail = descriptor.symbol == .njfTransistor ? CGPoint(x: -22, y: 0) : CGPoint(x: -14, y: 0)
+            let gateHead = descriptor.symbol == .njfTransistor ? CGPoint(x: -14, y: 0) : CGPoint(x: -22, y: 0)
+            let gateAngle = atan2(gateHead.y - gateTail.y, gateHead.x - gateTail.x)
+            path.move(to: gateTail)
+            path.addLine(to: gateHead)
+            path.move(to: gateHead)
+            path.addLine(to: CGPoint(x: gateHead.x - 6 * cos(gateAngle - 0.5), y: gateHead.y - 6 * sin(gateAngle - 0.5)))
+            path.move(to: gateHead)
+            path.addLine(to: CGPoint(x: gateHead.x - 6 * cos(gateAngle + 0.5), y: gateHead.y - 6 * sin(gateAngle + 0.5)))
         case .ground:
             path.move(to: CGPoint(x: 0, y: -20))
             path.addLine(to: CGPoint(x: 0, y: -8))
@@ -398,6 +424,9 @@ public class SchematicCanvas: PlatformView {
         case .nmosTransistor, .pmosTransistor:
             let threshold = symbol.parameters["thresholdVoltage"] ?? 0
             return String(format: "Vt=%.3g V", threshold)
+        case .njfTransistor, .pjfTransistor:
+            let threshold = symbol.parameters["thresholdVoltage"] ?? 0
+            return String(format: "Vgs(off)=%.3g V", threshold)
         case .ground:
             return nil
         }

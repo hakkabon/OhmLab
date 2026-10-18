@@ -95,6 +95,7 @@ public struct LinearCircuit: Sendable {
         case diode
         case bjt
         case mosfet
+        case jfet
     }
 
     public enum BJTPolarity: String, Sendable {
@@ -105,6 +106,11 @@ public struct LinearCircuit: Sendable {
     public enum MOSFETPolarity: String, Sendable {
         case nmos
         case pmos
+    }
+
+    public enum JFETPolarity: String, Sendable {
+        case njf
+        case pjf
     }
 
     /// Simplified Ebers-Moll transport model. Early voltage is not modelled.
@@ -185,6 +191,56 @@ public struct LinearCircuit: Sendable {
         }
     }
 
+    /// Shichman-Hodges junction field-effect transistor parameters.
+    /// `thresholdVoltage` is the signed SPICE VTO (negative for an N-JFET,
+    /// positive for a P-JFET). The drain characteristic uses the same
+    /// square-law / linear split as the Level 1 MOSFET, but with no body
+    /// terminal; the gate-channel junction carries a Shockley current
+    /// (`gateSaturationCurrent`). Temperature dependence scales the
+    /// transconductance parameter with `BEX` and shifts the threshold with
+    /// `TCV`, following the same scheme as the MOSFET.
+    public struct JFETParameters: Sendable, Equatable {
+        public var polarity: JFETPolarity
+        public var thresholdVoltage: Double
+        public var transconductanceParameter: Double
+        public var channelLengthModulation: Double
+        /// `IS`: gate-junction saturation current.
+        public var gateSaturationCurrent: Double
+        public var thermalVoltage: Double
+        /// `BEX`: mobility temperature exponent (applied to BETA).
+        public var mobilityTemperatureExponent: Double
+        /// `TCV`: threshold-voltage temperature coefficient, in volts/°C.
+        public var thresholdTemperatureCoefficient: Double
+        /// `XTI`: gate saturation-current temperature exponent.
+        public var saturationCurrentTemperatureExponent: Double
+        /// `EG`: activation energy in electron-volts.
+        public var activationEnergy: Double
+
+        public init(
+            polarity: JFETPolarity = .njf,
+            thresholdVoltage: Double = -2,
+            transconductanceParameter: Double = 1e-4,
+            channelLengthModulation: Double = 0,
+            gateSaturationCurrent: Double = 1e-14,
+            thermalVoltage: Double = 0.025_852,
+            mobilityTemperatureExponent: Double = -1.5,
+            thresholdTemperatureCoefficient: Double = 0,
+            saturationCurrentTemperatureExponent: Double = 3,
+            activationEnergy: Double = 1.11
+        ) {
+            self.polarity = polarity
+            self.thresholdVoltage = thresholdVoltage
+            self.transconductanceParameter = transconductanceParameter
+            self.channelLengthModulation = channelLengthModulation
+            self.gateSaturationCurrent = gateSaturationCurrent
+            self.thermalVoltage = thermalVoltage
+            self.mobilityTemperatureExponent = mobilityTemperatureExponent
+            self.thresholdTemperatureCoefficient = thresholdTemperatureCoefficient
+            self.saturationCurrentTemperatureExponent = saturationCurrentTemperatureExponent
+            self.activationEnergy = activationEnergy
+        }
+    }
+
     /// Shockley diode parameters. `saturationCurrent` is scaled by `area`.
     /// Temperature dependence follows SPICE: the saturation current scales with
     /// `XTI`/`EG`.
@@ -243,6 +299,8 @@ public struct LinearCircuit: Sendable {
         public var bjt: BJTParameters?
         /// Level 1 parameters for a MOSFET element; nil for every other kind.
         public var mosfet: MOSFETParameters?
+        /// Shichman-Hodges parameters for a JFET element; nil for every other kind.
+        public var jfet: JFETParameters?
         public var name: String
 
         public init(
@@ -259,6 +317,7 @@ public struct LinearCircuit: Sendable {
             diode: DiodeParameters? = nil,
             bjt: BJTParameters? = nil,
             mosfet: MOSFETParameters? = nil,
+            jfet: JFETParameters? = nil,
             name: String
         ) {
             self.kind = kind
@@ -274,6 +333,7 @@ public struct LinearCircuit: Sendable {
             self.diode = diode
             self.bjt = bjt
             self.mosfet = mosfet
+            self.jfet = jfet
             self.name = name
         }
 
@@ -366,7 +426,7 @@ public struct LinearCircuit: Sendable {
 
     /// Any nonlinear element forces an iterative (Newton-Raphson) solve.
     private static func isNonlinear(_ kind: ElementKind) -> Bool {
-        kind == .diode || kind == .bjt || kind == .mosfet
+        kind == .diode || kind == .bjt || kind == .mosfet || kind == .jfet
     }
 
     public var hasNonlinear: Bool {
@@ -378,8 +438,9 @@ public struct LinearCircuit: Sendable {
     }
 
     /// Ordered terminal nodes of a nonlinear device. BJT order is
-    /// [base, collector, emitter] and MOSFET order is
-    /// [drain, gate, source, bulk] to match the characteristic derivations.
+    /// [base, collector, emitter], MOSFET order is
+    /// [drain, gate, source, bulk], and JFET order is
+    /// [gate, drain, source] to match the characteristic derivations.
     private func terminalNodes(for element: Element) -> [Int] {
         switch element.kind {
         case .diode:
@@ -389,6 +450,8 @@ public struct LinearCircuit: Sendable {
         case .mosfet:
             let source = element.nodeB
             return [element.nodeA, element.nodeC ?? source, source, element.nodeD ?? source]
+        case .jfet:
+            return [element.nodeC ?? element.nodeB, element.nodeA, element.nodeB]
         default:
             return []
         }
@@ -468,6 +531,29 @@ public struct LinearCircuit: Sendable {
         return (vto, kp)
     }
 
+    /// Threshold voltage, transconductance parameter, thermal voltage, and
+    /// gate-junction saturation current of a JFET at the operating temperature.
+    private func jfetOperatingPoint(
+        _ model: JFETParameters
+    ) -> (thresholdVoltage: Double, transconductanceParameter: Double, thermalVoltage: Double, gateSaturationCurrent: Double) {
+        let vt = model.thermalVoltage * solverOptions.thermalScale
+        let ratio = solverOptions.thermalScale
+        let beta = ratio > 0
+            ? model.transconductanceParameter * pow(ratio, model.mobilityTemperatureExponent)
+            : model.transconductanceParameter
+        let vto = model.thresholdVoltage
+            - model.thresholdTemperatureCoefficient
+                * (solverOptions.temperatureCelsius - solverOptions.nominalTemperatureCelsius)
+        let isat = Self.temperatureScaledSaturationCurrent(
+            model.gateSaturationCurrent,
+            exponent: model.saturationCurrentTemperatureExponent,
+            activationEnergy: model.activationEnergy,
+            rawThermalVoltage: vt,
+            options: solverOptions
+        )
+        return (vto, beta, vt, isat)
+    }
+
     /// Shockley current and small-signal conductance at a junction voltage. The
     /// saturation current and thermal voltage are evaluated at the operating
     /// temperature, and a `gmin` leakage conductance is included.
@@ -499,6 +585,8 @@ public struct LinearCircuit: Sendable {
             return bjtCharacteristic(element, terminals: terminals)
         case .mosfet:
             return mosfetCharacteristic(element, terminals: terminals)
+        case .jfet:
+            return jfetCharacteristic(element, terminals: terminals)
         default:
             let zero = [Double](repeating: 0, count: terminals.count)
             return (zero, Array(repeating: zero, count: terminals.count))
@@ -627,6 +715,82 @@ public struct LinearCircuit: Sendable {
         )
     }
 
+    /// Shichman-Hodges JFET characteristic. Terminal order is
+    /// [gate, drain, source]; terminal currents are those flowing into the
+    /// device. The channel current is a square-law function of the gate
+    /// overdrive, and each gate-channel junction carries a Shockley current. A
+    /// P-JFET is handled by flipping the controlling voltages and the current
+    /// with `sign`, exactly as the MOSFET characteristic does. The Jacobian is
+    /// formed by central differences over the (piecewise, symmetric) current.
+    private func jfetCharacteristic(
+        _ element: Element,
+        terminals: [Double]
+    ) -> (currents: [Double], jacobian: [[Double]]) {
+        let currents = jfetTerminalCurrents(element, terminals: terminals)
+        let step = 1e-6
+        var jacobian = [[Double]](repeating: [0, 0, 0], count: 3)
+        for column in 0..<3 {
+            var plus = terminals
+            var minus = terminals
+            plus[column] += step
+            minus[column] -= step
+            let plusCurrents = jfetTerminalCurrents(element, terminals: plus)
+            let minusCurrents = jfetTerminalCurrents(element, terminals: minus)
+            for row in 0..<3 {
+                jacobian[row][column] = (plusCurrents[row] - minusCurrents[row]) / (2 * step)
+            }
+        }
+        return (currents, jacobian)
+    }
+
+    /// Terminal currents [gate, drain, source] of a JFET. A JFET is symmetric,
+    /// so a reverse drain-source bias is handled by swapping the drain and
+    /// source roles.
+    private func jfetTerminalCurrents(_ element: Element, terminals: [Double]) -> [Double] {
+        guard let model = element.jfet else { return [0, 0, 0] }
+        let (vto, beta, vt, gateIsat) = jfetOperatingPoint(model)
+        let sign = model.polarity == .pjf ? -1.0 : 1.0
+        // The controlling voltages are sign-flipped for a P-device, so the
+        // threshold is as well (VTO is positive for P-JFETs in SPICE).
+        let threshold = sign * vto
+        let (vg, vd, vs) = (terminals[0], terminals[1], terminals[2])
+        let vgs = sign * (vg - vs)
+        let vgd = sign * (vg - vd)
+        let vds = vgs - vgd
+        let gmin = solverOptions.minimumConductance
+
+        // Orient the device so the reference end sees a non-negative channel
+        // voltage; the current direction reverses when the roles are swapped.
+        let flipped = vds < 0
+        let channelVgs = flipped ? vgd : vgs
+        let channelVds = flipped ? -vds : vds
+        let overdrive = channelVgs - threshold
+        var channel = gmin * channelVds
+        if overdrive > 0 {
+            let lambdaFactor = 1 + model.channelLengthModulation * channelVds
+            if channelVds < overdrive {
+                channel += beta * (2 * overdrive * channelVds - channelVds * channelVds) * lambdaFactor
+            } else {
+                channel += beta * overdrive * overdrive * lambdaFactor
+            }
+        }
+        let drainChannel = sign * (flipped ? -channel : channel)
+
+        // Gate-channel junctions: a Shockley current injected from the gate.
+        func junctionCurrent(_ voltage: Double) -> Double {
+            guard vt > 0 else { return 0 }
+            return gateIsat * (exp(min(sign * voltage / vt, 80)) - 1)
+        }
+        let gateSource = junctionCurrent(vg - vs)
+        let gateDrain = junctionCurrent(vg - vd)
+
+        return [
+            sign * (gateSource + gateDrain),
+            drainChannel - sign * gateDrain,
+            -drainChannel - sign * gateSource
+        ]
+    }
+
     /// Limits a junction voltage update (a form of SPICE's pnjlim), keeping the
     /// exponential from overshooting the forward operating region.
     private func limitedJunction(_ value: Double, previous: Double, vt: Double, isat: Double) -> Double {
@@ -679,6 +843,26 @@ public struct LinearCircuit: Sendable {
             // The Level 1 characteristic is piecewise polynomial, so no
             // exponential limiting is required.
             return raw
+        case .jfet:
+            guard let model = element.jfet else { return raw }
+            let sign = model.polarity == .pjf ? -1.0 : 1.0
+            let (_, _, vt, gateIsat) = jfetOperatingPoint(model)
+            let vgs = limitedJunction(
+                sign * (raw[0] - raw[2]),
+                previous: sign * (previous[0] - previous[2]),
+                vt: vt,
+                isat: gateIsat
+            )
+            let vgd = limitedJunction(
+                sign * (raw[0] - raw[1]),
+                previous: sign * (previous[0] - previous[1]),
+                vt: vt,
+                isat: gateIsat
+            )
+            let vs = raw[2]
+            let vg = vs + sign * vgs
+            let vd = vg - sign * vgd
+            return [vg, vd, vs]
         default:
             return raw
         }
@@ -891,6 +1075,23 @@ public struct LinearCircuit: Sendable {
                       model.thresholdTemperatureCoefficient.isFinite else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
+            case .jfet:
+                guard let model = element.jfet,
+                      model.thresholdVoltage.isFinite,
+                      model.transconductanceParameter.isFinite,
+                      model.transconductanceParameter > 0,
+                      model.channelLengthModulation.isFinite,
+                      model.channelLengthModulation >= 0,
+                      model.gateSaturationCurrent.isFinite,
+                      model.gateSaturationCurrent > 0,
+                      model.thermalVoltage.isFinite,
+                      model.thermalVoltage > 0,
+                      model.mobilityTemperatureExponent.isFinite,
+                      model.thresholdTemperatureCoefficient.isFinite,
+                      model.activationEnergy.isFinite,
+                      model.saturationCurrentTemperatureExponent.isFinite else {
+                    throw CircuitSolveError.invalidElement(element.name)
+                }
             }
         }
     }
@@ -1037,7 +1238,7 @@ public struct LinearCircuit: Sendable {
                         phaseDegrees: sourcePhase(element)
                     )
                 )
-            case .diode, .bjt, .mosfet:
+            case .diode, .bjt, .mosfet, .jfet:
                 let nodes = terminalNodes(for: element)
                 let voltages = nonlinearState[index] ?? [Double](repeating: 0, count: nodes.count)
                 let characteristic = nonlinearCharacteristic(element, terminals: voltages)
@@ -1179,6 +1380,20 @@ public struct LinearCircuit: Sendable {
                 let solved = terminals.map { voltage($0).re }
                 let characteristic = nonlinearCharacteristic(element, terminals: solved)
                 return Complex(characteristic.currents[0], 0)
+            case .jfet:
+                // Terminal order is [gate, drain, source]; report the drain
+                // current into the device.
+                let terminals = terminalNodes(for: element)
+                if mode.isAC {
+                    let bias = nonlinearState[index] ?? [Double](repeating: 0, count: terminals.count)
+                    let characteristic = nonlinearCharacteristic(element, terminals: bias)
+                    let solved = terminals.map { voltage($0).re }
+                    let current = zip(characteristic.jacobian[1], solved).reduce(0.0) { $0 + $1.0 * $1.1 }
+                    return Complex(current, 0)
+                }
+                let solved = terminals.map { voltage($0).re }
+                let characteristic = nonlinearCharacteristic(element, terminals: solved)
+                return Complex(characteristic.currents[1], 0)
             }
         }
     }
