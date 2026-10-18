@@ -36,6 +36,25 @@ final class CircuitDocument: ObservableObject, Identifiable {
     @Published var isSimulating: Bool = false
     @Published var simulationError: String?
 
+    /// A completed simulation kept for comparison. Overlaid runs are drawn on
+    /// top of the live result in every plot.
+    struct RunSnapshot: Identifiable {
+        let id: UUID
+        var label: String
+        let date: Date
+        let settings: AnalysisSettings
+        let result: CircuitSimResult
+        var isOverlaid: Bool
+    }
+
+    @Published var runHistory: [RunSnapshot] = []
+    static let maxRunHistory = 8
+
+    /// Bumped whenever the persisted content (schematic, netlist, settings, or
+    /// libraries) changes. The document host observes this to mirror the change
+    /// back into the `FileDocument` for autosave.
+    @Published private(set) var contentVersion = 0
+
     // Diagnostics
     @Published var diagnostics: [Diagnostic] = []
 
@@ -107,6 +126,7 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     private func contentDidChange() {
         isDirty = true
+        contentVersion &+= 1
         simulationResult = nil
         simulationError = nil
         scheduleDiagnosticsRefresh()
@@ -164,23 +184,82 @@ final class CircuitDocument: ObservableObject, Identifiable {
                 )
             }
             simulationResult = result
+            recordRun(result)
         } catch {
             simulationError = error.localizedDescription
         }
         isSimulating = false
     }
 
+    // MARK: - Run history
+
+    /// Keeps the newest run for comparison, capping the history length.
+    private func recordRun(_ result: CircuitSimResult) {
+        let snapshot = RunSnapshot(
+            id: UUID(),
+            label: runLabel(),
+            date: Date(),
+            settings: settings,
+            result: result,
+            isOverlaid: false
+        )
+        runHistory.insert(snapshot, at: 0)
+        if runHistory.count > Self.maxRunHistory {
+            runHistory.removeLast(runHistory.count - Self.maxRunHistory)
+        }
+    }
+
+    private func runLabel() -> String {
+        var modes: [String] = []
+        if settings.runDC { modes.append("DC") }
+        if settings.runAC { modes.append("AC") }
+        if settings.runTransient { modes.append("Tran") }
+        if settings.runDCSweep { modes.append("Sweep") }
+        let summary = modes.isEmpty ? "Run" : modes.joined(separator: "+")
+        let time = Date().formatted(date: .omitted, time: .standard)
+        return "\(summary) @ \(time)"
+    }
+
+    func toggleRunOverlay(id: UUID) {
+        guard let index = runHistory.firstIndex(where: { $0.id == id }) else { return }
+        runHistory[index].isOverlaid.toggle()
+    }
+
+    func removeRun(id: UUID) {
+        runHistory.removeAll { $0.id == id }
+    }
+
+    func clearRuns() {
+        runHistory.removeAll()
+    }
+
+    /// Runs currently marked for overlay, oldest first.
+    var overlaidRuns: [RunSnapshot] {
+        runHistory.filter(\.isOverlaid).reversed()
+    }
+
     // MARK: - Persistence
 
     func makeFile() -> CircuitFile {
-        CircuitFile(name: name, schematic: schematic.snapshot(), analysis: settings)
+        CircuitFile(
+            name: name,
+            schematic: schematic.snapshot(),
+            analysis: settings,
+            netlistText: netlistText,
+            usesSchematic: usesSchematic,
+            modelLibraries: modelLibraries.map { StoredModelLibrary(name: $0.name, text: $0.rawText) }
+        )
     }
 
     func load(_ file: CircuitFile) {
         name = file.name
         settings = file.analysis
         schematic.replaceContents(with: file.schematic)
-        usesSchematic = true
+        if let text = file.netlistText { netlistText = text }
+        usesSchematic = file.usesSchematic ?? true
+        modelLibraries = (file.modelLibraries ?? []).compactMap { stored in
+            try? SpiceModelLibrary.parse(stored.text, name: stored.name)
+        }
         simulationResult = nil
         simulationError = nil
         // Loading runs the same change notifications as editing; the content is

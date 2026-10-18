@@ -580,11 +580,40 @@ import Testing
     )
     let decoded = try CircuitFileStore.decode(CircuitFileStore.encode(file))
 
-    #expect(decoded.schemaVersion == 2)
+    #expect(decoded.schemaVersion == CircuitFile.currentSchemaVersion)
     let migrated = try #require(decoded.schematic.symbols.first)
     #expect(migrated.parameters["voltage"] == nil)
     #expect(migrated.parameters["dcVoltage"] == 2)
     #expect(migrated.parameters["acMagnitude"] == 2)
+}
+
+@Test func circuitFilePersistsNetlistModeAndLibraries() throws {
+    let file = CircuitFile(
+        name: "Netlist Mode",
+        schematic: SchematicSnapshot(),
+        analysis: .default,
+        netlistText: "* my netlist\nV1 a 0 1",
+        usesSchematic: false,
+        modelLibraries: [StoredModelLibrary(name: "Q", text: ".model q1 NPN(IS=1e-14 BF=100)")]
+    )
+    let decoded = try CircuitFileStore.decode(CircuitFileStore.encode(file))
+    #expect(decoded.netlistText == "* my netlist\nV1 a 0 1")
+    #expect(decoded.usesSchematic == false)
+    #expect(decoded.modelLibraries?.first?.name == "Q")
+    #expect(decoded.modelLibraries?.first?.text == ".model q1 NPN(IS=1e-14 BF=100)")
+}
+
+@Test @MainActor func documentRoundTripsNetlistModeAndLibraries() throws {
+    let document = CircuitDocument()
+    document.importNetlist("* netlist\nV1 a 0 1")
+    document.modelLibraries = [try SpiceModelLibrary.parse(".model q1 NPN(IS=1e-14 BF=100)", name: "Q")]
+
+    let restored = CircuitDocument()
+    restored.load(document.makeFile())
+
+    #expect(restored.usesSchematic == false)
+    #expect(restored.netlistText.contains("V1 a 0 1"))
+    #expect(restored.modelLibraries.first?.name == "Q")
 }
 
 @Test @MainActor func netlistBuilderEmitsDcAndAcSourceValues() throws {
@@ -2612,6 +2641,171 @@ func kicadCLIExportsARealSchematic() throws {
     #expect(document.modelLibraries.count == 1)
     #expect(document.modelLibraries.first?.models.first?.name == "DLIB")
     #expect(document.name == url.deletingPathExtension().lastPathComponent)
+}
+
+// MARK: - Phase 13: Waveform viewer, FFT, and overlays
+
+private func toneSamples(
+    amplitude: Double,
+    frequency: Double,
+    sampleRate: Double,
+    count: Int
+) -> (times: [Double], values: [Double]) {
+    let times = (0..<count).map { Double($0) / sampleRate }
+    let values = times.map { amplitude * cos(2 * .pi * frequency * $0) }
+    return (times, values)
+}
+
+@Test func spectrumFindsToneFrequencyAndAmplitude() throws {
+    let samples = toneSamples(amplitude: 2, frequency: 1_000, sampleRate: 8_000, count: 1_024)
+    let spectrum = try #require(SpectrumAnalyzer.analyze(
+        times: samples.times,
+        values: samples.values,
+        window: .rectangular
+    ))
+    let peak = try #require(spectrum.peakFrequency)
+    #expect(abs(peak - 1_000) < spectrum.binWidth)
+    let peakBin = try #require(spectrum.frequencies.firstIndex { abs($0 - peak) < spectrum.binWidth / 2 })
+    #expect(abs(spectrum.magnitudes[peakBin] - 2) < 0.05)
+}
+
+@Test func spectrumNormalizesAcrossWindows() throws {
+    let samples = toneSamples(amplitude: 1.5, frequency: 1_000, sampleRate: 8_000, count: 1_024)
+    for window in SpectrumWindow.allCases {
+        let spectrum = try #require(SpectrumAnalyzer.analyze(
+            times: samples.times,
+            values: samples.values,
+            window: window
+        ))
+        let peak = try #require(spectrum.peakFrequency)
+        #expect(abs(peak - 1_000) < spectrum.binWidth * 2)
+        let peakBin = try #require(spectrum.frequencies.firstIndex { abs($0 - peak) < spectrum.binWidth / 2 })
+        #expect(abs(spectrum.magnitudes[peakBin] - 1.5) < 0.1)
+    }
+}
+
+@Test func spectrumRejectsShortTraces() {
+    #expect(SpectrumAnalyzer.analyze(times: [0], values: [1]) == nil)
+    #expect(SpectrumAnalyzer.analyze(times: [], values: []) == nil)
+}
+
+@Test func spectrumHandlesNonUniformSampling() throws {
+    let count = 1_024
+    let sampleRate = 8_000.0
+    var times = (0..<count).map { Double($0) / sampleRate }
+    // Perturb the interior samples so the grid is not exactly uniform.
+    for index in stride(from: 1, to: count - 1, by: 7) {
+        times[index] += 1e-7 * Double(index % 3)
+    }
+    let values = times.map { cos(2 * .pi * 1_000 * $0) }
+    let spectrum = try #require(SpectrumAnalyzer.analyze(times: times, values: values, window: .hann))
+    let peak = try #require(spectrum.peakFrequency)
+    #expect(abs(peak - 1_000) < 20)
+}
+
+@Test func spectrumIgnoresDCByDefault() throws {
+    let samples = toneSamples(amplitude: 1, frequency: 1_000, sampleRate: 8_000, count: 1_024)
+    let shifted = samples.values.map { $0 + 5 }
+    let spectrum = try #require(SpectrumAnalyzer.analyze(
+        times: samples.times,
+        values: shifted,
+        window: .rectangular
+    ))
+    // The DC bin is removed, so the peak is the tone, not the offset.
+    #expect(abs((spectrum.peakFrequency ?? 0) - 1_000) < spectrum.binWidth)
+    #expect(spectrum.magnitudes[0] < 0.05)
+}
+
+@Test func plotTransformRoundTrips() throws {
+    let transform = PlotTransform(
+        viewport: PlotViewport(
+            x: PlotDomain(lower: 0, upper: 10),
+            y: PlotDomain(lower: -5, upper: 5)
+        ),
+        xScale: .linear,
+        yScale: .linear
+    )
+    let unitX = try #require(transform.unitX(2.5))
+    #expect(abs(unitX - 0.25) < 1e-12)
+    #expect(abs(transform.dataX(unit: unitX) - 2.5) < 1e-12)
+    let unitY = try #require(transform.unitY(0))
+    #expect(abs(unitY - 0.5) < 1e-12)
+    #expect(abs(transform.dataY(unit: 0) + 5) < 1e-12)
+}
+
+@Test func logTransformHandlesDecades() throws {
+    let transform = PlotTransform(
+        viewport: PlotViewport(
+            x: PlotDomain(lower: 1, upper: 1_000),
+            y: PlotDomain(lower: 1, upper: 100)
+        ),
+        xScale: .logarithmic,
+        yScale: .linear
+    )
+    #expect(abs((transform.unitX(10) ?? 0) - 1.0 / 3.0) < 1e-12)
+    #expect(abs(transform.dataX(unit: 2.0 / 3.0) - 100) < 1e-6)
+    #expect(transform.unitX(0) == nil)
+}
+
+@Test func viewportZoomKeepsAnchorFixed() {
+    var viewport = PlotViewport(
+        x: PlotDomain(lower: 0, upper: 100),
+        y: PlotDomain(lower: 0, upper: 100)
+    )
+    viewport.zoomX(by: 0.5, about: 25)
+    #expect(abs(viewport.x.lower - 12.5) < 1e-12)
+    #expect(abs(viewport.x.upper - 62.5) < 1e-12)
+    // The anchor value still maps to the same unit position.
+    let before = PlotTransform(viewport: PlotViewport(
+        x: PlotDomain(lower: 0, upper: 100), y: viewport.y
+    ), xScale: .linear, yScale: .linear).unitX(25)
+    let after = PlotTransform(viewport: viewport, xScale: .linear, yScale: .linear).unitX(25)
+    #expect(abs((before ?? 0) - (after ?? 0)) < 1e-12)
+}
+
+@Test func viewportTranslateShiftsDomain() {
+    var viewport = PlotViewport(
+        x: PlotDomain(lower: 0, upper: 10),
+        y: PlotDomain(lower: 0, upper: 10)
+    )
+    viewport.translate(xByFraction: 0.5, yByFraction: -0.1)
+    #expect(abs(viewport.x.lower - 5) < 1e-12)
+    #expect(abs(viewport.y.upper - 9) < 1e-12)
+}
+
+@Test func autoFitEnclosesVisibleSeries() {
+    let series = [
+        PlotSeries(id: "a", name: "a", points: [
+            PlotPoint(x: 0, y: 1), PlotPoint(x: 4, y: 9),
+        ]),
+        PlotSeries(id: "b", name: "b", points: [
+            PlotPoint(x: 1, y: -2), PlotPoint(x: 3, y: 5),
+        ]),
+    ]
+    let viewport = PlotViewport.autoFit(series: series)
+    #expect(viewport.x.lower <= 0 && viewport.x.upper >= 4)
+    #expect(viewport.y.lower <= -2 && viewport.y.upper >= 9)
+}
+
+@Test func seriesInterpolatesValues() throws {
+    let series = PlotSeries(id: "s", name: "s", points: [
+        PlotPoint(x: 0, y: 0),
+        PlotPoint(x: 2, y: 4),
+        PlotPoint(x: 4, y: 8),
+    ])
+    #expect(abs((series.value(atX: 1) ?? 0) - 2) < 1e-12)
+    #expect(abs((series.value(atX: 3) ?? 0) - 6) < 1e-12)
+    #expect(series.value(atX: -1) == nil)
+    #expect(series.value(atX: 5) == nil)
+}
+
+@Test func axisTicksStayWithinDomain() {
+    let ticks = AxisTicks.linear(PlotDomain(lower: 0, upper: 10), target: 5)
+    #expect(!ticks.isEmpty)
+    #expect(ticks.allSatisfy { $0.value >= 0 && $0.value <= 10 })
+    let logTicks = AxisTicks.logarithmic(PlotDomain(lower: 1, upper: 1_000))
+    #expect(logTicks.contains { abs($0.value - 10) < 1e-9 })
+    #expect(logTicks.contains { abs($0.value - 100) < 1e-9 })
 }
 
 // MARK: - Helpers

@@ -11,57 +11,12 @@ import SwiftUI
 
 @main
 struct OhmLabApp: App {
-    @StateObject private var appState = AppState()
-
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environmentObject(appState)
-        }
-        .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Circuit") {
-                    appState.newCircuit()
-                }
-                .keyboardShortcut("n", modifiers: [.command])
-
-                Button("Open…") {
-                    appState.openDocument()
-                }
-                .keyboardShortcut("o", modifiers: [.command])
-            }
-
-            CommandGroup(after: .newItem) {
-                Divider()
-
-                Button("Import Netlist or KiCad Schematic…") {
-                    appState.importDesign()
-                }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
-
-                Button("Export SPICE Netlist…") {
-                    if let document = appState.selectedCircuitDocument {
-                        appState.exportNetlist(document: document)
-                    }
-                }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-            }
-
-            CommandGroup(replacing: .saveItem) {
-                Button("Save") {
-                    if let document = appState.selectedCircuitDocument {
-                        appState.save(document: document)
-                    }
-                }
-                .keyboardShortcut("s", modifiers: [.command])
-
-                Button("Save As…") {
-                    if let document = appState.selectedCircuitDocument {
-                        appState.saveAs(document: document)
-                    }
-                }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-            }
+        // A document-based scene gives open-in-place, automatic saving to the
+        // file's location, iCloud support, and the standard File menu
+        // (New/Open/Save/Save As/Revert) on macOS and iPadOS for free.
+        DocumentGroup(newDocument: CircuitFileDocument()) { configuration in
+            DocumentWorkspaceView(configuration: configuration)
         }
     }
 }

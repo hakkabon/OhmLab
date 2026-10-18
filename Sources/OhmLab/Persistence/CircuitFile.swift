@@ -121,24 +121,48 @@ public struct AnalysisSettings: Codable, Equatable, Sendable {
     }
 }
 
+/// A vendor model library stored in a document. Only the raw text is kept; it
+/// is re-scanned into a `SpiceModelLibrary` when the document is opened.
+public struct StoredModelLibrary: Codable, Equatable, Sendable {
+    public var name: String
+    public var text: String
+
+    public init(name: String, text: String) {
+        self.name = name
+        self.text = text
+    }
+}
+
 public struct CircuitFile: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var name: String
     public var schematic: SchematicSnapshot
     public var analysis: AnalysisSettings
+    /// The netlist editor's text, when the document was last in netlist mode.
+    public var netlistText: String?
+    /// Which editor the document was last showing (`true` = schematic).
+    public var usesSchematic: Bool?
+    /// Imported vendor model libraries.
+    public var modelLibraries: [StoredModelLibrary]?
 
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public init(
         schemaVersion: Int = CircuitFile.currentSchemaVersion,
         name: String,
         schematic: SchematicSnapshot,
-        analysis: AnalysisSettings
+        analysis: AnalysisSettings,
+        netlistText: String? = nil,
+        usesSchematic: Bool? = nil,
+        modelLibraries: [StoredModelLibrary]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.name = name
         self.schematic = schematic
         self.analysis = analysis
+        self.netlistText = netlistText
+        self.usesSchematic = usesSchematic
+        self.modelLibraries = modelLibraries
     }
 }
 
@@ -187,8 +211,13 @@ public enum CircuitFileStore {
             // (the single value drove both DC and AC).
             file.schematic.symbols = file.schematic.symbols.map(migrateSourceParameters)
             file.schemaVersion = 2
-            return file
+            fallthrough
         case 2:
+            // v3 persists netlist-mode text, the active editor, and imported
+            // model libraries. Absent fields decode to nil, so nothing to do.
+            file.schemaVersion = 3
+            fallthrough
+        case 3:
             return file
         default:
             throw CircuitFileError.unsupportedVersion(file.schemaVersion)

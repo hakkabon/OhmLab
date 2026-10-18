@@ -45,9 +45,13 @@ The simulation layer is a **native Swift linear solver**:
 *   **Custom Native Canvas:** Native Core Graphics drawing for the grid, wires, symbols, pin endpoints, junctions, and net labels, with pan, zoom, drag-to-move, and selection.
 *   **Data-Driven Components:** Passive components and AC sources are defined in a `ComponentRegistry`, including pins, symbols, reference prefixes, and typed parameters.
 *   **Real Analysis, Real Results:** The DC/AC/transient/DC-sweep results shown in the UI are computed from the schematic (or the entered netlist). Plots are labelled as engine output, never as demonstration data. Node voltages and element currents are both plottable as Bode plots, time-domain waveforms, or DC transfer curves, and results can be copied out as CSV.
+*   **Interactive Waveform Viewer:** Every result panel is drawn by a custom plot view with drag-to-pan, pinch/wheel zoom, double-tap (or **Fit**) auto-scaling, and two draggable vertical cursors with Δx/Δy readouts. AC plots show magnitude (dB) and phase; DC-sweep and transient panels support a logarithmic x-axis where appropriate.
+*   **Transient FFT:** A dedicated spectrum panel runs a radix-2 FFT over the transient trace with selectable windows (Rectangular, Hann, Hamming, Blackman), a linear/dB toggle, and a log-frequency axis — distinct from the closed-form `.four`/THD analysis.
+*   **Plot Export:** Any plot can be exported as a PNG image or a long-format CSV directly from its panel.
+*   **Multi-run Overlays:** A **Runs** list keeps the last several simulation results; toggle any of them to overlay on the live plots (transient, AC, DC sweep, and FFT), or clear the list.
 *   **Diagnostics as Guidance:** The document is validated continuously — missing ground, duplicate/invalid references, invalid values, floating pins, and shorts are reported inline with the affected component named.
 *   **KiCad / ngspice Interchange:** Import a SPICE netlist (or, on macOS, a KiCad `.kicad_sch` via `kicad-cli`); export a netlist KiCad and ngspice accept.
-*   **Durable Documents:** Circuits serialize to versioned `.ohmlab` JSON, with open/save and crash recovery of unsaved edits.
+*   **Document-Based Lifecycle:** The app is built on a SwiftUI `DocumentGroup`, so documents open in place, autosave to their own location (including iCloud Drive), and get the standard New/Open/Save/Save As/Revert commands on macOS and iPadOS.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
 
 ## Supported elements (passive)
@@ -94,8 +98,8 @@ Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel w
 
 Interchange is netlist-level: OhmLab does not parse `.kicad_sch` itself, it borrows KiCad's exporter.
 
-*   **Import** — the **Import** button (or **File ▸ Import Netlist or KiCad Schematic…**, ⇧⌘I, or dragging a file onto the window) accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or (macOS) a `.kicad_sch` schematic, which is converted with `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). The resulting SPICE text is loaded into the netlist editor and can be run directly; anything the engine cannot model is reported in **Diagnostics** rather than blocking the import. A banner records where the netlist came from and lists non-fatal parser notes; editing the netlist by hand clears it.
-*   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and **Export SPICE Netlist…** (**File ▸ …**, ⇧⌘E on macOS; the system share sheet on iPadOS) writes it to a `.cir` file.
+*   **Import** — the **Import** button in the simulator header (or dragging a file onto the window) accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or (macOS) a `.kicad_sch` schematic, which is converted with `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). The resulting SPICE text is loaded into the netlist editor and can be run directly; anything the engine cannot model is reported in **Diagnostics** rather than blocking the import. A banner records where the netlist came from and lists non-fatal parser notes; editing the netlist by hand clears it.
+*   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and the **Export** button writes it to a `.cir` file through the system save/share sheet on both macOS and iPadOS.
 *   **Clipboard** — **Copy**/**Paste** on the netlist editor move netlists to and from the system pasteboard.
 
 Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements OhmLab does not support, so it is reported as an unsupported element rather than simulated.
@@ -117,15 +121,21 @@ Sources/OhmLab/
 │   ├── LinearCircuit.swift       # MNA assembly, Newton-Raphson, DC/AC/transient solve
 │   ├── TransientSolver.swift     # Backward-Euler time stepping
 │   ├── FourierAnalysis.swift     # `.four` harmonics and THD
+│   ├── SpectrumAnalyzer.swift    # Transient FFT + window functions
 │   ├── Waveform.swift            # PULSE / SIN / PWL source shapes
 │   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
 │   ├── ModelLibrary.swift        # Vendor `.model`/`.subckt` import + registry
 │   └── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
 ├── Diagnostics/                  # Pre-simulation validation
-├── Persistence/                  # Versioned .ohmlab file format + recovery
+├── Persistence/                  # Versioned .ohmlab file format + lifecycle
+│   ├── CircuitFile.swift         # File format, migration, crash-recovery slots
+│   ├── CircuitFileDocument.swift # FileDocument for the DocumentGroup scene
+│   └── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
 ├── Interop/                      # KiCad/ngspice interchange (kicad-cli bridge)
 └── Circuit/                      # Simulator UI and document model
 ```
+
+The result plots live under `Shared/Plot/`: `PlotModel.swift` (pure scales, viewport, transforms, ticks), `WaveformPlotView.swift` (the interactive canvas with cursors/pan/zoom), `WaveformPlotPanel.swift` (titled, exportable panel), and `PlotExport.swift` (PNG/CSV export documents). App wiring is `OhmLabApp.swift` (the `DocumentGroup` scene) and `Shared/DocumentWorkspaceView.swift` (bridges the `FileDocument` to the in-memory `CircuitDocument`).
 
 ## Quick Start
 
@@ -144,13 +154,16 @@ Create a circuit, place components (R, C, L, V, I, D, Q, M, ground), draw wires,
 3. Select a placed component to edit its parameters or rotation. Drag a component to move it.
 4. Review the **Diagnostics** and **Projected SPICE Netlist** panels.
 5. Configure DC/AC/transient settings and click **Run**. Pick which nodes to plot and an optional input reference for a transfer-function view. Transient runs plot selected node voltages and element currents over time.
+6. Interact with any result plot: drag to pan, pinch/scroll to zoom, double-tap or press **Fit** to auto-scale, and enable **Cursors** for two draggable markers with Δx/Δy readouts. Use each panel's **Export** menu for PNG or CSV, and the **Runs** list to overlay earlier results.
 
 ### Netlist
 Enter or paste SPICE (R, C, L, V, I, D, Q, M, J with `.ac dec|oct|lin`, `.tran`, `.dc`, `.step param`, and `.four`), or use **Import** to load a SPICE netlist (or a KiCad `.kicad_sch` on macOS), then **Run**. Vendor model files can be loaded as libraries so their `.model`/`.subckt` cards are visible without an explicit `.include` (cards written in the netlist itself still take precedence). Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. JFETs use `J<name> <drain> <gate> <source> <model>` with a `.model JNJF NJF(VTO=-2 BETA=1m LAMBDA=0)` (or `PJF(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Parameter (`.param`/`{…}`), include (`.include`/`.lib`), and initial-condition (`.ic`) cards are supported; unsupported cards are reported rather than ignored. Device models accept SPICE's temperature parameters (`XTI`, `EG`, `XTB` for diodes/transistors; `BEX`, `TCV` for MOSFETs and JFETs) and the operating temperature is set with `.temp` or `.options temp=…`.
 
 ## Document format
 
-`.ohmlab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, and analysis settings. Each open document mirrors its unsaved edits to its own recovery slot, so several drafts survive a crash and are offered on the next launch. `CircuitFileStore.migrate` upgrades older files in place — schema v2 splits a legacy source's single magnitude into separate DC and AC parameters. Future schema upgrades belong there too.
+`.ohmlab` files are versioned JSON (`schemaVersion`) holding the schematic geometry, net labels, analysis settings, the netlist editor's text and active editor, and any imported model libraries (stored as raw text and re-scanned on open). `CircuitFileStore.migrate` upgrades older files in place — schema v2 splits a legacy source's single magnitude into separate DC and AC parameters, and v3 adds the netlist/editor/library fields (absent fields decode to defaults). Future schema upgrades belong there too.
+
+Documents are managed by a SwiftUI `DocumentGroup` (`CircuitFileDocument` + `DocumentWorkspaceView`), which gives open-in-place, automatic saving to the document's own location, iCloud Drive support, and the standard File menu. `CloudDocumentStore` is an optional helper for reaching an iCloud ubiquity container explicitly; it needs an iCloud entitlement (which a Swift package cannot declare) and degrades to a no-op when unavailable, so the app otherwise relies on the document lifecycle's local/iCloud storage. The older per-document crash-recovery slots (`CircuitFileStore.saveRecovery`/`loadRecovery`) remain available for callers that want them.
 
 ## Requirements
 - macOS 14+
@@ -158,4 +171,4 @@ Enter or paste SPICE (R, C, L, V, I, D, Q, M, J with `.ac dec|oct|lin`, `.tran`,
 - Xcode 15+ / Swift 6
 - KiCad 9+ (optional) — enables importing `.kicad_sch` schematics via its `kicad-cli`
 
-The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses SwiftUI's adaptive split navigation for tablet layouts.
+The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses a SwiftUI `DocumentGroup`, so circuits are real documents that open in place and autosave (including to iCloud Drive when the host app is entitled).

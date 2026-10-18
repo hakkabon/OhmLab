@@ -1,4 +1,3 @@
-import Charts
 import SwiftUI
 import UniformTypeIdentifiers
 #if os(macOS)
@@ -7,17 +6,11 @@ import AppKit
 import UIKit
 #endif
 
-/// A flattened point for the DC sweep chart: one signal within one curve.
-private struct SweepPlotPoint: Identifiable {
-    let id = UUID()
-    let x: Double
-    let y: Double
-    let series: String
-}
-
 struct CircuitSimulatorView: View {
     @ObservedObject var document: CircuitDocument
-    @EnvironmentObject private var appState: AppState
+    /// Explicit save request from the host document window. When nil (e.g.
+    /// previews) the Save control is hidden.
+    var onSave: (() -> Void)? = nil
 
     private enum ACQuantity: String, CaseIterable, Identifiable {
         case voltage
@@ -29,6 +22,8 @@ struct CircuitSimulatorView: View {
     }
 
     @State private var acQuantity: ACQuantity = .voltage
+    @State private var fftWindow: SpectrumWindow = .hann
+    @State private var fftDecibels = true
     @State private var isImporting = false
     @State private var isExportingNetlist = false
     @State private var isDropTargeted = false
@@ -114,12 +109,14 @@ struct CircuitSimulatorView: View {
             )
 
             #if os(macOS)
-            Button {
-                appState.save(document: document)
-            } label: {
-                Label("Save", systemImage: "square.and.arrow.down")
+            if let onSave {
+                Button {
+                    onSave()
+                } label: {
+                    Label("Save", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
             #endif
 
             Picker("Editor", selection: $document.usesSchematic) {
@@ -237,11 +234,7 @@ struct CircuitSimulatorView: View {
     }
 
     private func exportNetlist() {
-        #if os(macOS)
-        appState.exportNetlist(document: document)
-        #else
         isExportingNetlist = true
-        #endif
     }
 
     private func pasteNetlist() {
@@ -450,9 +443,54 @@ struct CircuitSimulatorView: View {
             }
             if let transient = result.transient {
                 transientResults(transient)
+                fftResults(transient)
             }
             if !result.fourier.isEmpty {
                 fourierResults(result.fourier)
+            }
+
+            runHistoryPanel
+        }
+    }
+
+    // MARK: - Run history / overlays
+
+    @ViewBuilder
+    private var runHistoryPanel: some View {
+        if !document.runHistory.isEmpty {
+            GroupBox("Runs") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Overlay completed runs on every plot.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Clear") { document.clearRuns() }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                    }
+                    ForEach(document.runHistory) { run in
+                        HStack(spacing: 10) {
+                            Toggle("", isOn: Binding(
+                                get: { run.isOverlaid },
+                                set: { _ in document.toggleRunOverlay(id: run.id) }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.checkbox)
+                            Text(run.label)
+                                .font(.callout)
+                            Spacer()
+                            Button {
+                                document.removeRun(id: run.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -501,57 +539,141 @@ struct CircuitSimulatorView: View {
     }
 
     private func transientResults(_ result: CircuitSimResult.TransientResult) -> some View {
-        let activeSeries = transientSeries(result)
-        let names = activeSeries.map(\.name)
+        let names = transientNames(result)
         let selected = Set(document.settings.outputNetNames)
         let plotNames = selected.isEmpty ? Set(names) : selected.intersection(names)
         let yLabel = acQuantity == .voltage ? "Voltage (V)" : "Current (A)"
 
-        return GroupBox("Transient Response") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Picker("Quantity", selection: $acQuantity) {
-                        ForEach(ACQuantity.allCases) { quantity in
-                            Text(quantity.title).tag(quantity)
+        var series: [PlotSeries] = []
+        for name in names where plotNames.contains(name) {
+            series.append(PlotSeries(
+                id: "live|\(name)",
+                name: name,
+                points: zip(result.times, transientValues(result, name: name)).map { PlotPoint(x: $0, y: $1) }
+            ))
+        }
+        for run in document.overlaidRuns {
+            guard let overlay = run.result.transient else { continue }
+            for name in names where plotNames.contains(name) {
+                series.append(PlotSeries(
+                    id: "\(run.id)|\(name)",
+                    name: "\(run.label) · \(name)",
+                    points: zip(overlay.times, transientValues(overlay, name: name)).map { PlotPoint(x: $0, y: $1) }
+                ))
+            }
+        }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                quantityPicker
+                Spacer()
+                Text("\(result.times.count) points from \(format(result.times.first ?? 0)) s to \(format(result.times.last ?? 0)) s")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            netSelectionControls(names, showReference: false)
+            WaveformPlotPanel(
+                title: "Transient Response",
+                series: series,
+                xLabel: "Time (s)",
+                yLabel: yLabel
+            )
+        }
+    }
+
+    private func transientNames(_ result: CircuitSimResult.TransientResult) -> [String] {
+        switch acQuantity {
+        case .voltage: return result.nodes.map(\.name)
+        case .current: return result.components.map(\.name)
+        }
+    }
+
+    private func transientValues(_ result: CircuitSimResult.TransientResult, name: String) -> [Double] {
+        switch acQuantity {
+        case .voltage: return result.nodes.first { $0.name == name }?.values ?? []
+        case .current: return result.components.first { $0.name == name }?.values ?? []
+        }
+    }
+
+    private var quantityPicker: some View {
+        Picker("Quantity", selection: $acQuantity) {
+            ForEach(ACQuantity.allCases) { quantity in
+                Text(quantity.title).tag(quantity)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 240)
+    }
+
+    // MARK: - FFT
+
+    private func fftResults(_ transient: CircuitSimResult.TransientResult) -> some View {
+        let series = fftSeries(transient)
+        let yLabel = fftDecibels ? "Magnitude (dB)" : "Magnitude"
+        return Group {
+            if !series.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        Picker("Window", selection: $fftWindow) {
+                            ForEach(SpectrumWindow.allCases) { window in
+                                Text(window.title).tag(window)
+                            }
                         }
+                        .frame(maxWidth: 220)
+                        Toggle("dB", isOn: $fftDecibels)
+                            .toggleStyle(.switch)
+                        Spacer()
                     }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 240)
+                    .font(.caption)
 
-                    Spacer()
-
-                    Text("\(result.times.count) points from \(format(result.times.first ?? 0)) s to \(format(result.times.last ?? 0)) s")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    WaveformPlotPanel(
+                        title: "Spectrum (FFT)",
+                        series: series,
+                        xLabel: "Frequency (Hz)",
+                        yLabel: yLabel,
+                        xScale: .logarithmic,
+                        yScale: fftDecibels ? .linear : .logarithmic
+                    )
                 }
-
-                netSelectionControls(names, showReference: false)
-
-                Chart {
-                    ForEach(activeSeries.filter { plotNames.contains($0.name) }, id: \.name) { item in
-                        ForEach(Array(item.values.enumerated()), id: \.offset) { entry in
-                            LineMark(
-                                x: .value("Time (s)", result.times[entry.offset]),
-                                y: .value(yLabel, entry.element)
-                            )
-                            .foregroundStyle(by: .value("Signal", item.name))
-                        }
-                    }
-                }
-                .chartXAxisLabel("Time (s)")
-                .chartYAxisLabel(yLabel)
-                .frame(height: 240)
             }
         }
     }
 
-    private func transientSeries(_ result: CircuitSimResult.TransientResult) -> [(name: String, values: [Double])] {
-        switch acQuantity {
-        case .voltage:
-            return result.nodes.map { ($0.name, $0.values) }
-        case .current:
-            return result.components.map { ($0.name, $0.values) }
+    private func fftSeries(_ transient: CircuitSimResult.TransientResult) -> [PlotSeries] {
+        let names = transientNames(transient)
+        let selected = Set(document.settings.outputNetNames)
+        let plotNames = selected.isEmpty ? Set(names) : selected.intersection(names)
+
+        var series: [PlotSeries] = []
+        func appendSpectrum(id: String, name: String, times: [Double], values: [Double]) {
+            guard let spectrum = SpectrumAnalyzer.analyze(times: times, values: values, window: fftWindow) else { return }
+            let points = spectrum.frequencies.enumerated()
+                .filter { $0.element > 0 }
+                .map { offset, frequency in
+                    PlotPoint(
+                        x: frequency,
+                        y: fftDecibels ? spectrum.magnitudesDb[offset] : spectrum.magnitudes[offset]
+                    )
+                }
+            guard points.count > 1 else { return }
+            series.append(PlotSeries(id: id, name: name, points: points))
         }
+
+        for name in names where plotNames.contains(name) {
+            appendSpectrum(id: "fft|\(name)", name: name, times: transient.times, values: transientValues(transient, name: name))
+        }
+        for run in document.overlaidRuns {
+            guard let overlay = run.result.transient else { continue }
+            for name in names where plotNames.contains(name) {
+                appendSpectrum(
+                    id: "\(run.id)|fft|\(name)",
+                    name: "\(run.label) · \(name)",
+                    times: overlay.times,
+                    values: transientValues(overlay, name: name)
+                )
+            }
+        }
+        return series
     }
 
     private func dcResults(_ result: CircuitSimResult.DCResult) -> some View {
@@ -612,56 +734,42 @@ struct CircuitSimulatorView: View {
         let names = sweepSignalNames(result)
         let selected = Set(document.settings.outputNetNames)
         let plotNames = selected.isEmpty ? Set(names) : selected.intersection(names)
-        let xAxis = result.axes.last
-        let xLabel = xAxis?.name ?? "Sweep"
+        let xLabel = result.axes.last?.name ?? "Sweep"
         let yLabel = acQuantity == .voltage ? "Voltage (V)" : "Current (A)"
 
-        let plotPoints: [SweepPlotPoint] = result.points.flatMap { point -> [SweepPlotPoint] in
-            guard xAxis != nil else { return [] }
-            let xIndex = result.axes.count - 1
-            let outer = point.coordinates.prefix(xIndex)
-                .map { "\($0.name)=\(format($0.value))" }
-                .joined(separator: ", ")
-            return names.filter { plotNames.contains($0) }.compactMap { name in
-                guard let y = sweepValue(point, name: name) else { return nil }
-                let series = outer.isEmpty ? name : "\(name) (\(outer))"
-                return SweepPlotPoint(x: point.coordinates[xIndex].value, y: y, series: series)
+        var series: [PlotSeries] = []
+        func appendSweep(prefix: String, idPrefix: String, sweep: CircuitSimResult.SweepResult) {
+            guard sweep.axes.last != nil else { return }
+            let xIndex = sweep.axes.count - 1
+            for name in names where plotNames.contains(name) {
+                let points = sweep.points.compactMap { point -> PlotPoint? in
+                    guard let y = sweepValue(point, name: name) else { return nil }
+                    return PlotPoint(x: point.coordinates[xIndex].value, y: y)
+                }
+                guard !points.isEmpty else { continue }
+                let outer = sweep.points.first?.coordinates.prefix(xIndex)
+                    .map { "\($0.name)=\(format($0.value))" }
+                    .joined(separator: ", ") ?? ""
+                let label = outer.isEmpty ? "\(prefix)\(name)" : "\(prefix)\(name) (\(outer))"
+                series.append(PlotSeries(id: "\(idPrefix)|\(name)|\(outer)", name: label, points: points))
             }
         }
+        appendSweep(prefix: "", idPrefix: "live", sweep: result)
+        for run in document.overlaidRuns {
+            guard let overlay = run.result.sweep else { continue }
+            appendSweep(prefix: "\(run.label) · ", idPrefix: "\(run.id)", sweep: overlay)
+        }
 
-        return GroupBox("DC Sweep") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Picker("Quantity", selection: $acQuantity) {
-                        ForEach(ACQuantity.allCases) { quantity in
-                            Text(quantity.title).tag(quantity)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 240)
-
-                    Spacer()
-
-                    Text("\(result.points.count) operating points")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                netSelectionControls(names, showReference: false)
-
-                Chart {
-                    ForEach(plotPoints) { point in
-                        LineMark(
-                            x: .value(xLabel, point.x),
-                            y: .value(yLabel, point.y)
-                        )
-                        .foregroundStyle(by: .value("Signal", point.series))
-                    }
-                }
-                .chartXAxisLabel(xLabel)
-                .chartYAxisLabel(yLabel)
-                .frame(height: 240)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                quantityPicker
+                Spacer()
+                Text("\(result.points.count) operating points")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            netSelectionControls(names, showReference: false)
+            WaveformPlotPanel(title: "DC Sweep", series: series, xLabel: xLabel, yLabel: yLabel)
         }
     }
 
@@ -686,59 +794,51 @@ struct CircuitSimulatorView: View {
         let selected = Set(document.settings.outputNetNames)
         let plotNames = selected.isEmpty ? Set(names) : selected.intersection(names)
         let yLabel = document.settings.inputNetName == nil ? acQuantity.axisLabel : "Transfer (dB)"
+        let xScale: AxisScale = document.settings.acSweepType == .lin ? .linear : .logarithmic
 
-        return GroupBox("AC Frequency Response") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Picker("Quantity", selection: $acQuantity) {
-                        ForEach(ACQuantity.allCases) { quantity in
-                            Text(quantity.title).tag(quantity)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 240)
-
-                    Spacer()
-
-                    Text("\(result.frequencies.count) points from \(format(result.frequencies.first ?? 0)) Hz to \(format(result.frequencies.last ?? 0)) Hz")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        var magnitudeSeries: [PlotSeries] = []
+        var phaseSeries: [PlotSeries] = []
+        func appendAC(prefix: String, idPrefix: String, curves: [(name: String, response: [FreqPoint])]) {
+            for item in curves where plotNames.contains(item.name) {
+                let magnitudePoints = item.response.map {
+                    PlotPoint(x: $0.freqHz, y: magnitude(curves, signal: item.name, point: $0))
                 }
-
-                netSelectionControls(names)
-
-                Chart {
-                    ForEach(activeSeries.filter { plotNames.contains($0.name) }, id: \.name) { item in
-                        ForEach(item.response) { point in
-                            LineMark(
-                                x: .value("Frequency (Hz)", point.freqHz),
-                                y: .value(yLabel, magnitude(activeSeries, signal: item.name, point: point))
-                            )
-                            .foregroundStyle(by: .value("Signal", item.name))
-                        }
-                    }
+                let phasePoints = item.response.map {
+                    PlotPoint(x: $0.freqHz, y: phase(curves, signal: item.name, point: $0))
                 }
-                .chartXScale(type: document.settings.acSweepType == .lin ? .linear : .log)
-                .chartXAxisLabel("Frequency (Hz)")
-                .chartYAxisLabel(yLabel)
-                .frame(height: 240)
-
-                Chart {
-                    ForEach(activeSeries.filter { plotNames.contains($0.name) }, id: \.name) { item in
-                        ForEach(item.response) { point in
-                            LineMark(
-                                x: .value("Frequency (Hz)", point.freqHz),
-                                y: .value("Phase (degrees)", phase(activeSeries, signal: item.name, point: point))
-                            )
-                            .foregroundStyle(by: .value("Signal", item.name))
-                        }
-                    }
-                }
-                .chartXScale(type: document.settings.acSweepType == .lin ? .linear : .log)
-                .chartXAxisLabel("Frequency (Hz)")
-                .chartYAxisLabel("Phase (degrees)")
-                .frame(height: 200)
+                magnitudeSeries.append(PlotSeries(id: "\(idPrefix)|mag|\(item.name)", name: "\(prefix)\(item.name)", points: magnitudePoints))
+                phaseSeries.append(PlotSeries(id: "\(idPrefix)|phase|\(item.name)", name: "\(prefix)\(item.name)", points: phasePoints))
             }
+        }
+        appendAC(prefix: "", idPrefix: "live", curves: activeSeries)
+        for run in document.overlaidRuns {
+            guard let overlay = run.result.ac else { continue }
+            appendAC(prefix: "\(run.label) · ", idPrefix: "\(run.id)", curves: series(overlay))
+        }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                quantityPicker
+                Spacer()
+                Text("\(result.frequencies.count) points from \(format(result.frequencies.first ?? 0)) Hz to \(format(result.frequencies.last ?? 0)) Hz")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            netSelectionControls(names)
+            WaveformPlotPanel(
+                title: "AC Magnitude",
+                series: magnitudeSeries,
+                xLabel: "Frequency (Hz)",
+                yLabel: yLabel,
+                xScale: xScale
+            )
+            WaveformPlotPanel(
+                title: "AC Phase",
+                series: phaseSeries,
+                xLabel: "Frequency (Hz)",
+                yLabel: "Phase (degrees)",
+                xScale: xScale
+            )
         }
     }
 
