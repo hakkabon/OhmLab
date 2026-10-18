@@ -2234,6 +2234,175 @@ func kicadCLIExportsARealSchematic() throws {
     #expect(second < first)
 }
 
+// MARK: - Phase 11: Fourier (`.four`) analysis
+
+@Test func fourierCardIsParsed() throws {
+    let netlist = """
+    V1 1 0 DC 1
+    R1 1 0 1k
+    .four 1k v(1) i(V1)
+    .end
+    """
+    let parsed = try SpiceNetlistParser.parse(netlist)
+    #expect(parsed.warnings.isEmpty)
+    #expect(parsed.analysis.fourier.count == 1)
+    let spec = try #require(parsed.analysis.fourier.first)
+    #expect(abs(spec.frequency - 1000) < 1e-9)
+    #expect(spec.variables == ["v(1)", "i(V1)"])
+}
+
+@Test func invalidFourierCardIsRejected() {
+    #expect(throws: SpiceParseError.self) {
+        _ = try SpiceNetlistParser.parse("V1 1 0 DC 1\nR1 1 0 1k\n.four 0 v(1)\n.end")
+    }
+    #expect(throws: SpiceParseError.self) {
+        _ = try SpiceNetlistParser.parse("V1 1 0 DC 1\nR1 1 0 1k\n.four 1k\n.end")
+    }
+}
+
+@Test func fourierOfPureCosineHasUnityFundamental() throws {
+    let frequency = 1000.0
+    let period = 1.0 / frequency
+    let count = 6000
+    var times: [Double] = []
+    var values: [Double] = []
+    for index in 0...count {
+        let time = Double(index) / Double(count) * (3 * period)
+        times.append(time)
+        values.append(2.0 * cos(2 * Double.pi * frequency * time))
+    }
+    let result = try #require(FourierAnalysis.analyze(
+        times: times,
+        values: values,
+        fundamentalFrequency: frequency
+    ))
+    #expect(abs(result.dcComponent) < 1e-9)
+    let fundamental = try #require(result.harmonics.first)
+    #expect(abs(fundamental.magnitude - 2.0) < 1e-4)
+    #expect(abs(fundamental.phaseDegrees) < 1e-3)
+    #expect(abs(fundamental.normalizedMagnitude - 1.0) < 1e-9)
+    #expect(result.totalHarmonicDistortion < 1e-3)
+}
+
+@Test func fourierOfSineReportsMinusNinetyDegreePhase() throws {
+    let frequency = 1000.0
+    let period = 1.0 / frequency
+    let count = 6000
+    var times: [Double] = []
+    var values: [Double] = []
+    for index in 0...count {
+        let time = Double(index) / Double(count) * (3 * period)
+        times.append(time)
+        values.append(sin(2 * Double.pi * frequency * time))
+    }
+    let result = try #require(FourierAnalysis.analyze(
+        times: times,
+        values: values,
+        fundamentalFrequency: frequency
+    ))
+    let fundamental = try #require(result.harmonics.first)
+    #expect(abs(fundamental.magnitude - 1.0) < 1e-4)
+    #expect(abs(fundamental.phaseDegrees - (-90)) < 0.05)
+}
+
+@Test func fourierOfSquareWaveMatchesTheoreticalThd() throws {
+    let frequency = 1000.0
+    let period = 1.0 / frequency
+    let count = 40000
+    var times: [Double] = []
+    var values: [Double] = []
+    for index in 0...count {
+        let time = Double(index) / Double(count) * (2 * period)
+        times.append(time)
+        values.append(sin(2 * Double.pi * frequency * time) >= 0 ? 1.0 : -1.0)
+    }
+    let result = try #require(FourierAnalysis.analyze(
+        times: times,
+        values: values,
+        fundamentalFrequency: frequency
+    ))
+    // Ideal square wave: THD over harmonics 3, 5, 7, 9.
+    let expected = 100.0 * (1.0/9 + 1.0/25 + 1.0/49 + 1.0/81).squareRoot()
+    #expect(abs(result.totalHarmonicDistortion - expected) < 0.5)
+}
+
+@Test func fourierAnalysisRejectsShortTrace() {
+    let result = FourierAnalysis.analyze(
+        times: [0, 1e-6, 2e-6],
+        values: [0, 1, 0],
+        fundamentalFrequency: 1000
+    )
+    #expect(result == nil)
+}
+
+@Test func fourierRunsOnTransientSine() throws {
+    let netlist = """
+    V1 1 0 SIN(0 1 1k)
+    R1 1 0 1k
+    .tran 1u 5m
+    .four 1k v(1)
+    .end
+    """
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let fourier = try #require(result.fourier.first)
+    #expect(fourier.variable == "v(1)")
+    #expect(abs(fourier.fundamentalFrequency - 1000) < 1e-9)
+    let fundamental = try #require(fourier.spectrum.harmonics.first)
+    #expect(abs(fundamental.magnitude - 1.0) < 1e-3)
+    #expect(fourier.spectrum.totalHarmonicDistortion < 1.0)
+}
+
+@Test func fourierUnknownVariableWarns() throws {
+    let netlist = """
+    V1 1 0 SIN(0 1 1k)
+    R1 1 0 1k
+    .tran 1u 5m
+    .four 1k v(99)
+    .end
+    """
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    #expect(result.fourier.isEmpty)
+    #expect(result.warnings.contains { $0.localizedCaseInsensitiveContains("Fourier") })
+}
+
+@Test func fourierWithoutTransientWarns() throws {
+    let netlist = """
+    V1 1 0 DC 1
+    R1 1 0 1k
+    .four 1k v(1)
+    .end
+    """
+    var settings = AnalysisSettings.default
+    settings.runAC = false
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    #expect(result.fourier.isEmpty)
+    #expect(result.warnings.contains { $0.localizedCaseInsensitiveContains("Fourier") })
+}
+
+@Test func csvIncludesFourierSection() throws {
+    let netlist = """
+    V1 1 0 SIN(0 1 1k)
+    R1 1 0 1k
+    .tran 1u 5m
+    .four 1k v(1)
+    .end
+    """
+    var settings = AnalysisSettings.default
+    settings.runDC = false
+    settings.runAC = false
+    let result = try SimulationEngine.solve(netlist: netlist, settings: settings)
+    let csv = CircuitResultExport.csv(result)
+    #expect(csv.contains("four,"))
+    #expect(csv.contains("thd_percent"))
+    #expect(csv.contains("harmonic_magnitude"))
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

@@ -22,7 +22,16 @@ struct CircuitSimResult: Sendable {
     /// A DC sweep (from a `.dc` card, a `.step param`, or the sweep settings),
     /// with one operating point per swept combination.
     var sweep: SweepResult?
+    /// Fourier components of a transient waveform, from a `.four` card.
+    var fourier: [FourierResult]
     var warnings: [String]
+
+    /// The Fourier spectrum of one transient signal for a `.four` request.
+    struct FourierResult: Sendable {
+        let variable: String
+        let fundamentalFrequency: Double
+        let spectrum: FourierAnalysis.Result
+    }
 
     struct DCResult: Sendable {
         let nodes: [(name: String, voltage: Double)]
@@ -170,7 +179,8 @@ enum SimulationEngine {
             var result = try solve(
                 circuit: parsed.circuit,
                 settings: effective,
-                initialConditions: parsed.initialConditions
+                initialConditions: parsed.initialConditions,
+                fourierSpecs: parsed.analysis.fourier
             )
             result.sweep = try runParameterStep(
                 netlist: netlist,
@@ -191,7 +201,8 @@ enum SimulationEngine {
             circuit: parsed.circuit,
             settings: effective,
             initialConditions: parsed.initialConditions,
-            sweepAxes: axes
+            sweepAxes: axes,
+            fourierSpecs: parsed.analysis.fourier
         )
         result.warnings.insert(contentsOf: parsed.warnings, at: 0)
         return result
@@ -215,7 +226,8 @@ enum SimulationEngine {
         circuit: LinearCircuit,
         settings: AnalysisSettings,
         initialConditions: InitialConditions = InitialConditions(),
-        sweepAxes: [SpiceSweepAxis] = []
+        sweepAxes: [SpiceSweepAxis] = [],
+        fourierSpecs: [SpiceFourierSpec] = []
     ) throws -> CircuitSimResult {
         guard settings.runDC || settings.runAC || settings.runTransient || !sweepAxes.isEmpty else {
             throw CircuitSimulationError.noAnalysisSelected
@@ -347,13 +359,70 @@ enum SimulationEngine {
             sweepResult = try runDCSweep(circuit: circuit, axes: sweepAxes)
         }
 
+        var fourierResults: [CircuitSimResult.FourierResult] = []
+        if !fourierSpecs.isEmpty {
+            if let transient = transientResult {
+                for spec in fourierSpecs {
+                    for variable in spec.variables {
+                        guard let values = fourierSeries(
+                            variable,
+                            transient: transient
+                        ) else {
+                            warnings.append(
+                                "Fourier: \"\(variable)\" is not a known node or element."
+                            )
+                            continue
+                        }
+                        guard let spectrum = FourierAnalysis.analyze(
+                            times: transient.times,
+                            values: values,
+                            fundamentalFrequency: spec.frequency
+                        ) else {
+                            warnings.append(
+                                "Fourier: not enough transient data to analyze "
+                                + "\"\(variable)\" at \(String(format: "%.6g", spec.frequency)) Hz."
+                            )
+                            continue
+                        }
+                        fourierResults.append(CircuitSimResult.FourierResult(
+                            variable: variable,
+                            fundamentalFrequency: spec.frequency,
+                            spectrum: spectrum
+                        ))
+                    }
+                }
+            } else {
+                warnings.append("Fourier: a `.four` card needs a transient analysis (`.tran`) to run.")
+            }
+        }
+
         return CircuitSimResult(
             dc: dcResult,
             ac: acResult,
             transient: transientResult,
             sweep: sweepResult,
+            fourier: fourierResults,
             warnings: warnings
         )
+    }
+
+    /// Resolves a `.four` variable (`v(node)`, `i(element)`, or a bare node name)
+    /// to the matching transient waveform.
+    private static func fourierSeries(
+        _ variable: String,
+        transient: CircuitSimResult.TransientResult
+    ) -> [Double]? {
+        let trimmed = variable.trimmingCharacters(in: .whitespaces)
+        let lowered = trimmed.lowercased()
+        if lowered.hasPrefix("v("), lowered.hasSuffix(")") {
+            let name = String(trimmed.dropFirst(2).dropLast())
+            return transient.nodes.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.values
+        }
+        if lowered.hasPrefix("i("), lowered.hasSuffix(")") {
+            let name = String(trimmed.dropFirst(2).dropLast())
+            return transient.components.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.values
+        }
+        return transient.nodes.first { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }?.values
     }
 
     // MARK: - DC sweep

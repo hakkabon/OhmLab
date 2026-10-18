@@ -451,6 +451,52 @@ struct CircuitSimulatorView: View {
             if let transient = result.transient {
                 transientResults(transient)
             }
+            if !result.fourier.isEmpty {
+                fourierResults(result.fourier)
+            }
+        }
+    }
+
+    private func fourierResults(_ results: [CircuitSimResult.FourierResult]) -> some View {
+        GroupBox("Fourier Analysis") {
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(Array(results.enumerated()), id: \.offset) { entry in
+                    let spectrum = entry.element.spectrum
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(entry.element.variable) @ \(format(entry.element.fundamentalFrequency)) Hz")
+                            .fontWeight(.semibold)
+                        Text("DC \(format(spectrum.dcComponent))  ·  THD \(String(format: "%.4g", spectrum.totalHarmonicDistortion))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 6) {
+                            GridRow {
+                                Text("Harmonic").fontWeight(.semibold)
+                                Text("Frequency").fontWeight(.semibold)
+                                Text("Magnitude").fontWeight(.semibold)
+                                Text("Rel.").fontWeight(.semibold)
+                                Text("Phase").fontWeight(.semibold)
+                            }
+                            ForEach(Array(spectrum.harmonics.enumerated()), id: \.offset) { harmonic in
+                                GridRow {
+                                    Text("\(harmonic.element.number)")
+                                    Text(String(format: "%.6g Hz", harmonic.element.frequency))
+                                        .monospacedDigit()
+                                    Text(String(format: "%.6g", harmonic.element.magnitude))
+                                        .monospacedDigit()
+                                    Text(String(format: "%.4g", harmonic.element.normalizedMagnitude))
+                                        .monospacedDigit()
+                                    Text(String(format: "%.4g°", harmonic.element.phaseDegrees))
+                                        .monospacedDigit()
+                                }
+                            }
+                        }
+                    }
+                    if entry.offset < results.count - 1 {
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

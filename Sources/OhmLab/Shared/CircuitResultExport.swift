@@ -61,6 +61,18 @@ enum CircuitResultExport {
             }
         }
 
+        for entry in result.fourier {
+            let spectrum = entry.spectrum
+            rows.append(row(analysis: "four", frequency: 0, signal: entry.variable, quantity: "dc", value: spectrum.dcComponent))
+            rows.append(row(analysis: "four", frequency: entry.fundamentalFrequency, signal: entry.variable, quantity: "thd_percent", value: spectrum.totalHarmonicDistortion))
+            for harmonic in spectrum.harmonics {
+                rows.append(row(analysis: "four", frequency: harmonic.frequency, signal: entry.variable, quantity: "harmonic_magnitude", value: harmonic.magnitude))
+                rows.append(row(analysis: "four", frequency: harmonic.frequency, signal: entry.variable, quantity: "harmonic_magnitude_normalized", value: harmonic.normalizedMagnitude))
+                rows.append(row(analysis: "four", frequency: harmonic.frequency, signal: entry.variable, quantity: "harmonic_phase_deg", value: harmonic.phaseDegrees))
+                rows.append(row(analysis: "four", frequency: harmonic.frequency, signal: entry.variable, quantity: "harmonic_phase_normalized_deg", value: harmonic.normalizedPhaseDegrees))
+            }
+        }
+
         return rows.joined(separator: "\n")
     }
 

@@ -134,6 +134,18 @@ public struct SpiceStepSpec: Sendable, Equatable {
     public var isTemperature: Bool { parameter.uppercased() == "TEMP" }
 }
 
+/// A `.four <freq> <var…>` Fourier request: the fundamental frequency and the
+/// signals (e.g. `v(2)`, `i(v1)`) to analyze over the last transient period.
+public struct SpiceFourierSpec: Sendable, Equatable {
+    public var frequency: Double
+    public var variables: [String]
+
+    public init(frequency: Double, variables: [String]) {
+        self.frequency = frequency
+        self.variables = variables
+    }
+}
+
 public struct SpiceAnalysisCard: Sendable, Equatable {
     public var hasAC: Bool
     public var sweep: FrequencySweepType
@@ -151,6 +163,8 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
     public var dcSweep: [SpiceSweepAxis]
     /// A `.step param …` specification, applied around the DC analyses.
     public var step: SpiceStepSpec?
+    /// `.four` Fourier requests, applied to the transient result.
+    public var fourier: [SpiceFourierSpec]
 
     public static let none = SpiceAnalysisCard(
         hasAC: false,
@@ -164,7 +178,8 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
         tranStop: 1e-2,
         tranStart: 0,
         dcSweep: [],
-        step: nil
+        step: nil,
+        fourier: []
     )
 }
 
@@ -396,6 +411,8 @@ public enum SpiceNetlistParser {
             case ".tran":
                 analysis.hasTransient = true
                 try SpiceNetlistParser.parseTran(tokens: tokens, line: line, text: text, into: &analysis)
+            case ".four":
+                try SpiceNetlistParser.parseFourier(tokens: tokens, line: line, text: text, into: &analysis)
             case ".dc":
                 try processDCSweep(tokens: tokens, line: line, text: text)
             case ".step":
@@ -660,6 +677,10 @@ public enum SpiceNetlistParser {
                 let card = first.lowercased()
                 if card == ".model" { return }
                 if SpiceNetlistParser.ignorableCards.contains(card) { return }
+                if card == ".four" {
+                    warnings.append("Ignored .four inside a subcircuit: this analysis is not supported.")
+                    return
+                }
                 if SpiceNetlistParser.warningCards.contains(card) {
                     warnings.append("Ignored \(card) inside a subcircuit: this analysis is not supported.")
                     return
@@ -948,7 +969,7 @@ public enum SpiceNetlistParser {
     /// Control cards emitted by KiCad, ngspice and other tools that carry no
     /// information this engine can act on. They are accepted so an exported
     /// netlist round-trips without edits; anything that would change results is
-    /// surfaced as a warning instead (see `.four`, `.nodeset`).
+    /// surfaced as a warning instead (see `.nodeset`, `.noise`).
     private static let ignorableCards: Set<String> = [
         ".title", ".date", ".rev", ".company", ".width",
         ".plot", ".print", ".save", ".probe", ".backanno",
@@ -957,7 +978,7 @@ public enum SpiceNetlistParser {
 
     /// Control cards that are accepted but change the simulation in a way this
     /// engine does not model; each one records a warning.
-    private static let warningCards: Set<String> = [".four", ".nodeset", ".noise", ".disto", ".sens"]
+    private static let warningCards: Set<String> = [".nodeset", ".noise", ".disto", ".sens"]
 
     /// Evenly spaced values from `start` to `stop` (inclusive) in steps of
     /// `step`. The step's sign selects the direction; an empty result means the
@@ -1239,6 +1260,23 @@ public enum SpiceNetlistParser {
         analysis.tranStep = step
         analysis.tranStop = stop
         analysis.tranStart = start
+    }
+
+    /// Parses `.four <freq> <var> [var…]`.
+    private static func parseFourier(
+        tokens: [String],
+        line: Int,
+        text: String,
+        into analysis: inout SpiceAnalysisCard
+    ) throws {
+        guard tokens.count >= 3 else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
+        let frequency = try parseNumber(tokens[1], line: line)
+        guard frequency > 0, frequency.isFinite else {
+            throw SpiceParseError.invalidAnalysis(line: line, text: text)
+        }
+        let variables = tokens.dropFirst(2).filter { !$0.isEmpty }
+        guard !variables.isEmpty else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
+        analysis.fourier.append(SpiceFourierSpec(frequency: frequency, variables: variables))
     }
 
     /// Parses `.model <name> D(<params>)`, `.model <name> NPN|PNP(<params>)`, or
