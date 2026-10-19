@@ -23,7 +23,11 @@ INPUT:
 
 OUTPUT:
   -o, --output <file>      Write results to <file> (default: stdout).
-  -f, --format <fmt>       csv (default) or json.
+  -f, --format <fmt>       csv (default), json, or a plugin-provided format name.
+
+PLUGINS:
+  --plugins <dir>          Load JSON plugin manifests from <dir>.
+  --no-plugins             Do not install the built-in sample plugins.
 
 ANALYSIS:
   --analysis <list>        Comma-separated subset of dc, ac, tran.
@@ -54,9 +58,11 @@ private struct Configuration {
     var netlistText: String?
     var readStdin = false
     var outputPath: String?
-    var format: BatchFormat = .csv
+    var format: BatchOutputFormat = .csv
     var engine: String?
     var quiet = false
+    var loadBuiltins = true
+    var pluginsDirectory: String?
 
     /// Analysis selections parsed from flags; `nil` fields mean "not specified".
     var analyses: Set<String>?
@@ -113,15 +119,15 @@ private func parse(_ arguments: [String]) throws -> Configuration {
         case "-o", "--output":
             config.outputPath = try next(argument)
         case "-f", "--format":
-            let raw = try next(argument).lowercased()
-            guard let format = BatchFormat(rawValue: raw) else {
-                throw CLIError.usage("unknown format “\(raw)” (expected csv or json)")
-            }
-            config.format = format
+            config.format = BatchOutputFormat(name: try next(argument))
         case "-e", "--engine":
             config.engine = try next(argument)
         case "-q", "--quiet":
             config.quiet = true
+        case "--plugins":
+            config.pluginsDirectory = try next(argument)
+        case "--no-plugins":
+            config.loadBuiltins = false
         case "--analysis":
             let raw = try next(argument).lowercased()
             let items = Set(raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
@@ -280,6 +286,23 @@ private func settings(for config: Configuration, input: BatchInput) -> AnalysisS
 
 private func execute(_ arguments: [String]) throws -> Int {
     let config = try parse(arguments)
+
+    if config.loadBuiltins {
+        PluginManager.shared.installBuiltins()
+    }
+    if let directory = config.pluginsDirectory {
+        do {
+            let added = try PluginManager.shared.loadManifests(in: URL(fileURLWithPath: directory))
+            if !config.quiet {
+                FileHandle.standardError.write(Data(
+                    "ohm: loaded \(added.count) plugin component(s) from \(directory)\n".utf8
+                ))
+            }
+        } catch {
+            throw CLIError.runtime("cannot load plugins from \(directory): \(error.localizedDescription)")
+        }
+    }
+
     let input = try loadInput(config)
 
     let request = BatchRequest(

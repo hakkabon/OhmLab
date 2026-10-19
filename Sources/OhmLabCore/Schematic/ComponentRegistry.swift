@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 public enum ComponentSymbol: String, Sendable {
     case resistor
@@ -74,9 +75,10 @@ public struct ComponentDescriptor: Sendable {
     }
 }
 
-public final class ComponentRegistry: Sendable {
+public final class ComponentRegistry: @unchecked Sendable {
     public static let shared = ComponentRegistry()
-    private let registry: [String: ComponentDescriptor]
+    private let lock = NSLock()
+    private var registry: [String: ComponentDescriptor]
 
     private init() {
         let twoTerminalPins = [
@@ -278,10 +280,32 @@ public final class ComponentRegistry: Sendable {
     }
 
     public var allDescriptors: [ComponentDescriptor] {
-        registry.values.sorted { $0.displayName < $1.displayName }
+        lock.lock(); defer { lock.unlock() }
+        return registry.values.sorted { $0.displayName < $1.displayName }
     }
 
     public func descriptor(for id: String) -> ComponentDescriptor? {
-        registry[id]
+        lock.lock(); defer { lock.unlock() }
+        return registry[id]
+    }
+
+    /// Registers a plugin/custom descriptor at runtime. A built-in (or already
+    /// registered) id is never overwritten: the call returns `false` and leaves
+    /// the existing descriptor in place.
+    @discardableResult
+    public func register(_ descriptor: ComponentDescriptor) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard registry[descriptor.id] == nil else { return false }
+        registry[descriptor.id] = descriptor
+        return true
+    }
+
+    /// Removes a previously registered descriptor (used to unload a plugin, or
+    /// to clean up in tests). Built-ins can be removed too, so callers should
+    /// treat this as an explicit, deliberate operation.
+    @discardableResult
+    public func unregister(id: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return registry.removeValue(forKey: id) != nil
     }
 }

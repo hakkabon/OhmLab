@@ -12,6 +12,11 @@ import OhmLabCore
 
 @main
 struct OhmLabApp: App {
+    init() {
+        // Install bundled plugin extensions (sample parts, extra export formats).
+        PluginManager.shared.installBuiltins()
+    }
+
     var body: some Scene {
         // A document-based scene gives open-in-place, automatic saving to the
         // file's location, iCloud support, and the standard File menu

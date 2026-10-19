@@ -3207,6 +3207,149 @@ private func dcOnlySettings() -> AnalysisSettings {
     #expect(SpiceNumber.parse("abc") == nil)
 }
 
+// MARK: - Plugin API (Phase 15)
+
+/// A processor that always tags the result, so the result-processor hook can be
+/// asserted without a contrived circuit.
+private struct TaggerProcessor: SimulationResultProcessor {
+    let id = "test.tagger"
+    func process(_ result: CircuitSimResult, context: SimulationPostContext) -> CircuitSimResult {
+        var updated = result
+        updated.warnings.append("tagged:\(context.source)")
+        return updated
+    }
+}
+
+@Suite(.serialized)
+struct PluginAPITests {
+    @Test func samplePluginRegistersComponentAndExporter() throws {
+        defer {
+            PluginManager.shared.reset()
+            ComponentRegistry.shared.unregister(id: "net-tie")
+        }
+        PluginManager.shared.register(SamplePartsPlugin())
+        #expect(ComponentRegistry.shared.descriptor(for: "net-tie")?.displayName == "Net Tie")
+        #expect(PluginManager.shared.exporterFormatNames.contains("kv"))
+        #expect(PluginManager.shared.plugins.contains { $0.id == SamplePartsPlugin.pluginID })
+    }
+
+    @Test func netlistProcessorExpandsCustomDevice() throws {
+        defer {
+            PluginManager.shared.reset()
+            ComponentRegistry.shared.unregister(id: "thermistor")
+        }
+        PluginManager.shared.register(ThermistorPlugin())
+        // T1 expands to R1; a 5 V source across 100 Ω gives 50 mA.
+        let result = try SimulationEngine.solve(
+            netlist: "V1 1 0 5\nT1 1 0 100\n",
+            settings: dcOnlySettings()
+        )
+        let current = result.dc?.components.first { $0.name == "R1" }?.current
+        #expect(abs((current ?? 0) - 0.05) < 1e-9)
+    }
+
+    @Test func resultProcessorAnnotatesResult() throws {
+        defer { PluginManager.shared.reset() }
+        PluginManager.shared.register(TaggerOnlyPlugin())
+        let result = try SimulationEngine.solve(
+            netlist: dividerNetlist,
+            settings: dcOnlySettings()
+        )
+        #expect(result.warnings.contains("tagged:netlist"))
+    }
+
+    @Test func pluginExporterProvidesBatchFormat() throws {
+        defer { PluginManager.shared.reset() }
+        PluginManager.shared.register(SamplePartsPlugin())
+        let outcome = try BatchRunner.run(BatchRequest(
+            input: .netlist(dividerNetlist),
+            format: .plugin("kv"),
+            settingsOverride: dcOnlySettings()
+        ))
+        #expect(outcome.text.contains("dc.node.2.voltage="))
+    }
+
+    @Test func batchRejectsUnknownFormat() {
+        #expect(throws: BatchError.self) {
+            try BatchRunner.run(BatchRequest(input: .netlist(dividerNetlist), format: .plugin("nope")))
+        }
+    }
+
+    @Test func manifestLoadsDeclarativeComponents() throws {
+        defer {
+            PluginManager.shared.reset()
+            ComponentRegistry.shared.unregister(id: "manifest-resistor")
+        }
+        let directory = try makeManifestDirectory(json: Self.validManifest)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let added = try PluginManager.shared.loadManifests(in: directory)
+        #expect(added.contains("manifest-resistor"))
+        #expect(ComponentRegistry.shared.descriptor(for: "manifest-resistor")?.displayName == "Manifest Resistor")
+        #expect(PluginManager.shared.plugins.contains { $0.id == "test.manifest" })
+    }
+
+    @Test func manifestRejectsUnknownSymbol() throws {
+        let directory = try makeManifestDirectory(json: Self.badSymbolManifest)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(throws: PluginManifestError.self) {
+            try PluginManager.shared.loadManifests(in: directory)
+        }
+    }
+
+    private static let validManifest = """
+    {
+      "id": "test.manifest",
+      "name": "Test Manifest",
+      "version": "1.0",
+      "components": [
+        {
+          "id": "manifest-resistor",
+          "prefix": "R",
+          "displayName": "Manifest Resistor",
+          "symbol": "resistor",
+          "pins": [ {"id":"1","name":"1","x":-40,"y":0}, {"id":"2","name":"2","x":40,"y":0} ],
+          "parameters": [ {"id":"resistance","name":"Resistance","unit":"Ω","defaultValue":1000} ]
+        }
+      ]
+    }
+    """
+
+    private static let badSymbolManifest = """
+    {
+      "id": "test.bad",
+      "name": "Bad",
+      "components": [
+        {
+          "id": "spaceship",
+          "prefix": "S",
+          "displayName": "Spaceship",
+          "symbol": "teleporter",
+          "pins": [ {"id":"1","name":"1","x":0,"y":0} ]
+        }
+      ]
+    }
+    """
+
+    private func makeManifestDirectory(json: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ohm-plugins-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try json.write(to: directory.appendingPathComponent("plugin.json"), atomically: true, encoding: .utf8)
+        return directory
+    }
+}
+
+/// A plugin whose only extension is a result tagger.
+private struct TaggerOnlyPlugin: CircuitPlugin {
+    let id = "test.tagger-plugin"
+    let name = "Tagger"
+    let version = "1.0"
+    func register(into manager: PluginManager) {
+        manager.addResultProcessor(TaggerProcessor())
+    }
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

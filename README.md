@@ -66,6 +66,7 @@ Simulation is reached through `SimulationEngine`, a façade that dispatches to a
 *   **Netlist → Schematic:** **Draw Schematic** on the netlist editor auto-lays out any supported SPICE netlist as an editable schematic — components on a grid, orthogonal wires routed from connectivity, nets labelled, and `.subckt` blocks reconstructed as subcircuit-instance symbols referencing generated sheets.
 *   **Pluggable Engine:** Simulation goes through a façade (`SimulationEngine`) over a registered backend; the native Swift MNA engine is the default and an optional Rust `ohm-core` can be swapped in at runtime (see **Engine Façade & the Optional Rust Core**).
 *   **Headless / Batch:** `ohm` runs a `.ohmlab` document or a netlist file (or stdin) without the UI and writes CSV or JSON — see **Headless / Batch Mode**.
+*   **Plugin API:** Extension points for custom components, netlist processors, result post-processors, and output exporters — see **Plugin API**.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
 
 ## Supported elements (passive)
@@ -162,6 +163,7 @@ Sources/
 │   │   └── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
 │   ├── Interop/                  # KiCad/ngspice interchange (kicad-cli bridge)
 │   ├── Batch/                    # Headless runner: BatchRunner, JSON/CSV output
+│   ├── Plugins/                  # CircuitPlugin API, JSON manifests, samples
 │   └── Circuit/                  # Simulator UI and document model
 ├── OhmLab/                       # SwiftUI app shell (OhmLabApp.swift — the @main scene)
 ├── OhmLabCLI/                    # `ohm` headless/batch command-line front end
@@ -215,6 +217,36 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 *   **Exit status** — `0` success, `1` simulation/parse error, `2` usage error; non-fatal notes go to stderr (suppress with `-q`).
 
 `BatchRunner` (in `OhmLabCore`) is the testable core of this: it is pure (no file I/O beyond what it is handed), and the CLI adds argument parsing, file reading, and output writing on top.
+
+## Plugin API
+
+Plugins extend the core without forking it. Because dynamic loading is unavailable on iPadOS, plugins are registered in process — compiled into the app/CLI, or declared as data in a JSON manifest. A `CircuitPlugin` installs its extensions into `PluginManager.shared`:
+
+*   **Components** — `addComponent(_:)` registers a `ComponentDescriptor` (prefix, symbol, pins, typed parameters) that appears in the palette and is solved like any built-in part. A custom part maps onto an existing symbol and a supported primitive (e.g. a Net Tie is a 1 µΩ resistor with reference prefix `R`), so it round-trips through the schematic builder and engine.
+*   **Netlist processors** — `addNetlistProcessor(_:)` rewrites the netlist text before it is parsed (via the `SimulationEngine` façade, so it covers the app's netlist mode and the CLI). This is the element-handler hook: a custom device can be macro-expanded into primitives the engine already understands (e.g. a `T1` thermistor into a resistor).
+*   **Result post-processors** — `addResultProcessor(_:)` inspects/annotates a finished `CircuitSimResult` (e.g. append a warning when a node voltage is implausible).
+*   **Exporters** — `addExporter(_:)` adds a named output format; the CLI's `--format <name>` and `BatchRunner` resolve it.
+
+Declarative plugins load from a directory of JSON manifests:
+
+```json
+{
+  "id": "com.example.parts",
+  "name": "Example Parts",
+  "version": "1.0",
+  "components": [
+    {
+      "id": "fuse-r", "prefix": "R", "displayName": "Fuse (R)", "symbol": "resistor",
+      "pins": [ {"id":"1","name":"1","x":-40,"y":0}, {"id":"2","name":"2","x":40,"y":0} ],
+      "parameters": [ {"id":"resistance","name":"Resistance","unit":"Ω","defaultValue":0.01} ]
+    }
+  ]
+}
+```
+
+`PluginManager.loadManifests(in:)` reads every `*.json` in a directory; a manifest that names an unknown symbol is rejected. The `ohm` CLI loads manifests with `--plugins <dir>` and, unless `--no-plugins` is given, installs the built-in sample plugins.
+
+Two sample plugins ship as reference: `SamplePartsPlugin` (a Net Tie component, a `kv` exporter, and a high-voltage sanity result processor — safe to install by default, it never rewrites netlists) and `ThermistorPlugin` (a `T`-device expander, opt-in because rewriting `T…` lines would shadow a real SPICE transmission line). The app installs `SamplePartsPlugin` at launch.
 
 ## Document format
 

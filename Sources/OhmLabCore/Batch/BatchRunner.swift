@@ -17,15 +17,36 @@ public enum BatchInput: Sendable {
     case document(CircuitFile)
 }
 
-public enum BatchFormat: String, Sendable, CaseIterable {
+/// An output format: one of the built-ins, or a plugin-registered format name.
+public enum BatchOutputFormat: Sendable, Equatable {
     case csv
     case json
+    case plugin(String)
+
+    /// Resolves a format name from a front end (`csv`, `json`, or a plugin's
+    /// registered name). Unknown names become `.plugin(name)` and fail at run
+    /// time if no exporter is registered.
+    public init(name: String) {
+        switch name.lowercased() {
+        case "csv": self = .csv
+        case "json": self = .json
+        default: self = .plugin(name)
+        }
+    }
+
+    public var name: String {
+        switch self {
+        case .csv: return "csv"
+        case .json: return "json"
+        case .plugin(let name): return name
+        }
+    }
 }
 
 /// A headless run request.
 public struct BatchRequest: Sendable {
     public var input: BatchInput
-    public var format: BatchFormat
+    public var format: BatchOutputFormat
     /// Backend name to activate (`native`, `rust`, …); `nil` keeps the default.
     public var engine: String?
     /// Replaces the document's own analysis settings when non-nil.
@@ -33,7 +54,7 @@ public struct BatchRequest: Sendable {
 
     public init(
         input: BatchInput,
-        format: BatchFormat = .csv,
+        format: BatchOutputFormat = .csv,
         engine: String? = nil,
         settingsOverride: AnalysisSettings? = nil
     ) {
@@ -55,6 +76,7 @@ public struct BatchOutcome: Sendable {
 public enum BatchError: LocalizedError, Equatable {
     case emptyInput
     case unsupportedEngine(String)
+    case unsupportedFormat(String)
     case unreadableInput(String)
 
     public var errorDescription: String? {
@@ -63,6 +85,9 @@ public enum BatchError: LocalizedError, Equatable {
             return "No netlist was provided."
         case .unsupportedEngine(let name):
             return "Unknown engine “\(name)”. Available: \(EngineBackends.available.joined(separator: ", "))."
+        case .unsupportedFormat(let name):
+            let formats = (["csv", "json"] + PluginManager.shared.exporterFormatNames).joined(separator: ", ")
+            return "Unknown output format “\(name)”. Available: \(formats)."
         case .unreadableInput(let reason):
             return "Could not read the input: \(reason)"
         }
@@ -104,8 +129,15 @@ public enum BatchRunner {
 
         let text: String
         switch request.format {
-        case .csv: text = CircuitResultExport.csv(result)
-        case .json: text = CircuitResultJSON.encode(result)
+        case .csv:
+            text = CircuitResultExport.csv(result)
+        case .json:
+            text = CircuitResultJSON.encode(result)
+        case .plugin(let name):
+            guard let exporter = PluginManager.shared.exporter(named: name) else {
+                throw BatchError.unsupportedFormat(name)
+            }
+            text = try exporter.export(result)
         }
         return BatchOutcome(result: result, text: text, engine: SimulationEngine.backendIdentifier)
     }

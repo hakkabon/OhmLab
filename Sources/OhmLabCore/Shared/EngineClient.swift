@@ -271,7 +271,11 @@ public enum SimulationEngine {
         snapshot: SchematicSnapshot,
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
-        try EngineBackendRegistry.shared.active.solve(snapshot: snapshot, settings: settings)
+        let result = try EngineBackendRegistry.shared.active.solve(snapshot: snapshot, settings: settings)
+        return PluginManager.shared.processResult(
+            result,
+            context: SimulationPostContext(source: "schematic", engine: backendIdentifier)
+        )
     }
 
     public static func solve(
@@ -279,7 +283,18 @@ public enum SimulationEngine {
         settings: AnalysisSettings,
         libraries: [SpiceModelLibrary] = []
     ) throws -> CircuitSimResult {
-        try EngineBackendRegistry.shared.active.solve(netlist: netlist, settings: settings, libraries: libraries)
+        // Netlist processors run before the backend sees the text, so a plugin
+        // can macro-expand custom devices into supported primitives.
+        let processed = try PluginManager.shared.processNetlist(netlist)
+        let result = try EngineBackendRegistry.shared.active.solve(
+            netlist: processed,
+            settings: settings,
+            libraries: libraries
+        )
+        return PluginManager.shared.processResult(
+            result,
+            context: SimulationPostContext(source: "netlist", engine: backendIdentifier)
+        )
     }
 }
 
