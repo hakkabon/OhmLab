@@ -8,78 +8,158 @@
 
 import Foundation
 
-struct FreqPoint: Identifiable, Sendable {
-    var id: Double { freqHz }
-    let freqHz: Double
-    let magnitudeDb: Double
-    let phaseDeg: Double
+public struct FreqPoint: Identifiable, Sendable {
+    public var id: Double { freqHz }
+    public let freqHz: Double
+    public let magnitudeDb: Double
+    public let phaseDeg: Double
+
+    public init(freqHz: Double, magnitudeDb: Double, phaseDeg: Double) {
+        self.freqHz = freqHz
+        self.magnitudeDb = magnitudeDb
+        self.phaseDeg = phaseDeg
+    }
 }
 
-struct CircuitSimResult: Sendable {
-    let dc: DCResult?
-    let ac: ACResult?
-    let transient: TransientResult?
+public struct CircuitSimResult: Sendable {
+    public let dc: DCResult?
+    public let ac: ACResult?
+    public let transient: TransientResult?
     /// A DC sweep (from a `.dc` card, a `.step param`, or the sweep settings),
     /// with one operating point per swept combination.
-    var sweep: SweepResult?
+    public var sweep: SweepResult?
     /// Fourier components of a transient waveform, from a `.four` card.
-    var fourier: [FourierResult]
-    var warnings: [String]
+    public var fourier: [FourierResult]
+    public var warnings: [String]
 
-    /// The Fourier spectrum of one transient signal for a `.four` request.
-    struct FourierResult: Sendable {
-        let variable: String
-        let fundamentalFrequency: Double
-        let spectrum: FourierAnalysis.Result
+    public init(
+        dc: DCResult?,
+        ac: ACResult?,
+        transient: TransientResult?,
+        sweep: SweepResult?,
+        fourier: [FourierResult],
+        warnings: [String]
+    ) {
+        self.dc = dc
+        self.ac = ac
+        self.transient = transient
+        self.sweep = sweep
+        self.fourier = fourier
+        self.warnings = warnings
     }
 
-    struct DCResult: Sendable {
-        let nodes: [(name: String, voltage: Double)]
+    /// The Fourier spectrum of one transient signal for a `.four` request.
+    public struct FourierResult: Sendable {
+        public let variable: String
+        public let fundamentalFrequency: Double
+        public let spectrum: FourierAnalysis.Result
+
+        public init(variable: String, fundamentalFrequency: Double, spectrum: FourierAnalysis.Result) {
+            self.variable = variable
+            self.fundamentalFrequency = fundamentalFrequency
+            self.spectrum = spectrum
+        }
+    }
+
+    public struct DCResult: Sendable {
+        public let nodes: [(name: String, voltage: Double)]
         /// Per-element operating point: voltage drop (nodeA - nodeB) and current
         /// flowing from nodeA to nodeB.
-        let components: [(name: String, voltage: Double, current: Double)]
-        let sources: [(name: String, current: Double)]
-        let converged: Bool
+        public let components: [(name: String, voltage: Double, current: Double)]
+        public let sources: [(name: String, current: Double)]
+        public let converged: Bool
+
+        public init(
+            nodes: [(name: String, voltage: Double)],
+            components: [(name: String, voltage: Double, current: Double)],
+            sources: [(name: String, current: Double)],
+            converged: Bool
+        ) {
+            self.nodes = nodes
+            self.components = components
+            self.sources = sources
+            self.converged = converged
+        }
     }
 
     /// One independent axis of a DC sweep and its sampled values.
-    struct SweepAxis: Sendable {
-        let name: String
-        let values: [Double]
+    public struct SweepAxis: Sendable {
+        public let name: String
+        public let values: [Double]
+
+        public init(name: String, values: [Double]) {
+            self.name = name
+            self.values = values
+        }
     }
 
     /// A single operating point within a sweep. `coordinates` holds one value
     /// per axis, ordered the same as `SweepResult.axes`.
-    struct SweepPoint: Sendable {
-        let coordinates: [(name: String, value: Double)]
-        let nodes: [(name: String, voltage: Double)]
-        let components: [(name: String, voltage: Double, current: Double)]
+    public struct SweepPoint: Sendable {
+        public let coordinates: [(name: String, value: Double)]
+        public let nodes: [(name: String, voltage: Double)]
+        public let components: [(name: String, voltage: Double, current: Double)]
+
+        public init(
+            coordinates: [(name: String, value: Double)],
+            nodes: [(name: String, voltage: Double)],
+            components: [(name: String, voltage: Double, current: Double)]
+        ) {
+            self.coordinates = coordinates
+            self.nodes = nodes
+            self.components = components
+        }
     }
 
-    struct SweepResult: Sendable {
+    public struct SweepResult: Sendable {
         /// Sweep dimensions, outermost first. The last axis is the innermost and
         /// forms the plot's X axis; the others select the curves.
-        let axes: [SweepAxis]
-        let points: [SweepPoint]
+        public let axes: [SweepAxis]
+        public let points: [SweepPoint]
+
+        public init(axes: [SweepAxis], points: [SweepPoint]) {
+            self.axes = axes
+            self.points = points
+        }
     }
 
-    struct ACResult: Sendable {
-        let frequencies: [Double]
-        let nodes: [(name: String, response: [FreqPoint])]
+    public struct ACResult: Sendable {
+        public let frequencies: [Double]
+        public let nodes: [(name: String, response: [FreqPoint])]
         /// Per-element current sweep, in the same units as the element.
-        let components: [(name: String, response: [FreqPoint])]
+        public let components: [(name: String, response: [FreqPoint])]
+
+        public init(
+            frequencies: [Double],
+            nodes: [(name: String, response: [FreqPoint])],
+            components: [(name: String, response: [FreqPoint])]
+        ) {
+            self.frequencies = frequencies
+            self.nodes = nodes
+            self.components = components
+        }
     }
 
-    struct TransientResult: Sendable {
-        let times: [Double]
+    public struct TransientResult: Sendable {
+        public let times: [Double]
         /// Node voltage waveform, sharing the `times` axis.
-        let nodes: [(name: String, values: [Double])]
+        public let nodes: [(name: String, values: [Double])]
         /// Per-element current waveform, sharing the `times` axis.
-        let components: [(name: String, values: [Double])]
+        public let components: [(name: String, values: [Double])]
+
+        public init(
+            times: [Double],
+            nodes: [(name: String, values: [Double])],
+            components: [(name: String, values: [Double])]
+        ) {
+            self.times = times
+            self.nodes = nodes
+            self.components = components
+        }
     }
 }
 
-enum CircuitSimulationError: LocalizedError {
+public enum CircuitSimulationError: LocalizedError {
     case emptyNetlist
     case noAnalysisSelected
     case invalidACSettings
@@ -91,7 +171,7 @@ enum CircuitSimulationError: LocalizedError {
     case acSolveFailed(frequency: Double, reason: String)
     case unstableResult
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .emptyNetlist:
             return "Enter a SPICE netlist before running the simulation."
@@ -117,21 +197,111 @@ enum CircuitSimulationError: LocalizedError {
     }
 }
 
-enum SimulationEngine {
+// MARK: - Engine backend façade
+
+/// A pluggable circuit-simulation backend. The built-in `NativeMNAEngine` is the
+/// default; alternative cores (for example the Rust `audio-spice-core` linked
+/// via the `CCOhmCore` module) can be registered at launch and swapped in
+/// without touching any call site.
+public protocol SimulationEngineBackend: Sendable {
+    /// A stable, human-readable identifier (surfaced in diagnostics and the CLI).
+    var identifier: String { get }
+
+    /// Solves a schematic snapshot.
+    func solve(snapshot: SchematicSnapshot, settings: AnalysisSettings) throws -> CircuitSimResult
+
+    /// Solves a SPICE netlist, optionally seeding model libraries.
+    func solve(netlist: String, settings: AnalysisSettings, libraries: [SpiceModelLibrary]) throws -> CircuitSimResult
+}
+
+public extension SimulationEngineBackend {
+    /// Default schematic path for foreign backends: project the schematic to a
+    /// netlist and hand that to the netlist entry point. The built-in engine
+    /// overrides this with a direct MNA compile.
+    func solve(snapshot: SchematicSnapshot, settings: AnalysisSettings) throws -> CircuitSimResult {
+        let netlist = try SpiceNetlistBuilder.build(snapshot: snapshot)
+        return try solve(netlist: netlist, settings: settings, libraries: [])
+    }
+}
+
+/// Process-wide registry holding the active engine backend.
+final class EngineBackendRegistry: @unchecked Sendable {
+    static let shared = EngineBackendRegistry()
+
+    private let lock = NSLock()
+    private var overrideBackend: (any SimulationEngineBackend)?
+    private let defaultBackend: any SimulationEngineBackend = NativeMNAEngine()
+
+    private init() {}
+
+    var active: any SimulationEngineBackend {
+        lock.lock(); defer { lock.unlock() }
+        return overrideBackend ?? defaultBackend
+    }
+
+    func register(_ backend: any SimulationEngineBackend, makeDefault: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if makeDefault { overrideBackend = backend }
+    }
+
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        overrideBackend = nil
+    }
+}
+
+/// The engine façade. Call sites stay the same — `SimulationEngine.solve(…)`
+/// dispatches to whichever backend is registered (the native Swift MNA engine by
+/// default).
+public enum SimulationEngine {
+    /// The identifier of the backend currently in use.
+    public static var backendIdentifier: String { EngineBackendRegistry.shared.active.identifier }
+
+    /// Registers `backend`; pass `makeDefault: true` to route all solves to it.
+    public static func register(_ backend: any SimulationEngineBackend, makeDefault: Bool = false) {
+        EngineBackendRegistry.shared.register(backend, makeDefault: makeDefault)
+    }
+
+    /// Restores the built-in native engine as the active backend.
+    public static func resetToDefaultBackend() {
+        EngineBackendRegistry.shared.reset()
+    }
+
+    public static func solve(
+        snapshot: SchematicSnapshot,
+        settings: AnalysisSettings
+    ) throws -> CircuitSimResult {
+        try EngineBackendRegistry.shared.active.solve(snapshot: snapshot, settings: settings)
+    }
+
+    public static func solve(
+        netlist: String,
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary] = []
+    ) throws -> CircuitSimResult {
+        try EngineBackendRegistry.shared.active.solve(netlist: netlist, settings: settings, libraries: libraries)
+    }
+}
+
+/// The built-in, pure-Swift modified-nodal-analysis engine — the default backend
+/// and the reference implementation.
+struct NativeMNAEngine: SimulationEngineBackend {
+    let identifier = "native-mna"
+
     // MARK: - Schematic path
 
-    static func solve(
+    func solve(
         snapshot: SchematicSnapshot,
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
         let circuit = try CircuitCompiler.compile(snapshot: snapshot)
-        let axes = try sweepAxes(from: settings)
-        return try solve(circuit: circuit, settings: settings, sweepAxes: axes)
+        let axes = try Self.sweepAxes(from: settings)
+        return try Self.solve(circuit: circuit, settings: settings, sweepAxes: axes)
     }
 
     // MARK: - Netlist path
 
-    static func solve(
+    func solve(
         netlist: String,
         settings: AnalysisSettings,
         libraries: [SpiceModelLibrary] = []
@@ -169,18 +339,18 @@ enum SimulationEngine {
         // one. A `.step param` is handled separately by re-parsing per value.
         var axes = parsed.analysis.dcSweep
         if axes.isEmpty {
-            axes = try sweepAxes(from: settings)
+            axes = try Self.sweepAxes(from: settings)
         }
         if let step = parsed.analysis.step {
             // The stepped parameter is exposed by re-parsing; run the base
             // analyses without a sweep so the step runner owns the result.
-            var result = try solve(
+            var result = try Self.solve(
                 circuit: parsed.circuit,
                 settings: effective,
                 initialConditions: parsed.initialConditions,
                 fourierSpecs: parsed.analysis.fourier
             )
-            result.sweep = try runParameterStep(
+            result.sweep = try Self.runParameterStep(
                 netlist: netlist,
                 step: step,
                 axes: axes,
@@ -196,7 +366,7 @@ enum SimulationEngine {
             return result
         }
 
-        var result = try solve(
+        var result = try Self.solve(
             circuit: parsed.circuit,
             settings: effective,
             initialConditions: parsed.initialConditions,

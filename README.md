@@ -2,7 +2,7 @@
 
 **OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, MOSFETs, and JFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
-The Swift package builds and runs by itself — no Rust toolchain required. A future `audio-spice-core` (Rust/UniFFI) engine can be linked in behind the same interface, but it is not needed for the milestone.
+The Swift package builds and runs by itself — no Rust toolchain required. Simulation goes through a pluggable **engine façade**, so an optional Rust `ohm-core` (`audio-spice-core`) MNA engine can be linked behind the same interface; the built-in pure-Swift engine remains the default and the reference.
 
 ## Architecture: The Four-Layer Model
 
@@ -39,6 +39,15 @@ The simulation layer is a **native Swift linear solver**:
 *   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance), NPN/PNP bipolar transistors (simplified Ebers-Moll transport model: saturation current, forward/reverse beta; no Early effect), and N-MOS/P-MOS field-effect transistors (Level 1 Shichman-Hodges: threshold voltage, transconductance parameter `KP`, channel-length modulation `LAMBDA`, body effect `GAMMA`, surface potential `PHI`), plus N-JFET/P-JFET junction field-effect transistors (Shichman-Hodges square law with a gate-junction Shockley current). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal). The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block (4×4 for the MOSFET, 3×3 for the JFET). Convergence is judged on both the terminal-voltage and device-current updates. Every model carries SPICE's temperature parameters (`XTI`, `EG` for diodes/transistors, `XTB` for transistor betas, `BEX`/`TCV` for MOSFETs and JFETs).
 *   **Solver Options & Temperature:** `.options reltol⏐abstol⏐vntol⏐gmin⏐itl1⏐temp⏐tnom` are honoured: the tolerances drive the Newton convergence test, `itl1` caps the iteration count, `gmin` is the junction/channel leakage conductance that keeps cutoff non-singular, and the operating temperature (`temp`, from a `.temp` card or `.options`) scales each device model. Temperature dependence follows SPICE: diode/BJT saturation current and thermal voltage (`IS(T)` from `IS`, `XTI`, `EG`), BJT betas (`XTB`), and MOSFET level-1 `KP(T)` (`BEX`) and `VTO(T)` (`TCV`). Non-physical values fall back to their defaults.
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
+
+## Engine Façade & the Optional Rust Core
+
+Simulation is reached through `SimulationEngine`, a façade that dispatches to a registered `SimulationEngineBackend`:
+
+*   **`NativeMNAEngine`** (identifier `"native-mna"`) is the built-in Swift engine and the default backend — the full DC/AC/transient/DC-sweep/`.four` feature set described above.
+*   **Backends are swappable at runtime** with `SimulationEngine.register(_:makeDefault:)` and `SimulationEngine.resetToDefaultBackend()`. Because the façade is the single entry point (`EngineClient` and the CLI both call it), no call site changes when a backend changes. The schematic entry point has a default implementation that projects a snapshot to a netlist, so a foreign backend only has to implement the netlist solve.
+*   **`ohm-core`** (Rust) is an optional alternative backend, `rust/ohm-core`, exposed over a tiny JSON C ABI (`ohm_engine_version`, `ohm_solve`, `ohm_free_string`) — no generated bindings required. It is dependency-free and covers DC operating points and AC sweeps for linear R/C/L/V/I circuits; unsupported analyses (transient, DC sweeps, model libraries, nonlinear devices) are reported as warnings. `RustEngineBackend.swift` bridges it behind the façade.
+*   **Opt-in build.** Nothing Rust-related is compiled unless you ask: `RustEngineBackend` is gated on `#if canImport(CCOhmCore)`. To enable it, run `scripts/build-rust-core.sh` (which runs `cargo test` and builds `libohm_core.a`) and follow the "Enabling the Rust core" block in `Package.swift`.
 
 ## Key Frontend Features
 
@@ -121,37 +130,43 @@ Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols ex
 ## Project Structure
 
 ```text
-Sources/OhmLab/
-├── Shared/                       # App state, navigation, EngineClient facade
-├── Schematic/                    # Layer 1 + Layer 2 + Layer 3
-│   ├── Models.swift              # Schematic document (multi-sheet), buses, undo/redo
-│   ├── SubcircuitSupport.swift   # Subcircuit instances + sheet catalog
-│   ├── ConnectivityBuilder.swift # Union-Find connectivity (bus-aware)
-│   ├── ComponentRegistry.swift   # Data-driven descriptors
-│   ├── SpiceNetlistBuilder.swift # Schematic -> SPICE projection (hierarchy-aware)
-│   ├── SchematicImporter.swift   # SPICE netlist -> auto-laid-out schematic
-│   └── Views/                    # Custom NSView/UIView canvas
-├── Engine/                       # Layer 4 (native Swift)
-│   ├── Complex.swift
-│   ├── ComplexLinearSolver.swift
-│   ├── LinearCircuit.swift       # MNA assembly, Newton-Raphson, DC/AC/transient solve
-│   ├── TransientSolver.swift     # Backward-Euler time stepping
-│   ├── FourierAnalysis.swift     # `.four` harmonics and THD
-│   ├── SpectrumAnalyzer.swift    # Transient FFT + window functions
-│   ├── Waveform.swift            # PULSE / SIN / PWL source shapes
-│   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
-│   ├── ModelLibrary.swift        # Vendor `.model`/`.subckt` import + registry
-│   └── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
-├── Diagnostics/                  # Pre-simulation validation
-├── Persistence/                  # Versioned .ohmlab file format + lifecycle
-│   ├── CircuitFile.swift         # File format, migration, crash-recovery slots
-│   ├── CircuitFileDocument.swift # FileDocument for the DocumentGroup scene
-│   └── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
-├── Interop/                      # KiCad/ngspice interchange (kicad-cli bridge)
-└── Circuit/                      # Simulator UI and document model
+Sources/
+├── OhmLabCore/                   # Shared, platform-agnostic core library
+│   ├── Shared/                   # EngineClient facade; plot model/views/panels
+│   ├── Schematic/                # Layer 1 + Layer 2 + Layer 3
+│   │   ├── Models.swift              # Schematic document (multi-sheet), buses, undo/redo
+│   │   ├── SubcircuitSupport.swift   # Subcircuit instances + sheet catalog
+│   │   ├── ConnectivityBuilder.swift # Union-Find connectivity (bus-aware)
+│   │   ├── ComponentRegistry.swift   # Data-driven descriptors
+│   │   ├── SpiceNetlistBuilder.swift # Schematic -> SPICE projection (hierarchy-aware)
+│   │   ├── SchematicImporter.swift   # SPICE netlist -> auto-laid-out schematic
+│   │   └── Views/                    # Custom NSView/UIView canvas
+│   ├── Engine/                   # Layer 4 (native Swift) + backend façade
+│   │   ├── Complex.swift
+│   │   ├── ComplexLinearSolver.swift
+│   │   ├── LinearCircuit.swift       # MNA assembly, Newton-Raphson, DC/AC/transient solve
+│   │   ├── TransientSolver.swift     # Backward-Euler time stepping
+│   │   ├── FourierAnalysis.swift     # `.four` harmonics and THD
+│   │   ├── SpectrumAnalyzer.swift    # Transient FFT + window functions
+│   │   ├── Waveform.swift            # PULSE / SIN / PWL source shapes
+│   │   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
+│   │   ├── ModelLibrary.swift        # Vendor `.model`/`.subckt` import + registry
+│   │   ├── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
+│   │   └── RustEngineBackend.swift   # Optional ohm-core bridge (CCOhmCore-gated)
+│   ├── Diagnostics/              # Pre-simulation validation
+│   ├── Persistence/              # Versioned .ohmlab file format + lifecycle
+│   │   ├── CircuitFile.swift         # File format, migration, crash-recovery slots
+│   │   ├── CircuitFileDocument.swift # FileDocument for the DocumentGroup scene
+│   │   └── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
+│   ├── Interop/                  # KiCad/ngspice interchange (kicad-cli bridge)
+│   └── Circuit/                  # Simulator UI and document model
+├── OhmLab/                       # SwiftUI app shell (OhmLabApp.swift — the @main scene)
+└── CCOhmCore/                    # systemLibrary module map + header for the Rust core
+rust/ohm-core/                    # Optional Rust engine crate (C ABI + cargo tests)
+scripts/build-rust-core.sh        # Builds/stages libohm_core.a for the optional core
 ```
 
-The result plots live under `Shared/Plot/`: `PlotModel.swift` (pure scales, viewport, transforms, ticks), `WaveformPlotView.swift` (the interactive canvas with cursors/pan/zoom), `WaveformPlotPanel.swift` (titled, exportable panel), and `PlotExport.swift` (PNG/CSV export documents). App wiring is `OhmLabApp.swift` (the `DocumentGroup` scene) and `Shared/DocumentWorkspaceView.swift` (bridges the `FileDocument` to the in-memory `CircuitDocument`).
+The result plots live under `OhmLabCore/Shared/Plot/`: `PlotModel.swift` (pure scales, viewport, transforms, ticks), `WaveformPlotView.swift` (the interactive canvas with cursors/pan/zoom), `WaveformPlotPanel.swift` (titled, exportable panel), and `PlotExport.swift` (PNG/CSV export documents). App wiring is `OhmLabApp.swift` (the `DocumentGroup` scene) and `OhmLabCore/Shared/DocumentWorkspaceView.swift` (bridges the `FileDocument` to the in-memory `CircuitDocument`). The `OhmLab` app target is a thin shell over `OhmLabCore`.
 
 ## Quick Start
 
@@ -187,5 +202,6 @@ Documents are managed by a SwiftUI `DocumentGroup` (`CircuitFileDocument` + `Doc
 - iPadOS 17+
 - Xcode 15+ / Swift 6
 - KiCad 9+ (optional) — enables importing `.kicad_sch` schematics via its `kicad-cli`
+- Rust toolchain (optional) — only needed to build and link the optional `ohm-core` engine (`scripts/build-rust-core.sh`)
 
 The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses a SwiftUI `DocumentGroup`, so circuits are real documents that open in place and autosave (including to iCloud Drive when the host app is entitled).

@@ -1,0 +1,15 @@
+[package]
+name = "ohm-core"
+version = "0.1.0"
+edition = "2021"
+description = "OhmLab's optional Rust simulation core (audio-spice-core): a dependency-free MNA DC/AC engine exposed over a C ABI."
+license = "MIT"
+
+[lib]
+name = "ohm_core"
+# staticlib/cdylib are what the SwiftPM systemLibrary target links against;
+# rlib keeps the crate usable from other Rust crates and `cargo test`.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+# Intentionally dependency-free: builds and tests offline.

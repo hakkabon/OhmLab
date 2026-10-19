@@ -3041,6 +3041,90 @@ private func toneSamples(
     })
 }
 
+// MARK: - Engine backend façade (Phase 15)
+
+/// A stub backend that records the fact it was called, used to prove the façade
+/// dispatches to whichever backend is registered.
+private struct StubEngineBackend: SimulationEngineBackend {
+    let identifier = "stub"
+
+    func solve(
+        netlist: String,
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary]
+    ) throws -> CircuitSimResult {
+        CircuitSimResult(
+            dc: CircuitSimResult.DCResult(
+                nodes: [("stub-node", 42)],
+                components: [],
+                sources: [],
+                converged: true
+            ),
+            ac: nil,
+            transient: nil,
+            sweep: nil,
+            fourier: [],
+            warnings: ["stub ran"]
+        )
+    }
+}
+
+@Test func engineFacadeDefaultsToNativeBackend() {
+    SimulationEngine.resetToDefaultBackend()
+    #expect(SimulationEngine.backendIdentifier == "native-mna")
+}
+
+@Test func engineFacadeDispatchesToRegisteredBackend() throws {
+    defer { SimulationEngine.resetToDefaultBackend() }
+    SimulationEngine.register(StubEngineBackend(), makeDefault: true)
+    #expect(SimulationEngine.backendIdentifier == "stub")
+
+    let result = try SimulationEngine.solve(netlist: "R1 1 0 1k", settings: .default)
+    #expect(result.warnings == ["stub ran"])
+    #expect(result.dc?.nodes.first?.name == "stub-node")
+    #expect(result.dc?.nodes.first?.voltage == 42)
+}
+
+@Test func engineFacadeDefaultBackendSolvesDivider() throws {
+    SimulationEngine.resetToDefaultBackend()
+    let settings = AnalysisSettings(
+        runDC: true,
+        runAC: false,
+        acStartFrequency: 1,
+        acStopFrequency: 1e3,
+        acPointsPerDecade: 10
+    )
+    let result = try SimulationEngine.solve(
+        netlist: "V1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n",
+        settings: settings
+    )
+    let node2 = result.dc?.nodes.first { $0.name == "2" }?.voltage
+    #expect(node2 != nil)
+    #expect(abs((node2 ?? 0) - 2.5) < 1e-9)
+}
+
+#if canImport(CCOhmCore)
+@Test func rustBackendSolvesDividerLikeNative() throws {
+    defer { SimulationEngine.resetToDefaultBackend() }
+    SimulationEngine.register(RustEngineBackend(), makeDefault: true)
+    #expect(SimulationEngine.backendIdentifier == "ohm-core")
+
+    let settings = AnalysisSettings(
+        runDC: true,
+        runAC: false,
+        acStartFrequency: 1,
+        acStopFrequency: 1e3,
+        acPointsPerDecade: 10
+    )
+    let result = try SimulationEngine.solve(
+        netlist: "V1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n",
+        settings: settings
+    )
+    let node2 = result.dc?.nodes.first { $0.name == "2" }?.voltage
+    #expect(abs((node2 ?? 0) - 2.5) < 1e-9)
+}
+#endif
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

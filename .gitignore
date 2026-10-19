@@ -7,3 +7,6 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 .vscode/
+
+# Rust build artefacts (optional ohm-core engine)
+/rust/ohm-core/target/
