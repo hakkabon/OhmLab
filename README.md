@@ -185,6 +185,7 @@ Sources/
 │   ├── Interop/                  # KiCad/ngspice interchange (kicad-cli bridge)
 │   ├── Project/                  # .ohmlabproj bundle model + store (+ a .ohmlabzip archive)
 │   ├── Sync/                     # Provider-agnostic ProjectSync engine + backends
+│   ├── Analysis/                 # Monte Carlo, worst-case corners, optimiser, probes
 │   ├── Batch/                    # Headless runner: BatchRunner, JSON/CSV output
 │   ├── Plugins/                  # CircuitPlugin API, JSON manifests, samples
 │   └── Circuit/                  # Simulator UI and document model
@@ -270,6 +271,14 @@ Declarative plugins load from a directory of JSON manifests:
 `PluginManager.loadManifests(in:)` reads every `*.json` in a directory; a manifest that names an unknown symbol is rejected. The `ohm` CLI loads manifests with `--plugins <dir>` and, unless `--no-plugins` is given, installs the built-in sample plugins.
 
 Two sample plugins ship as reference: `SamplePartsPlugin` (a Net Tie component, a `kv` exporter, and a high-voltage sanity result processor — safe to install by default, it never rewrites netlists) and `ThermistorPlugin` (a `T`-device expander, opt-in because rewriting `T…` lines would shadow a real SPICE transmission line). The app installs `SamplePartsPlugin` at launch.
+
+## Optimisation & Worst-Case
+
+Three trial-based analyses build on one primitive: rewriting component values by reference designator (`NetlistValueRewriter`) and reading scalar probes (`CircuitProbe`, written `v(out)`, `i(R1)`, or `vi(R1)`). Each trial solves a DC operating point, and only literal-valued R/L/C and DC-valued V/I devices are varied (parameterised values stay the job of `.step`/`.param`).
+
+*   **Monte Carlo** (`MonteCarloAnalysis`) — draws every toleranced component (relative ± and/or absolute ±, `uniform` or `normal`) and optionally ambient temperature from a seeded generator (`SeededGenerator`, so runs are reproducible), then reports per-probe mean, standard deviation, min, max, and yield against optional limits.
+*   **Worst-case corners** (`CornerAnalysis`) — pushes every toleranced component (and temperature) to its minimum and maximum, evaluates the full factorial (guarded by a corner-count limit), and reports each probe's extreme together with the corner that produced it.
+*   **Optimiser** (`Optimization`) — a coarse grid search refined by Nelder–Mead over named designator ranges, minimising, maximising, or driving a probe to a target value.
 
 ## Document format
 

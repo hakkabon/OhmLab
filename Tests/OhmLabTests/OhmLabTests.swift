@@ -3595,6 +3595,171 @@ private var sampleNetlistDocument: CircuitFile {
     }
 }
 
+// MARK: - Optimisation & worst-case (Phase 16)
+
+@Suite struct AnalysisTests {
+    private let divider = "V1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n"
+
+    @Test func probeParsingAndDescription() {
+        #expect(CircuitProbe.parse("v(out)") == .nodeVoltage("out"))
+        #expect(CircuitProbe.parse("I(R1)") == .elementCurrent("R1"))
+        #expect(CircuitProbe.parse("vi(R1)") == .elementVoltage("R1"))
+        #expect(CircuitProbe.parse("out") == nil)
+        #expect(CircuitProbe.nodeVoltage("out").description == "v(out)")
+    }
+
+    @Test func valueRewriterEnumeratesAndRewritesDevices() {
+        let devices = NetlistValueRewriter.devices(in: divider)
+        #expect(devices.map(\.designator) == ["V1", "R1", "R2"])
+        #expect(devices.first { $0.designator == "R1" }?.kind == .resistor)
+        #expect(NetlistValueRewriter.nominalValues(in: divider)["R2"] == 1_000)
+
+        let rewritten = NetlistValueRewriter.rewrite(divider, values: ["R1": 2_000])
+        #expect(rewritten.contains("R1 1 2 2000"))
+        #expect(rewritten.contains("R2 2 0 1k"))
+    }
+
+    @Test func rewriterLeavesSubcircuitsUntouched() {
+        let netlist = ".subckt div a b\nR1 a b 1k\n.ends\nX1 1 0 div\n"
+        let rewritten = NetlistValueRewriter.rewrite(netlist, values: ["R1": 5_000])
+        #expect(rewritten.contains("R1 a b 1k"))
+    }
+
+    @Test func monteCarloIsDeterministicAndCentredOnNominal() throws {
+        let request = MonteCarloRequest(
+            netlist: divider,
+            defaultTolerance: ComponentTolerance(designator: "*", relative: 0.05),
+            samples: 200,
+            seed: 42,
+            probes: [.nodeVoltage("2")]
+        )
+        let first = try MonteCarloAnalysis.run(request)
+        let second = try MonteCarloAnalysis.run(request)
+        #expect(first == second)
+
+        let statistic = try #require(first.statistics.first)
+        #expect(abs(statistic.nominal - 2.5) < 1e-9)
+        #expect(abs(statistic.mean - 2.5) < 0.02)
+        #expect(statistic.minimum < 2.5 && statistic.maximum > 2.5)
+        #expect(statistic.standardDeviation > 0)
+        #expect(first.failures == 0)
+    }
+
+    @Test func monteCarloYieldUsesLimits() throws {
+        let result = try MonteCarloAnalysis.run(MonteCarloRequest(
+            netlist: divider,
+            defaultTolerance: ComponentTolerance(designator: "*", relative: 0.01),
+            samples: 200,
+            seed: 7,
+            probes: [.nodeVoltage("2")],
+            limits: [ProbeLimit(probe: .nodeVoltage("2"), minimum: 2.49, maximum: 2.51)]
+        ))
+        let statistic = try #require(result.statistics.first)
+        let yield = try #require(statistic.yield)
+        #expect(yield > 0 && yield <= 1)
+    }
+
+    @Test func monteCarloWarnsOnUnknownTolerance() throws {
+        let result = try MonteCarloAnalysis.run(MonteCarloRequest(
+            netlist: divider,
+            tolerances: [ComponentTolerance(designator: "R99", relative: 0.1)],
+            samples: 10,
+            seed: 1,
+            probes: [.nodeVoltage("2")]
+        ))
+        #expect(result.warnings.contains { $0.contains("R99") })
+    }
+
+    @Test func monteCarloRejectsUnknownProbe() {
+        #expect(throws: CircuitProbeError.self) {
+            try MonteCarloAnalysis.run(MonteCarloRequest(
+                netlist: divider, samples: 5, seed: 1, probes: [.nodeVoltage("nope")]
+            ))
+        }
+    }
+
+    @Test func cornerAnalysisFindsWorstCases() throws {
+        let result = try CornerAnalysis.run(CornerRequest(
+            netlist: divider,
+            tolerances: [
+                ComponentTolerance(designator: "R1", relative: 0.05),
+                ComponentTolerance(designator: "R2", relative: 0.05)
+            ],
+            probes: [.nodeVoltage("2")]
+        ))
+        let extremes = try #require(result.extremes.first)
+        #expect(result.cornersEvaluated == 4)
+        #expect(abs(extremes.minimum - 2.375) < 1e-9)
+        #expect(abs(extremes.maximum - 2.625) < 1e-9)
+        #expect(abs((extremes.minimumCorner["R1"] ?? 0) - 1050) < 1e-6)
+        #expect(abs((extremes.minimumCorner["R2"] ?? 0) - 950) < 1e-6)
+    }
+
+    @Test func cornerAnalysisGuardsCornerCount() {
+        #expect(throws: AnalysisError.self) {
+            try CornerAnalysis.run(CornerRequest(
+                netlist: divider,
+                tolerances: [
+                    ComponentTolerance(designator: "R1", relative: 0.05),
+                    ComponentTolerance(designator: "R2", relative: 0.05)
+                ],
+                probes: [.nodeVoltage("2")],
+                maxCorners: 2
+            ))
+        }
+    }
+
+    @Test func cornerAnalysisHonoursTemperatureCorners() throws {
+        // A plain resistive divider is temperature-independent, so the
+        // temperature corner must not change the result; it only exercises the
+        // `.temp` injection and corner enumeration.
+        let result = try CornerAnalysis.run(CornerRequest(
+            netlist: divider,
+            temperature: 27,
+            temperatureTolerance: 10,
+            probes: [.nodeVoltage("2")]
+        ))
+        let extremes = try #require(result.extremes.first)
+        #expect(result.cornersEvaluated == 2)
+        #expect(abs(extremes.minimum - 2.5) < 1e-9)
+        #expect(abs(extremes.maximum - 2.5) < 1e-9)
+    }
+
+    @Test func optimiserHitsATarget() throws {
+        let result = try Optimization.run(OptimizeRequest(
+            netlist: divider,
+            variables: [OptimizeVariable(designator: "R1", minimum: 100, maximum: 10_000)],
+            objective: .nodeVoltage("2"),
+            goal: .target(1.5),
+            gridDivisions: 20
+        ))
+        #expect(abs(result.bestObjective - 1.5) < 1e-2)
+        #expect(abs((result.bestValues["R1"] ?? 0) - 2_333.33) < 10)
+    }
+
+    @Test func optimiserMaximisesWithinBounds() throws {
+        let result = try Optimization.run(OptimizeRequest(
+            netlist: divider,
+            variables: [OptimizeVariable(designator: "R1", minimum: 100, maximum: 10_000)],
+            objective: .nodeVoltage("2"),
+            goal: .maximize,
+            gridDivisions: 20
+        ))
+        #expect(abs(result.bestObjective - 5 * 1000.0 / 1100.0) < 1e-2)
+        #expect(abs((result.bestValues["R1"] ?? 0) - 100) < 1)
+    }
+
+    @Test func optimiserRejectsUnknownVariable() {
+        #expect(throws: AnalysisError.self) {
+            try Optimization.run(OptimizeRequest(
+                netlist: divider,
+                variables: [OptimizeVariable(designator: "R9", minimum: 1, maximum: 2)],
+                objective: .nodeVoltage("2")
+            ))
+        }
+    }
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {
