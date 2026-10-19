@@ -8,11 +8,11 @@
 
 import SwiftUI
 
-struct DocumentWorkspaceView: View {
+public struct DocumentWorkspaceView: View {
     @Binding var file: CircuitFileDocument
     @StateObject private var document: CircuitDocument
 
-    init(configuration: FileDocumentConfiguration<CircuitFileDocument>) {
+    public init(configuration: FileDocumentConfiguration<CircuitFileDocument>) {
         _file = configuration.$document
 
         let document = CircuitDocument()
@@ -27,7 +27,7 @@ struct DocumentWorkspaceView: View {
         _document = StateObject(wrappedValue: document)
     }
 
-    var body: some View {
+    public var body: some View {
         CircuitSimulatorView(document: document, onSave: persist)
             .onChange(of: document.contentVersion) { _, _ in persist() }
             .onChange(of: document.name) { _, _ in persist() }

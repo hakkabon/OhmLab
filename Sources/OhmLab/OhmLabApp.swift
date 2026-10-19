@@ -8,6 +8,7 @@
 // in an executable target. We use @main here.
 
 import SwiftUI
+import OhmLabCore
 
 @main
 struct OhmLabApp: App {

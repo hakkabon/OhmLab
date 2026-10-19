@@ -13,18 +13,18 @@ extension UTType {
     public static let ohmlabCircuit = UTType(filenameExtension: CircuitFileStore.fileExtension) ?? .json
 }
 
-struct CircuitFileDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.ohmlabCircuit, .json] }
-    static var writableContentTypes: [UTType] { [.ohmlabCircuit] }
+public struct CircuitFileDocument: FileDocument {
+    public static var readableContentTypes: [UTType] { [.ohmlabCircuit, .json] }
+    public static var writableContentTypes: [UTType] { [.ohmlabCircuit] }
 
-    var file: CircuitFile
+    public var file: CircuitFile
 
-    init(file: CircuitFile) {
+    public init(file: CircuitFile) {
         self.file = file
     }
 
     /// A blank document: an empty schematic with the default analysis settings.
-    init() {
+    public init() {
         self.file = CircuitFile(
             name: "Untitled Circuit",
             schematic: SchematicSnapshot(),
@@ -32,12 +32,12 @@ struct CircuitFileDocument: FileDocument {
         )
     }
 
-    init(configuration: ReadConfiguration) throws {
+    public init(configuration: ReadConfiguration) throws {
         let data = configuration.file.regularFileContents ?? Data()
         file = try CircuitFileStore.decode(data)
     }
 
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+    public func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: try CircuitFileStore.encode(file))
     }
 }
