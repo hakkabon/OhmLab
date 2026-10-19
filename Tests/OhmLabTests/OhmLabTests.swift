@@ -3350,6 +3350,127 @@ private struct TaggerOnlyPlugin: CircuitPlugin {
     }
 }
 
+// MARK: - Project bundles (Phase 16)
+
+private func makeTempDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ohmlab-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private var sampleNetlistDocument: CircuitFile {
+    var file = CircuitFile(name: "Main", schematic: SchematicSnapshot(), analysis: .default)
+    file.netlistText = "V1 1 0 DC 5\nR1 1 0 1k\n"
+    file.usesSchematic = false
+    return file
+}
+
+@Suite struct ProjectBundleTests {
+    @Test func zipRoundTripsStoredEntries() throws {
+        let entries = [
+            ZipArchive.Entry(name: "project.json", data: Data("{}".utf8)),
+            ZipArchive.Entry(name: "Sheets/main.ohmlab", data: Data([0, 1, 2, 255]))
+        ]
+        let archive = ZipArchive.create(entries)
+        #expect(try ZipArchive.read(archive) == entries)
+    }
+
+    @Test func zipRejectsGarbage() {
+        #expect(throws: ZipArchiveError.self) { try ZipArchive.read(Data([1, 2, 3])) }
+    }
+
+    @Test func bundleRoundTripsThroughFolder() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try ProjectBundleStore.write(ProjectBundle.single(sampleNetlistDocument), to: directory)
+        let read = try ProjectBundleStore.read(from: directory)
+        #expect(read.manifest.name == "Main")
+        #expect(read.activeDocument?.netlistText == sampleNetlistDocument.netlistText)
+        #expect(read.isWellFormed)
+    }
+
+    @Test func bundleRoundTripsThroughArchive() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archiveURL = directory.appendingPathComponent("proj.\(ProjectBundleStore.archiveExtension)")
+
+        let bundle = ProjectBundle.single(sampleNetlistDocument)
+        try ProjectBundleStore.archive(bundle, to: archiveURL)
+        let read = try ProjectBundleStore.unarchive(from: archiveURL)
+        #expect(read.manifest.name == bundle.manifest.name)
+        #expect(read.activeDocument?.netlistText == sampleNetlistDocument.netlistText)
+    }
+
+    @Test func missingManifestIsReported() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(throws: ProjectBundleError.self) { try ProjectBundleStore.read(from: directory) }
+    }
+
+    @Test func kiCadProjectResolvesTopSchematic() {
+        #expect(
+            KiCadProjectInterchange.topSchematic(for: URL(fileURLWithPath: "/tmp/Demo.kicad_pro"))?
+                .lastPathComponent == "Demo.kicad_sch"
+        )
+        #expect(
+            KiCadProjectInterchange.topSchematic(for: URL(fileURLWithPath: "/tmp/Demo.kicad_sch"))?
+                .lastPathComponent == "Demo.kicad_sch"
+        )
+        #expect(KiCadProjectInterchange.topSchematic(for: URL(fileURLWithPath: "/tmp/Demo.cir")) == nil)
+    }
+
+    @Test func kiCadImportMapsNetlistToSingleSheetBundle() {
+        let bundle = KiCadProjectInterchange.makeImportedBundle(
+            name: "Demo",
+            netlist: "V1 1 0 DC 5\nR1 1 0 1k\n",
+            sourceURL: URL(fileURLWithPath: "/tmp/Demo.kicad_pro"),
+            topSchematic: URL(fileURLWithPath: "/tmp/Demo.kicad_sch"),
+            now: Date(timeIntervalSince1970: 0)
+        )
+        #expect(bundle.manifest.kicadSource?.topSchematic == "/tmp/Demo.kicad_sch")
+        #expect(bundle.activeDocument?.usesSchematic == false)
+        #expect(bundle.activeDocument?.netlistText?.contains("R1") == true)
+    }
+
+    @Test func kiCadExportWritesBundleAndNetlists() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try KiCadProjectInterchange.exportProject(ProjectBundle.single(sampleNetlistDocument), to: directory)
+        let fileManager = FileManager.default
+        #expect(fileManager.fileExists(
+            atPath: directory.appendingPathComponent(ProjectBundleStore.manifestFileName).path
+        ))
+        let top = try String(contentsOf: directory.appendingPathComponent("top.cir"), encoding: .utf8)
+        #expect(top.contains("R1"))
+    }
+
+    @Test func exportProjectsSchematicModeDocument() throws {
+        let source = SymbolInstance(
+            descriptorId: "voltage-source", refDes: "V1", position: GridPoint(0, 0),
+            parameters: ["dcVoltage": 5, "acMagnitude": 1, "acPhaseDegrees": 0]
+        )
+        let resistor = SymbolInstance(
+            descriptorId: "resistor", refDes: "R1", position: GridPoint(4, 0),
+            parameters: ["resistance": 1_000]
+        )
+        let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+        var file = CircuitFile(
+            name: "Schematic",
+            schematic: SchematicSnapshot(symbols: [source, resistor, ground]),
+            analysis: .default
+        )
+        file.usesSchematic = true
+        file.netlistText = "stale-text-should-be-ignored"
+
+        let netlist = try KiCadProjectInterchange.netlist(for: file)
+        #expect(!netlist.contains("stale-text-should-be-ignored"))
+        #expect(netlist.contains("R1"))
+    }
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

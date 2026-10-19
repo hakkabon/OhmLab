@@ -67,6 +67,8 @@ Simulation is reached through `SimulationEngine`, a façade that dispatches to a
 *   **Pluggable Engine:** Simulation goes through a façade (`SimulationEngine`) over a registered backend; the native Swift MNA engine is the default and an optional Rust `ohm-core` can be swapped in at runtime (see **Engine Façade & the Optional Rust Core**).
 *   **Headless / Batch:** `ohm` runs a `.ohmlab` document or a netlist file (or stdin) without the UI and writes CSV or JSON — see **Headless / Batch Mode**.
 *   **Plugin API:** Extension points for custom components, netlist processors, result post-processors, and output exporters — see **Plugin API**.
+*   **Projects & Collaboration:** Multi-sheet work lives in a `.ohmlabproj` folder bundle; projects import from/export to KiCad, and a provider-agnostic sync engine keeps a working copy in step with a remote folder (including iCloud) — see **Projects & Collaboration**.
+*   **Optimisation & Worst-Case:** Tolerance-driven Monte Carlo with yield statistics, worst-case corner sweeps, and a parameter optimiser over DC/AC/transient objectives — see **Optimisation & Worst-Case**.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
 
 ## Supported elements (passive)
@@ -130,6 +132,15 @@ Interchange is netlist-level: OhmLab does not parse `.kicad_sch` itself, it borr
 
 Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements OhmLab does not support, so it is reported as an unsupported element rather than simulated.
 
+## Projects & Collaboration
+
+Multi-sheet work is stored as a **project bundle** (`.ohmlabproj`): a folder holding a `project.json` manifest and one `.ohmlab` document per sheet, keyed by a stable sheet id. `ProjectBundleStore` reads/writes the folder and packs/unpacks a single-file `.ohmlabzip` (a minimal stored ZIP, `ZipArchive`) for transport. The manifest also records referenced model libraries and, after a KiCad import, the original source paths.
+
+### KiCad project interop
+
+*   **Import** — `KiCadProjectInterchange.importProject(at:)` accepts a `.kicad_pro` (or its top `.kicad_sch`), locates the top schematic, and runs `kicad-cli sch export netlist --format spice`. `kicad-cli` flattens the KiCad sheet hierarchy, so the result is a single, engine-ready netlist stored as the project's sheet; the source paths and an import timestamp are recorded in the manifest.
+*   **Export** — `KiCadProjectInterchange.exportProject(_:to:)` writes a valid `.ohmlabproj` and, alongside it, one SPICE netlist per sheet under `netlists/` plus the active sheet as `top.cir`, so KiCad and ngspice can consume the project directly.
+
 ## Project Structure
 
 ```text
@@ -160,8 +171,10 @@ Sources/
 │   ├── Persistence/              # Versioned .ohmlab file format + lifecycle
 │   │   ├── CircuitFile.swift         # File format, migration, crash-recovery slots
 │   │   ├── CircuitFileDocument.swift # FileDocument for the DocumentGroup scene
-│   │   └── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
+│   │   ├── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
+│   │   └── ZipArchive.swift          # Minimal stored ZIP for .ohmlabzip bundles
 │   ├── Interop/                  # KiCad/ngspice interchange (kicad-cli bridge)
+│   ├── Project/                  # .ohmlabproj bundle model + store (+ a .ohmlabzip archive)
 │   ├── Batch/                    # Headless runner: BatchRunner, JSON/CSV output
 │   ├── Plugins/                  # CircuitPlugin API, JSON manifests, samples
 │   └── Circuit/                  # Simulator UI and document model
