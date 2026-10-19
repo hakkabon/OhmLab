@@ -1,0 +1,19 @@
+* OhmLab example — Subcircuit attenuator
+*
+* A 2:1 attenuator built from a reusable .subckt and instantiated with an X
+* line. Exercises subcircuit expansion (X1 -> R1/R2) and the resulting node
+* mapping: v(2) = 4 V * 1k/(1k+1k) = 2 V.
+*
+* Run:  ohm Examples/06-subcircuit-attenuator.cir
+
+* @analysis dc
+* @check dc v(1) = 4
+* @check dc v(2) = 2
+
+V1 1 0 DC 4
+X1 1 2 atten
+
+.subckt atten in out
+R1 in out 1k
+R2 out 0 1k
+.ends

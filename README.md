@@ -191,9 +191,11 @@ Sources/
 │   └── Circuit/                  # Simulator UI and document model
 ├── OhmLab/                       # SwiftUI app shell (OhmLabApp.swift — the @main scene)
 ├── OhmLabCLI/                    # `ohm` headless/batch command-line front end
-└── CCOhmCore/                    # systemLibrary module map + header for the Rust core
+├── CCOhmCore/                    # systemLibrary module map + header for the Rust core
+Examples/                         # Self-checking example circuits (@check directives) + a bundle
 rust/ohm-core/                    # Optional Rust engine crate (C ABI + cargo tests)
 scripts/build-rust-core.sh        # Builds/stages libohm_core.a for the optional core
+scripts/health-check.sh           # One-command health check (build, tests, examples, CLI)
 ```
 
 The result plots live under `OhmLabCore/Shared/Plot/`: `PlotModel.swift` (pure scales, viewport, transforms, ticks), `WaveformPlotView.swift` (the interactive canvas with cursors/pan/zoom), `WaveformPlotPanel.swift` (titled, exportable panel), and `PlotExport.swift` (PNG/CSV export documents). App wiring is `OhmLabApp.swift` (the `DocumentGroup` scene) and `OhmLabCore/Shared/DocumentWorkspaceView.swift` (bridges the `FileDocument` to the in-memory `CircuitDocument`). The `OhmLab` app target is a thin shell over `OhmLabCore`.
@@ -215,6 +217,26 @@ swift build
 .build/debug/ohm amp.ohmlab -f csv -o amp.csv
 cat filter.cir | .build/debug/ohm - --ac dec 20 1 1meg
 ```
+
+To check the health of the whole codebase (build, tests, examples, Rust core, CLI), run:
+
+```bash
+scripts/health-check.sh
+```
+
+## Examples & health check
+
+`Examples/` ships small, self-checking circuits — a voltage divider, an RC low-pass, a transient ramp, a Norton source, a diode drop, and a subcircuit attenuator — plus a `.ohmlabproj` project bundle. Each netlist carries `@analysis` / `@check` directives in its comment header that record its expected result:
+
+```
+* @analysis dc
+* @check dc v(2) = 5
+* @check ac v(2) mag_db @ 1000 = -1.44507
+```
+
+`swift test` proves every example via `ExampleCircuitsTests`, so the examples double as end-to-end regression tests of the parser, engine, and bundle format. See `Examples/README.md` for the full list and the directive format.
+
+`scripts/health-check.sh` runs the whole thing in one command: `swift build`, `swift test`, `cargo test` (when cargo is present), and `ohm` smoke tests of every example, the project bundle, the analyses, KiCad export, and the sync engine. It exits non-zero if anything fails, so it is safe to wire into CI.
 
 ## Workflows
 

@@ -1,0 +1,19 @@
+* OhmLab example — Current ramp into a capacitor
+*
+* Exercises the transient solver with an exact, integration-free result: a
+* switched 1 mA into a 1 uF capacitor gives a linear ramp v(t) = I*t/C, so
+* v(1) = 1000 * t volts. Backward Euler reproduces a straight line exactly.
+* The 1 GOhm resistor only gives the node a DC path (it bleeds < 1e-6 V over
+* the run); the source is zero at the operating point.
+*
+* Run:  ohm Examples/03-rc-ramp.cir
+
+* @analysis tran
+* @check tran v(1) @ 500u = 0.5 rel=1e-2
+* @check tran v(1) @ 1m   = 1   rel=1e-2
+
+I1 0 1 PULSE(0 1m 1u 0 0 1 2)
+Rbleed 1 0 1G
+C1 1 0 1u
+
+.tran 100u 1m

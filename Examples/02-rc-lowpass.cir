@@ -1,0 +1,19 @@
+* OhmLab example — RC low-pass filter
+*
+* Exercises the AC sweep. The corner is fc = 1/(2*pi*R*C) = 1591.549 Hz,
+* and the linear sweep samples 1000 Hz and 2000 Hz exactly, where the
+* transfer function H(f) = 1/(1 + j*f/fc) has closed forms.
+*
+* Run:  ohm Examples/02-rc-lowpass.cir
+
+* @analysis ac
+* @check ac v(2) mag_db    @ 1000 = -1.44507
+* @check ac v(2) phase_deg @ 1000 = -32.1419
+* @check ac v(2) mag_db    @ 2000 = -4.11474
+* @check ac v(2) phase_deg @ 2000 = -51.4881
+
+V1 1 0 AC 1
+R1 1 2 1k
+C1 2 0 100n
+
+.ac lin 2 1000 2000

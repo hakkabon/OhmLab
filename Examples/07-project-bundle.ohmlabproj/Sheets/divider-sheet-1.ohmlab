@@ -1,0 +1,41 @@
+{
+  "analysis" : {
+    "acPointsPerDecade" : 20,
+    "acStartFrequency" : 1,
+    "acStopFrequency" : 1000000,
+    "acSweepType" : "dec",
+    "dcSweepSource" : "",
+    "dcSweepStart" : 0,
+    "dcSweepStep" : 1,
+    "dcSweepStop" : 5,
+    "outputNetNames" : [
+
+    ],
+    "runAC" : true,
+    "runDC" : true,
+    "runDCSweep" : false,
+    "runTransient" : false,
+    "tranStart" : 0,
+    "tranStep" : 0.0001,
+    "tranStop" : 0.01
+  },
+  "name" : "Divider",
+  "netlistText" : "V1 1 0 DC 10\nR1 1 2 1k\nR2 2 0 1k\n",
+  "schemaVersion" : 3,
+  "schematic" : {
+    "netLabels" : [
+
+    ],
+    "schemaVersion" : 2,
+    "sheets" : [
+
+    ],
+    "symbols" : [
+
+    ],
+    "wires" : [
+
+    ]
+  },
+  "usesSchematic" : false
+}

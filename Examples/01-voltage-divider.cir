@@ -1,0 +1,16 @@
+* OhmLab example — Voltage divider
+*
+* The simplest possible sanity check. V1 puts 10 V across two equal
+* resistors, so the midpoint sits at half the supply and the loop current
+* is 10 V / 2 kOhm = 5 mA.
+*
+* Run:  ohm Examples/01-voltage-divider.cir
+
+* @analysis dc
+* @check dc v(1) = 10
+* @check dc v(2) = 5
+* @check dc i(R1) = 5m
+
+V1 1 0 DC 10
+R1 1 2 1k
+R2 2 0 1k

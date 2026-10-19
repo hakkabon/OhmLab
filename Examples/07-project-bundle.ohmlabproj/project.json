@@ -1,0 +1,19 @@
+{
+  "activeSheetID" : "sheet-1",
+  "metadata" : {
+    "author" : "OhmLab",
+    "description" : "Single-sheet project bundle wrapping the voltage divider."
+  },
+  "modelLibraries" : [
+
+  ],
+  "name" : "Divider Project",
+  "schemaVersion" : 1,
+  "sheets" : [
+    {
+      "fileName" : "Sheets/divider-sheet-1.ohmlab",
+      "id" : "sheet-1",
+      "name" : "Divider"
+    }
+  ]
+}

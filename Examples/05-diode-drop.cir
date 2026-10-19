@@ -1,0 +1,16 @@
+* OhmLab example — Diode drop (nonlinear DC)
+*
+* Forces 1 mA through a diode and reads the forward drop, which the Shockley
+* equation gives as v = n*Vt*ln(I/Is + 1) = 0.025852 * ln(1e-3/1e-14) ~= 0.655 V
+* at 27 C. Being logarithmic, the result is robust to solver tolerance and
+* exercises the Newton-Raphson path.
+*
+* Run:  ohm Examples/05-diode-drop.cir
+
+* @analysis dc
+* @check dc v(1) = 0.6548 rel=2e-2
+
+I1 0 1 DC 1m
+D1 1 0 DMOD
+
+.model DMOD D(IS=1e-14 N=1)

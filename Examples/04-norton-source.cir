@@ -1,0 +1,16 @@
+* OhmLab example — Norton source (current source into parallel resistors)
+*
+* A 2 mA current source drives two 1 kOhm resistors in parallel (500 Ohm),
+* so v(1) = 1 V and each resistor carries 1 mA. Exercises current sources
+* and the MNA current formulation.
+*
+* Run:  ohm Examples/04-norton-source.cir
+
+* @analysis dc
+* @check dc v(1) = 1
+* @check dc i(R1) = 1m
+* @check dc i(R2) = 1m
+
+I1 0 1 DC 2m
+R1 1 0 1k
+R2 1 0 1k
