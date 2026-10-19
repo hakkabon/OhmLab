@@ -44,11 +44,25 @@ ENGINE:
   -h, --help               Show this help.
   -V, --version            Show the version.
 
+PROJECTS & ANALYSES:
+  ohm project info <bundle>                 Show a .ohmlabproj manifest.
+  ohm project pack <bundle> -o <zip>        Pack a bundle into .ohmlabzip.
+  ohm project unpack <zip> <dir>            Unpack an archive.
+  ohm kicad import <file> -o <bundle>       Import a KiCad project.
+  ohm kicad export <bundle> <dir>           Export a bundle + netlists.
+  ohm sync <localDir> <remoteDir>           Two-way folder sync.
+  ohm monte-carlo <input> --probe v(out)    Tolerance Monte Carlo.
+  ohm corner <input> --probe v(out)         Worst-case corner sweep.
+  ohm optimize <input> --var R1=1k:10k --probe v(out)
+  (run `ohm <command> --help` for that command's options)
+
 EXAMPLES:
   ohm divider.cir --analysis dc --format json
   ohm amp.ohmlab -f csv -o amp.csv
   cat filter.cir | ohm - --ac dec 20 1 1meg
   ohm --netlist "V1 1 0 5\\nR1 1 0 1k" --engine rust
+  ohm monte-carlo amp.cir --default-tol 5% --samples 500 --probe v(out)
+  ohm optimize amp.cir --var R2=100:10k --probe v(out) --goal target=2.5
 """
 
 // MARK: - Configuration
@@ -331,8 +345,13 @@ private func execute(_ arguments: [String]) throws -> Int {
     return 0
 }
 
+let cliArguments = Array(CommandLine.arguments.dropFirst())
+if let command = cliArguments.first, Subcommand.isCommand(command) {
+    exit(Subcommand.run(cliArguments))
+}
+
 do {
-    exit(Int32(try execute(Array(CommandLine.arguments.dropFirst()))))
+    exit(Int32(try execute(cliArguments)))
 } catch let error as CLIError {
     FileHandle.standardError.write(Data("ohm: \(error.localizedDescription)\n".utf8))
     if case .usage = error {

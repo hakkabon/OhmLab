@@ -242,6 +242,19 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 
 `BatchRunner` (in `OhmLabCore`) is the testable core of this: it is pure (no file I/O beyond what it is handed), and the CLI adds argument parsing, file reading, and output writing on top.
 
+### Subcommands
+
+`ohm` also exposes the project, collaboration, and analysis APIs as subcommands (any of these as the first argument routes to the subcommand; run `ohm <command> --help` for its options):
+
+*   `ohm project info|pack|unpack` — inspect a `.ohmlabproj` manifest, or pack/unpack a `.ohmlabzip`.
+*   `ohm kicad import <file> -o <bundle>` / `ohm kicad export <bundle> <dir>` — project-level KiCad interchange.
+*   `ohm sync <localDir> <remoteDir>` — two-way folder sync (`ProjectSync`), persisting the state file in the local folder.
+*   `ohm monte-carlo <input> --probe v(out) [--tol R1=5%,normal] [--default-tol 5%] [--samples N] [--seed N] [--temp T] [--temp-tol D] [--limit v(out)=lo:hi] [-f text|json]`.
+*   `ohm corner <input> --probe v(out) [--tol …] [--temp T --temp-tol D] [-f text|json]`.
+*   `ohm optimize <input> --var R1=1k:10k --probe v(out) [--goal max|min|target=V] [--grid N] [-f text|json]`.
+
+The analysis inputs accept the same documents/netlists as the flat mode, including a `.ohmlab` file (which supplies its saved settings) or a `.ohmlabproj` bundle's active sheet.
+
 ## Plugin API
 
 Plugins extend the core without forking it. Because dynamic loading is unavailable on iPadOS, plugins are registered in process — compiled into the app/CLI, or declared as data in a JSON manifest. A `CircuitPlugin` installs its extensions into `PluginManager.shared`:
