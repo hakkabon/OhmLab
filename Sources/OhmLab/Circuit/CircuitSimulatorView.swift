@@ -173,6 +173,11 @@ struct CircuitSimulatorView: View {
                 HStack {
                     Text("SPICE Netlist")
                     Spacer()
+                    Button("Draw Schematic") {
+                        document.importSchematic(document.netlistText, source: document.importSource)
+                    }
+                    .disabled(document.netlistText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Auto-layout this netlist as an editable schematic.")
                     Button("Paste") { pasteNetlist() }
                     Button("Clear") { document.netlistText = "" }
                     Button("Copy") { copyToPasteboard(document.netlistText) }

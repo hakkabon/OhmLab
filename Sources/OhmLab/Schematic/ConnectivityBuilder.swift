@@ -41,10 +41,14 @@ public enum ConnectivityBuilder {
     public static func build(
         symbols: [SymbolInstance],
         wires: [WireSegment],
-        labels: [NetLabel] = []
+        labels: [NetLabel] = [],
+        catalog: SubcircuitCatalog? = nil
     ) -> [Net] {
         var unionFind = UnionFind()
-        let segments = wires.flatMap { wire in
+        // Bus wires bundle members; they never short their bits together, so
+        // they carry no conduction. Members are bound by name below.
+        let conductionWires = wires.filter { !$0.isBus }
+        let segments = conductionWires.flatMap { wire in
             zip(wire.points, wire.points.dropFirst()).map { ($0, $1) }
         }
 
@@ -52,24 +56,41 @@ public enum ConnectivityBuilder {
             unionFind.union(start, end)
         }
 
-        let wireVertices = Set(wires.flatMap(\.points))
+        let wireVertices = Set(conductionWires.flatMap(\.points))
         for vertex in wireVertices {
             for (start, end) in segments where liesOnSegment(vertex, start, end) {
                 unionFind.union(vertex, start)
             }
         }
 
+        // Bus declarations (`DATA[7:0]`) are not electrical nodes; drop them.
+        let activeLabels = labels.filter { !$0.isBusDeclaration }
+
         // Labels connect to wires they sit on, exactly like a wire vertex.
-        for label in labels {
+        for label in activeLabels {
             for (start, end) in segments where liesOnSegment(label.position, start, end) {
                 unionFind.union(label.position, start)
+            }
+        }
+
+        // Bit-select labels (`DATA[3]`) name a member net. Members are global by
+        // name (like SPICE), so merge every same-named tap.
+        var rootByBitName: [String: GridPoint] = [:]
+        for label in activeLabels where label.isBitSelect {
+            let key = label.name.uppercased()
+            let root = unionFind.find(label.position)
+            if let existing = rootByBitName[key] {
+                unionFind.union(existing, root)
+            } else {
+                rootByBitName[key] = root
             }
         }
 
         let symbolsByID = Dictionary(uniqueKeysWithValues: symbols.map { ($0.id, $0) })
         var pinLocations: [(ref: PinRef, location: GridPoint)] = []
         for symbol in symbols {
-            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else {
+            guard let descriptor = catalog?.descriptor(for: symbol)
+                ?? ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else {
                 continue
             }
 
@@ -91,7 +112,7 @@ public enum ConnectivityBuilder {
         // Attach a label name to each root, deterministically choosing the
         // lexicographically smallest name when several labels share a net.
         var labelNameByRoot: [GridPoint: String] = [:]
-        for label in labels {
+        for label in activeLabels {
             let root = unionFind.find(label.position)
             if let existing = labelNameByRoot[root] {
                 labelNameByRoot[root] = min(existing, label.name)
@@ -118,7 +139,7 @@ public enum ConnectivityBuilder {
             nextID += 1
         }
         var orderedRoots = sortedGroups.map(\.root)
-        for label in labels.sorted(by: { labelSortKey($0) < labelSortKey($1) }) {
+        for label in activeLabels.sorted(by: { labelSortKey($0) < labelSortKey($1) }) {
             let root = unionFind.find(label.position)
             if netIDs[root] == nil {
                 netIDs[root] = nextID

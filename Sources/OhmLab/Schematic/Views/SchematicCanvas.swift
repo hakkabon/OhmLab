@@ -22,10 +22,20 @@ public class SchematicCanvas: PlatformView {
             redraw()
         }
     }
+    public var busToolEnabled = false {
+        didSet {
+            if !busToolEnabled { wireStart = nil }
+            redraw()
+        }
+    }
     public var labelToolEnabled = false {
         didSet { redraw() }
     }
     public var pendingLabelName = "NET" {
+        didSet { redraw() }
+    }
+    /// When set, the next tap places an instance of this sheet.
+    public var pendingSubcircuitSheetId: UUID? {
         didSet { redraw() }
     }
 
@@ -59,6 +69,9 @@ public class SchematicCanvas: PlatformView {
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:))))
         addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:))))
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        addGestureRecognizer(doubleTap)
         #endif
     }
 
@@ -97,8 +110,6 @@ public class SchematicCanvas: PlatformView {
         }
 
         let wireColor = PlatformColor.black.cgColor
-        context.setStrokeColor(wireColor)
-        context.setLineWidth(2 / zoom)
         for wire in document.wires {
             guard let first = wire.points.first, wire.points.count > 1 else { continue }
             let path = CGMutablePath()
@@ -106,17 +117,19 @@ public class SchematicCanvas: PlatformView {
             for point in wire.points.dropFirst() {
                 path.addLine(to: point.toCGPoint())
             }
+            context.setStrokeColor(wire.isBus ? PlatformColor.systemBlue.cgColor : wireColor)
+            context.setLineWidth((wire.isBus ? 5 : 2) / zoom)
             context.addPath(path)
             context.strokePath()
             if wire.id == document.selectedWireID {
                 context.setStrokeColor(PlatformColor.systemGreen.cgColor)
-                context.setLineWidth(4 / zoom)
+                context.setLineWidth((wire.isBus ? 7 : 4) / zoom)
                 context.addPath(path)
                 context.strokePath()
-                context.setStrokeColor(wireColor)
-                context.setLineWidth(2 / zoom)
             }
         }
+        context.setStrokeColor(wireColor)
+        context.setLineWidth(2 / zoom)
 
         for point in junctionPoints(in: document) {
             let center = point.toCGPoint()
@@ -124,10 +137,9 @@ public class SchematicCanvas: PlatformView {
             context.fillEllipse(in: CGRect(x: center.x - 3.5, y: center.y - 3.5, width: 7, height: 7))
         }
 
+        let catalog = document.subcircuitCatalog
         for symbol in document.symbols {
-            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else {
-                continue
-            }
+            guard let descriptor = catalog.descriptor(for: symbol) else { continue }
             drawSymbol(symbol, descriptor: descriptor, in: context, selected: symbol.id == document.selectedSymbolID)
         }
 
@@ -166,11 +178,16 @@ public class SchematicCanvas: PlatformView {
         context.setStrokeColor(PlatformColor.systemBlue.cgColor)
         context.setLineWidth(2 / zoom)
         if selected {
-            context.stroke(CGRect(x: -34, y: -19, width: 68, height: 38))
+            context.stroke(subcircuitSelectionRect(for: descriptor))
         }
 
         let path = CGMutablePath()
         switch descriptor.symbol {
+        case .subcircuit:
+            let halfWidth = SubcircuitInstance.halfWidth
+            let rows = max(descriptor.pins.count, 1)
+            let height = CGFloat(rows + 1) * SubcircuitInstance.pinSpacing
+            path.addRect(CGRect(x: -halfWidth, y: -height / 2, width: halfWidth * 2, height: height))
         case .resistor:
             path.move(to: CGPoint(x: -40, y: 0))
             path.addLine(to: CGPoint(x: -20, y: 0))
@@ -342,11 +359,26 @@ public class SchematicCanvas: PlatformView {
             context.fillEllipse(in: CGRect(x: scaled.x - 2.5, y: scaled.y - 2.5, width: 5, height: 5))
         }
 
-        drawLabel(symbol.refDes, at: CGPoint(x: -18, y: -27))
-        if let label = valueLabel(for: symbol, descriptor: descriptor) {
-            drawLabel(label, at: CGPoint(x: -24, y: 16))
+        if descriptor.symbol == .subcircuit {
+            let height = CGFloat(max(descriptor.pins.count, 1) + 1) * SubcircuitInstance.pinSpacing
+            drawLabel(symbol.refDes, at: CGPoint(x: -18, y: -height / 2 - 18))
+            drawLabel(descriptor.displayName, at: CGPoint(x: -SubcircuitInstance.halfWidth + 6, y: -8))
+        } else {
+            drawLabel(symbol.refDes, at: CGPoint(x: -18, y: -27))
+            if let label = valueLabel(for: symbol, descriptor: descriptor) {
+                drawLabel(label, at: CGPoint(x: -24, y: 16))
+            }
         }
         context.restoreGState()
+    }
+
+    private func subcircuitSelectionRect(for descriptor: ComponentDescriptor) -> CGRect {
+        guard descriptor.symbol == .subcircuit else {
+            return CGRect(x: -34, y: -19, width: 68, height: 38)
+        }
+        let rows = max(descriptor.pins.count, 1)
+        let height = CGFloat(rows + 1) * SubcircuitInstance.pinSpacing
+        return CGRect(x: -SubcircuitInstance.halfWidth, y: -height / 2, width: SubcircuitInstance.halfWidth * 2, height: height)
     }
 
     private func drawNetLabel(_ label: NetLabel, selected: Bool) {
@@ -427,7 +459,7 @@ public class SchematicCanvas: PlatformView {
         case .njfTransistor, .pjfTransistor:
             let threshold = symbol.parameters["thresholdVoltage"] ?? 0
             return String(format: "Vgs(off)=%.3g V", threshold)
-        case .ground:
+        case .ground, .subcircuit:
             return nil
         }
     }
@@ -442,7 +474,8 @@ public class SchematicCanvas: PlatformView {
     // MARK: - Junctions
 
     private func junctionPoints(in document: SchematicDocument) -> [GridPoint] {
-        let segments = document.wires.flatMap(\.segments)
+        let conductionWires = document.wires.filter { !$0.isBus }
+        let segments = conductionWires.flatMap(\.segments)
         var rayCount: [GridPoint: Int] = [:]
         var isTerminal: Set<GridPoint> = []
 
@@ -450,7 +483,7 @@ public class SchematicCanvas: PlatformView {
             isTerminal.insert(start)
             isTerminal.insert(end)
         }
-        for wire in document.wires {
+        for wire in conductionWires {
             for vertex in wire.points {
                 for (start, end) in segments {
                     if vertex == start || vertex == end {
@@ -461,8 +494,9 @@ public class SchematicCanvas: PlatformView {
                 }
             }
         }
+        let catalog = document.subcircuitCatalog
         for symbol in document.symbols {
-            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else { continue }
+            guard let descriptor = catalog.descriptor(for: symbol) else { continue }
             for entry in PinGeometry.pinLocations(for: symbol, descriptor: descriptor) {
                 rayCount[entry.location, default: 0] += 1
                 isTerminal.insert(entry.location)
@@ -484,8 +518,19 @@ public class SchematicCanvas: PlatformView {
     private func symbolHit(at screenPoint: CGPoint) -> SymbolInstance? {
         guard let document else { return nil }
         let world = CGPoint(x: (screenPoint.x - pan.x) / zoom, y: (screenPoint.y - pan.y) / zoom)
+        let catalog = document.subcircuitCatalog
         return document.symbols.reversed().first { symbol in
             let origin = symbol.position.toCGPoint()
+            if symbol.isSubcircuitInstance, let descriptor = catalog.descriptor(for: symbol) {
+                let height = CGFloat(max(descriptor.pins.count, 1) + 1) * SubcircuitInstance.pinSpacing
+                let rect = CGRect(
+                    x: origin.x - SubcircuitInstance.halfWidth - 8,
+                    y: origin.y - height / 2 - 8,
+                    width: SubcircuitInstance.halfWidth * 2 + 16,
+                    height: height + 16
+                )
+                return rect.contains(world)
+            }
             return hypot(origin.x - world.x, origin.y - world.y) <= 40
         }
     }
@@ -531,7 +576,8 @@ public class SchematicCanvas: PlatformView {
         movingSymbolID = nil
         moveCheckpointed = false
 
-        guard activeComponentDescriptorID == nil, !wireToolEnabled, !labelToolEnabled,
+        guard activeComponentDescriptorID == nil, pendingSubcircuitSheetId == nil,
+              !wireToolEnabled, !busToolEnabled, !labelToolEnabled,
               let symbol = symbolHit(at: screenPoint) else {
             return
         }
@@ -576,9 +622,11 @@ public class SchematicCanvas: PlatformView {
     private func handleCanvasTap(at point: CGPoint) {
         guard let document else { return }
         let gridPoint = screenToGrid(point)
-        if let descriptorID = activeComponentDescriptorID {
+        if let sheetId = pendingSubcircuitSheetId {
+            document.addSubcircuitInstance(sheetId: sheetId, at: gridPoint)
+        } else if let descriptorID = activeComponentDescriptorID {
             document.addComponent(descriptorId: descriptorID, at: gridPoint)
-        } else if wireToolEnabled {
+        } else if wireToolEnabled || busToolEnabled {
             if let start = wireStart {
                 if start != gridPoint {
                     let points: [GridPoint]
@@ -587,7 +635,7 @@ public class SchematicCanvas: PlatformView {
                     } else {
                         points = [start, GridPoint(gridPoint.x, start.y), gridPoint]
                     }
-                    document.addWire(WireSegment(points: points))
+                    document.addWire(WireSegment(points: points, isBus: busToolEnabled))
                 }
                 wireStart = nil
             } else {
@@ -622,7 +670,13 @@ public class SchematicCanvas: PlatformView {
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        beginInteraction(at: convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        if event.clickCount == 2, let symbol = symbolHit(at: point), let reference = symbol.sheetRef {
+            document?.enterSheet(id: reference)
+            redraw()
+            return
+        }
+        beginInteraction(at: point)
     }
 
     public override func mouseDragged(with event: NSEvent) {
@@ -708,6 +762,14 @@ public class SchematicCanvas: PlatformView {
 
     @objc private func handleTap(_ sender: UITapGestureRecognizer) {
         handleCanvasTap(at: sender.location(in: self))
+    }
+
+    @objc private func handleDoubleTap(_ sender: UITapGestureRecognizer) {
+        let location = sender.location(in: self)
+        if let symbol = symbolHit(at: location), let reference = symbol.sheetRef {
+            document?.enterSheet(id: reference)
+            redraw()
+        }
     }
     #endif
 }

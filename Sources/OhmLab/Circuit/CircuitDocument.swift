@@ -291,6 +291,23 @@ final class CircuitDocument: ObservableObject, Identifiable {
         refreshImportWarnings()
     }
 
+    /// Reconstructs a schematic (with subcircuit hierarchy) from SPICE text and
+    /// switches to schematic mode. The original netlist is retained so nothing
+    /// is lost if the drawing does not round-trip perfectly.
+    @discardableResult
+    func importSchematic(_ text: String, source: ImportSource? = nil) -> [String] {
+        let result = SchematicImporter.importNetlist(text)
+        applyingImport = true
+        netlistText = text
+        importSource = source
+        applyingImport = false
+        schematic.replaceContents(with: result.snapshot)
+        usesSchematic = true
+        importWarnings = result.warnings
+        refreshDiagnostics()
+        return result.warnings
+    }
+
     /// The SPICE netlist to hand to another tool: the projection when editing a
     /// schematic, otherwise the netlist text as entered.
     func netlistForExport() throws -> String {

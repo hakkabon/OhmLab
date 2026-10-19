@@ -124,11 +124,7 @@ enum SimulationEngine {
         snapshot: SchematicSnapshot,
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
-        let circuit = try CircuitCompiler.compile(
-            symbols: snapshot.symbols,
-            wires: snapshot.wires,
-            labels: snapshot.netLabels
-        )
+        let circuit = try CircuitCompiler.compile(snapshot: snapshot)
         let axes = try sweepAxes(from: settings)
         return try solve(circuit: circuit, settings: settings, sweepAxes: axes)
     }

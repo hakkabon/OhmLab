@@ -35,7 +35,18 @@ public enum CircuitCompileError: LocalizedError {
 public enum CircuitCompiler {
     @MainActor
     public static func compile(_ document: SchematicDocument) throws -> LinearCircuit {
-        try compile(symbols: document.symbols, wires: document.wires, labels: document.netLabels)
+        try compile(snapshot: document.snapshot())
+    }
+
+    /// Compiles a snapshot. A flat snapshot goes straight through the direct
+    /// projector; a snapshot with child sheets is projected to a hierarchical
+    /// SPICE netlist and parsed, which reuses the engine's subcircuit expansion.
+    public static func compile(snapshot: SchematicSnapshot) throws -> LinearCircuit {
+        if snapshot.sheets.isEmpty {
+            return try compile(symbols: snapshot.symbols, wires: snapshot.wires, labels: snapshot.netLabels)
+        }
+        let text = try SpiceNetlistBuilder.build(snapshot: snapshot)
+        return try SpiceNetlistParser.parse(text).circuit
     }
 
     public static func compile(
@@ -144,6 +155,11 @@ public enum CircuitCompiler {
             switch descriptor.symbol {
             case .ground:
                 continue
+            case .subcircuit:
+                throw CircuitCompileError.unsupportedComponent(
+                    reference: symbol.refDes,
+                    descriptor: descriptor.displayName
+                )
             case .resistor:
                 let (a, b) = try twoTerminalNodes(for: symbol, descriptor: descriptor)
                 let resistance = try positive(

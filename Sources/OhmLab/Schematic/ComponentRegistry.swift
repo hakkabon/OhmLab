@@ -15,6 +15,8 @@ public enum ComponentSymbol: String, Sendable {
     case njfTransistor
     case pjfTransistor
     case ground
+    /// A subcircuit instance: a box whose pins are the referenced sheet's ports.
+    case subcircuit
 }
 
 public struct ComponentParameterDescriptor: Sendable {
@@ -239,6 +241,15 @@ public final class ComponentRegistry: Sendable {
                 displayName: "Ground",
                 symbol: .ground,
                 pins: [PinDescriptor(id: "1", name: "1", position: CGPoint(x: 0, y: -20))]
+            ),
+            // A subcircuit instance has no static pins; they are derived from the
+            // referenced sheet's ports at use sites (see SubcircuitCatalog).
+            SubcircuitInstance.descriptorId: ComponentDescriptor(
+                id: SubcircuitInstance.descriptorId,
+                prefix: "X",
+                displayName: "Subcircuit",
+                symbol: .subcircuit,
+                pins: []
             )
         ]
     }

@@ -2808,6 +2808,239 @@ private func toneSamples(
     #expect(logTicks.contains { abs($0.value - 100) < 1e-9 })
 }
 
+// MARK: - Phase 14: netlist import / hierarchy / buses
+
+@Test func schematicImporterDrawsFlatNetlist() throws {
+    let netlist = """
+    V1 1 0 DC 5
+    R1 1 2 1k
+    C1 2 0 1u
+    .end
+    """
+    let result = SchematicImporter.importNetlist(netlist)
+    let snapshot = result.snapshot
+
+    #expect(snapshot.sheets.isEmpty)
+    let references = Set(snapshot.symbols.map(\.refDes))
+    #expect(references.contains("V1"))
+    #expect(references.contains("R1"))
+    #expect(references.contains("C1"))
+    #expect(snapshot.symbols.contains { $0.descriptorId == "ground" })
+
+    let nets = ConnectivityBuilder.build(
+        symbols: snapshot.symbols,
+        wires: snapshot.wires,
+        labels: snapshot.netLabels
+    )
+    let v1 = try #require(snapshot.symbols.first { $0.refDes == "V1" })
+    let r1 = try #require(snapshot.symbols.first { $0.refDes == "R1" })
+    let v1Pos = try #require(net(containing: PinRef(symbolId: v1.id, pinId: "1"), in: nets))
+    let r1Pos = try #require(net(containing: PinRef(symbolId: r1.id, pinId: "1"), in: nets))
+    #expect(v1Pos.id == r1Pos.id)
+    #expect(v1Pos.name == "1")
+    #expect(nets.contains { $0.isGround })
+
+    let circuit = try CircuitCompiler.compile(snapshot: snapshot)
+    #expect(circuit.elements.count == 3)
+    #expect(circuit.elements.contains { $0.name == "V1" && $0.dcValue == 5 })
+}
+
+@Test func schematicImporterRebuildsSubcircuitHierarchy() throws {
+    let netlist = """
+    V1 in 0 DC 1
+    R1 in out 1k
+    X1 out 0 divider
+    .subckt divider a b
+    R2 a b 1k
+    .ends
+    .end
+    """
+    let result = SchematicImporter.importNetlist(netlist)
+    let snapshot = result.snapshot
+
+    #expect(snapshot.sheets.count == 1)
+    let sheet = try #require(snapshot.sheets.first)
+    #expect(sheet.name == "divider")
+    #expect(sheet.portNames == ["a", "b"])
+    #expect(sheet.symbols.contains { $0.refDes == "R2" })
+
+    let instance = try #require(snapshot.symbols.first { $0.isSubcircuitInstance })
+    #expect(instance.refDes == "X1")
+    #expect(instance.sheetRef == sheet.id)
+
+    // Compiling the imported hierarchy flattens through the SPICE parser.
+    let circuit = try CircuitCompiler.compile(snapshot: snapshot)
+    #expect(circuit.elements.count == 3)
+}
+
+@Test func schematicImporterPreservesNodeNamesOnRoundTrip() throws {
+    let netlist = """
+    V1 input 0 DC 1
+    R1 input output 1k
+    C1 output 0 1u
+    .end
+    """
+    let result = SchematicImporter.importNetlist(netlist)
+    let text = try SpiceNetlistBuilder.build(snapshot: result.snapshot)
+    let parsed = try SpiceNetlistParser.parse(text)
+
+    #expect(parsed.circuit.elements.count == 3)
+    let nodeNames = Set(parsed.circuit.nodeNames)
+    #expect(nodeNames.contains("input"))
+    #expect(nodeNames.contains("output"))
+    #expect(nodeNames.contains("0"))
+}
+
+@Test func schematicImporterWarnsAboutUnknownDevices() throws {
+    let netlist = """
+    V1 1 0 DC 1
+    R1 1 0 1k
+    K1 1 2 3
+    .end
+    """
+    let result = SchematicImporter.importNetlist(netlist)
+    #expect(result.warnings.contains { $0.contains("K1") })
+}
+
+@Test @MainActor func documentImportsNetlistAsSchematic() throws {
+    let document = CircuitDocument()
+    document.importSchematic("V1 1 0 DC 5\nR1 1 0 1k\n.end")
+
+    #expect(document.usesSchematic)
+    #expect(!document.schematic.symbols.isEmpty)
+    #expect(document.schematic.symbols.contains { $0.refDes == "R1" })
+}
+
+@Test func busNameParsesDeclarationsAndMembers() throws {
+    let declaration = try #require(BusName.parse("DATA[7:0]"))
+    #expect(declaration.isDeclaration)
+    #expect(!declaration.isBitSelect)
+    #expect(declaration.range == 0...7)
+    #expect(declaration.members == ["DATA[0]", "DATA[1]", "DATA[2]", "DATA[3]",
+                                    "DATA[4]", "DATA[5]", "DATA[6]", "DATA[7]"])
+
+    let member = try #require(BusName.parse("DATA[3]"))
+    #expect(member.isBitSelect)
+    #expect(member.bit == 3)
+    #expect(member.base == "DATA")
+
+    #expect(BusName.parse("OUT") == nil)
+}
+
+@Test func connectivityMergesBitSelectsAndDropsDeclarations() throws {
+    let resistorA = SymbolInstance(descriptorId: "resistor", refDes: "R1", position: GridPoint(0, 0))
+    let resistorB = SymbolInstance(descriptorId: "resistor", refDes: "R2", position: GridPoint(0, 10))
+    let wires = [
+        WireSegment(points: [GridPoint(-2, 0), GridPoint(-6, 0)]),
+        WireSegment(points: [GridPoint(-2, 10), GridPoint(-6, 10)]),
+        WireSegment(points: [GridPoint(20, 0), GridPoint(26, 0)], isBus: true),
+    ]
+    let labels = [
+        NetLabel(name: "DATA[3]", position: GridPoint(-6, 0)),
+        NetLabel(name: "DATA[3]", position: GridPoint(-6, 10)),
+        NetLabel(name: "DATA[7:0]", position: GridPoint(20, 0)),
+    ]
+    let nets = ConnectivityBuilder.build(symbols: [resistorA, resistorB], wires: wires, labels: labels)
+
+    #expect(!nets.contains { $0.name == "DATA[7:0]" })
+    let memberNet = try #require(nets.first { $0.name == "DATA[3]" })
+    #expect(memberNet.connectedPins.contains(PinRef(symbolId: resistorA.id, pinId: "1")))
+    #expect(memberNet.connectedPins.contains(PinRef(symbolId: resistorB.id, pinId: "1")))
+}
+
+@Test func importedHierarchyEmitsSubcircuitNetlist() throws {
+    let netlist = """
+    V1 in 0 DC 1
+    R1 in out 1k
+    X1 out 0 divider
+    .subckt divider a b
+    R2 a b 1k
+    .ends
+    .end
+    """
+    let result = SchematicImporter.importNetlist(netlist)
+    let text = try SpiceNetlistBuilder.build(snapshot: result.snapshot)
+    #expect(text.contains(".subckt divider"))
+    #expect(text.contains(".ends"))
+    #expect(text.contains("X1 "))
+}
+
+@Test func importedHierarchySimulatesThroughFlattening() throws {
+    let netlist = """
+    V1 in 0 DC 1
+    R1 in out 1k
+    X1 out 0 divider
+    .subckt divider a b
+    R2 a b 1k
+    .ends
+    .end
+    """
+    let result = SchematicImporter.importNetlist(netlist)
+    let simulation = try SimulationEngine.solve(snapshot: result.snapshot, settings: .default)
+    let out = try #require(simulation.dc?.nodes.first { $0.name == "out" }?.voltage)
+    #expect(abs(out - 0.5) < 1e-6)
+}
+
+@Test @MainActor func documentMultiSheetNavigationAndPorts() throws {
+    let document = SchematicDocument()
+    let child = document.addSheet(named: "AMP")
+    document.addSheetPort(sheetId: child.id, name: "IN")
+    document.addSheetPort(sheetId: child.id, name: "OUT", isInput: false)
+    _ = document.addSubcircuitInstance(sheetId: child.id, at: GridPoint(0, 0))
+
+    #expect(document.sheets.count == 2)
+    #expect(document.isAtRoot)
+    #expect(document.hierarchyPath.map(\.name) == ["Main"])
+
+    document.enterSheet(id: child.id)
+    #expect(document.activeSheet.name == "AMP")
+    #expect(document.hierarchyPath.map(\.name) == ["Main", "AMP"])
+    #expect(document.activeSheet.ports.map(\.name) == ["IN", "OUT"])
+    #expect(document.activeSheet.ports.first?.isInput == true)
+    #expect(document.activeSheet.ports.last?.isInput == false)
+
+    document.goToRoot()
+    #expect(document.isAtRoot)
+
+    let restored = SchematicDocument()
+    restored.replaceContents(with: document.snapshot())
+    #expect(restored.sheets.count == 2)
+    #expect(restored.symbols.contains { $0.isSubcircuitInstance })
+}
+
+@Test @MainActor func diagnosticsAnalyzeEverySheet() throws {
+    let document = SchematicDocument()
+    let child = document.addSheet(named: "STAGE")
+    document.enterSheet(id: child.id)
+    let resistor = try #require(document.addComponent(descriptorId: "resistor", at: GridPoint(0, 0)))
+    document.setParameter(id: resistor.id, key: "resistance", value: -1)
+    document.goToRoot()
+
+    let diagnostics = CircuitDiagnostics.analyze(document)
+
+    #expect(diagnostics.contains {
+        $0.message.hasPrefix("STAGE: ") && $0.message.localizedCaseInsensitiveContains("greater than zero")
+    })
+    // The ground/source checks are top-level only, so a child sheet with no
+    // ground must not be reported.
+    #expect(!diagnostics.contains {
+        $0.message.hasPrefix("STAGE: ") && $0.message.localizedCaseInsensitiveContains("no ground")
+    })
+}
+
+@Test @MainActor func diagnosticsReportUnboundSheetPort() throws {
+    let document = SchematicDocument()
+    let child = document.addSheet(named: "BLOCK")
+    document.addSheetPort(sheetId: child.id, name: "IN")
+    _ = document.addSubcircuitInstance(sheetId: child.id, at: GridPoint(0, 0))
+    _ = document.addComponent(descriptorId: "ground", at: GridPoint(-4, 2))
+
+    let diagnostics = CircuitDiagnostics.analyze(document)
+    #expect(diagnostics.contains {
+        $0.severity == .warning && $0.message.contains("Port IN of BLOCK")
+    })
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

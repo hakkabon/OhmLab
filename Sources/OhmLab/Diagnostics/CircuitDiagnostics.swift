@@ -44,14 +44,46 @@ public struct Diagnostic: Identifiable, Equatable, Sendable {
 }
 
 public enum CircuitDiagnostics {
+    /// Analyzes every sheet in the document, tagging diagnostics from child
+    /// sheets with the sheet name. Checks that only make sense at the top level
+    /// (ground reference, needing a source, grounded groups) are limited to the
+    /// root sheet, since a subcircuit body legitimately has none of them.
     @MainActor
     public static func analyze(_ document: SchematicDocument) -> [Diagnostic] {
-        analyze(
-            symbols: document.symbols,
-            wires: document.wires,
-            labels: document.netLabels,
-            nets: document.nets
-        )
+        let catalog = document.subcircuitCatalog
+        var combined: [Diagnostic] = []
+
+        for (index, sheet) in document.sheets.enumerated() {
+            let isRoot = index == 0
+            if sheet.symbols.isEmpty && sheet.wires.isEmpty && sheet.netLabels.isEmpty { continue }
+            let nets = ConnectivityBuilder.build(
+                symbols: sheet.symbols,
+                wires: sheet.wires,
+                labels: sheet.netLabels,
+                catalog: catalog
+            )
+            var sheetDiagnostics = analyze(
+                symbols: sheet.symbols,
+                wires: sheet.wires,
+                labels: sheet.netLabels,
+                nets: nets,
+                catalog: catalog,
+                isRootSheet: isRoot
+            )
+            if !isRoot {
+                sheetDiagnostics = sheetDiagnostics.map { diagnostic in
+                    var tagged = diagnostic
+                    tagged.message = "\(sheet.name): \(diagnostic.message)"
+                    return tagged
+                }
+            }
+            combined.append(contentsOf: sheetDiagnostics)
+        }
+
+        return combined.sorted { lhs, rhs in
+            if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
+            return lhs.message < rhs.message
+        }
     }
 
     public static func analyze(
@@ -59,48 +91,67 @@ public enum CircuitDiagnostics {
         wires: [WireSegment],
         labels: [NetLabel]
     ) -> [Diagnostic] {
-        analyze(symbols: symbols, wires: wires, labels: labels, nets: nil)
+        analyze(symbols: symbols, wires: wires, labels: labels, nets: nil, catalog: nil)
     }
 
     /// - Parameter nets: connectivity precomputed by the caller (the document
     ///   already derives and caches it); recomputed here when nil.
+    /// - Parameter catalog: resolves subcircuit-instance pins from the sheet
+    ///   hierarchy; when nil only flat components are understood.
+    /// - Parameter isRootSheet: guards the checks that only apply to the top of
+    ///   a hierarchy (ground, sources, grounded groups).
     public static func analyze(
         symbols: [SymbolInstance],
         wires: [WireSegment],
         labels: [NetLabel],
-        nets precomputedNets: [Net]?
+        nets precomputedNets: [Net]?,
+        catalog: SubcircuitCatalog? = nil,
+        isRootSheet: Bool = true
     ) -> [Diagnostic] {
         var diagnostics: [Diagnostic] = []
 
+        func descriptor(for symbol: SymbolInstance) -> ComponentDescriptor? {
+            catalog?.descriptor(for: symbol) ?? ComponentRegistry.shared.descriptor(for: symbol.descriptorId)
+        }
+
         let nonGroundSymbols = symbols.filter {
-            ComponentRegistry.shared.descriptor(for: $0.descriptorId)?.symbol != .ground
+            descriptor(for: $0)?.symbol != .ground
         }
 
         if nonGroundSymbols.isEmpty {
-            diagnostics.append(Diagnostic(severity: .info, message: "Place a component to start building the circuit."))
+            if isRootSheet {
+                diagnostics.append(Diagnostic(severity: .info, message: "Place a component to start building the circuit."))
+            }
             return diagnostics
         }
 
         // Connectivity (Layer 2) is the basis for most warnings below.
-        let nets = precomputedNets ?? ConnectivityBuilder.build(symbols: symbols, wires: wires, labels: labels)
+        let nets = precomputedNets ?? ConnectivityBuilder.build(
+            symbols: symbols,
+            wires: wires,
+            labels: labels,
+            catalog: catalog
+        )
 
-        // Ground reference.
+        // Ground reference (top level only: a subcircuit body has none).
         let groundNets = nets.filter(\.isGround)
-        if groundNets.isEmpty {
-            diagnostics.append(Diagnostic(
-                severity: .error,
-                message: "No ground symbol. Add ground so the circuit has a node 0 reference."
-            ))
-        } else if groundNets.count > 1 {
-            diagnostics.append(Diagnostic(
-                severity: .info,
-                message: "Multiple ground symbols are treated as the same node 0."
-            ))
+        if isRootSheet {
+            if groundNets.isEmpty {
+                diagnostics.append(Diagnostic(
+                    severity: .error,
+                    message: "No ground symbol. Add ground so the circuit has a node 0 reference."
+                ))
+            } else if groundNets.count > 1 {
+                diagnostics.append(Diagnostic(
+                    severity: .info,
+                    message: "Multiple ground symbols are treated as the same node 0."
+                ))
+            }
         }
 
         // Reference designators.
         for symbol in symbols {
-            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else {
+            guard let descriptor = descriptor(for: symbol) else {
                 diagnostics.append(Diagnostic(
                     severity: .error,
                     message: "\(symbol.refDes.isEmpty ? "A component" : symbol.refDes) has no registered definition.",
@@ -193,7 +244,7 @@ public enum CircuitDiagnostics {
         // Duplicate references.
         var referenceCounts: [String: Int] = [:]
         for symbol in symbols {
-            guard ComponentRegistry.shared.descriptor(for: symbol.descriptorId)?.symbol != .ground else { continue }
+            guard descriptor(for: symbol)?.symbol != .ground else { continue }
             let reference = symbol.refDes.trimmingCharacters(in: .whitespaces).uppercased()
             guard !reference.isEmpty else { continue }
             referenceCounts[reference, default: 0] += 1
@@ -217,7 +268,7 @@ public enum CircuitDiagnostics {
 
         // Pin-level checks.
         for symbol in symbols {
-            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId) else { continue }
+            guard let descriptor = descriptor(for: symbol) else { continue }
             if descriptor.symbol == .ground { continue }
 
             var locatedNodes: [Int] = []
@@ -252,28 +303,60 @@ public enum CircuitDiagnostics {
             }
         }
 
-        // A source is needed to excite the circuit.
-        let hasSource = symbols.contains {
-            let symbol = ComponentRegistry.shared.descriptor(for: $0.descriptorId)?.symbol
-            return symbol == .voltageSource || symbol == .currentSource
-        }
-        if !hasSource {
-            diagnostics.append(Diagnostic(
-                severity: .warning,
-                message: "The circuit has no independent source, so analysis results will be all zero."
-            ))
+        // Subcircuit instances: the referenced sheet must exist, and every port
+        // should be bound to a same-named net label inside that sheet.
+        if let catalog {
+            for symbol in symbols where symbol.isSubcircuitInstance {
+                guard let reference = symbol.sheetRef else { continue }
+                guard let sheet = catalog.sheet(id: reference) else {
+                    diagnostics.append(Diagnostic(
+                        severity: .error,
+                        message: "\(symbol.refDes) refers to a subcircuit sheet that no longer exists.",
+                        symbolID: symbol.id
+                    ))
+                    continue
+                }
+                let labelNames = Set(sheet.netLabels.map { $0.name.uppercased() })
+                for port in sheet.ports where !labelNames.contains(port.name.uppercased()) {
+                    diagnostics.append(Diagnostic(
+                        severity: .warning,
+                        message: "Port \(port.name) of \(sheet.name) has no same-named net label, so it is not connected inside the sheet.",
+                        symbolID: symbol.id
+                    ))
+                }
+            }
         }
 
-        // Ungrounded subcircuits: nets joined by components but with no path to
-        // ground make the nodal matrix singular. Group them and warn once each.
-        if !groundNets.isEmpty {
-            diagnostics.append(contentsOf: ungroundedSubcircuits(
-                symbols: symbols,
-                nets: nets,
-                netIDByPin: netIDByPin,
-                groundNetIDs: Set(groundNets.map(\.id))
-            ))
+        // A source is needed to excite the circuit (top level only: a subcircuit
+        // body may hold no independent source of its own).
+        if isRootSheet {
+            let hasSource = symbols.contains {
+                let symbol = descriptor(for: $0)?.symbol
+                return symbol == .voltageSource || symbol == .currentSource
+            }
+            if !hasSource {
+                diagnostics.append(Diagnostic(
+                    severity: .warning,
+                    message: "The circuit has no independent source, so analysis results will be all zero."
+                ))
+            }
+
+            // Ungrounded subcircuits: nets joined by components but with no path
+            // to ground make the nodal matrix singular. Group them and warn once
+            // each. Skipped inside sheets, where a formal (external) ground is
+            // supplied by the enclosing instance.
+            if !groundNets.isEmpty {
+                diagnostics.append(contentsOf: ungroundedSubcircuits(
+                    symbols: symbols,
+                    nets: nets,
+                    netIDByPin: netIDByPin,
+                    groundNetIDs: Set(groundNets.map(\.id)),
+                    catalog: catalog
+                ))
+            }
         }
+
+        diagnostics.append(contentsOf: busDiagnostics(labels: labels))
 
         return diagnostics.sorted { lhs, rhs in
             if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
@@ -283,17 +366,62 @@ public enum CircuitDiagnostics {
 
     /// Finds groups of nets that are connected by two-terminal components but
     /// have no path to ground, and reports one warning per floating group.
+    /// Checks bus member labels against declarations.
+    private static func busDiagnostics(labels: [NetLabel]) -> [Diagnostic] {
+        var diagnostics: [Diagnostic] = []
+        let declarations = labels.compactMap { label -> (NetLabel, BusName)? in
+            guard let bus = label.busName, bus.isDeclaration else { return nil }
+            return (label, bus)
+        }
+        let declaredBases = Set(declarations.map { $0.1.base.uppercased() })
+
+        var rangeByBase: [String: ClosedRange<Int>] = [:]
+        for (label, bus) in declarations {
+            let key = bus.base.uppercased()
+            if let existing = rangeByBase[key], existing != bus.range {
+                diagnostics.append(Diagnostic(
+                    severity: .warning,
+                    message: "Bus \(bus.base) is declared with conflicting ranges.",
+                    labelID: label.id
+                ))
+            } else {
+                rangeByBase[key] = bus.range
+            }
+        }
+
+        for label in labels {
+            guard let bus = label.busName, bus.isBitSelect, let bit = bus.bit else { continue }
+            let key = bus.base.uppercased()
+            if !declaredBases.contains(key) {
+                diagnostics.append(Diagnostic(
+                    severity: .info,
+                    message: "Member \(label.name) has no matching bus declaration (e.g. \(bus.base)[n:0]).",
+                    labelID: label.id
+                ))
+            } else if let range = rangeByBase[key], !range.contains(bit) {
+                diagnostics.append(Diagnostic(
+                    severity: .warning,
+                    message: "\(label.name) is outside the declared range of bus \(bus.base).",
+                    labelID: label.id
+                ))
+            }
+        }
+        return diagnostics
+    }
+
     private static func ungroundedSubcircuits(
         symbols: [SymbolInstance],
         nets: [Net],
         netIDByPin: [PinRef: Int],
-        groundNetIDs: Set<Int>
+        groundNetIDs: Set<Int>,
+        catalog: SubcircuitCatalog?
     ) -> [Diagnostic] {
         var adjacency: [Int: Set<Int>] = [:]
         var refsByNet: [Int: [String]] = [:]
 
         for symbol in symbols {
-            guard let descriptor = ComponentRegistry.shared.descriptor(for: symbol.descriptorId),
+            guard let descriptor = catalog?.descriptor(for: symbol)
+                ?? ComponentRegistry.shared.descriptor(for: symbol.descriptorId),
                   descriptor.symbol != .ground else { continue }
             let nodeIDs = descriptor.pins.compactMap { netIDByPin[PinRef(symbolId: symbol.id, pinId: $0.id)] }
             for nodeID in nodeIDs {
