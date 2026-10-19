@@ -3471,6 +3471,130 @@ private var sampleNetlistDocument: CircuitFile {
     }
 }
 
+// MARK: - Project sync (Phase 16)
+
+@Suite struct ProjectSyncTests {
+    private func makeBackends() throws -> (local: LocalFolderBackend, remote: LocalFolderBackend) {
+        let base = try makeTempDirectory()
+        let localRoot = base.appendingPathComponent("local", isDirectory: true)
+        let remoteRoot = base.appendingPathComponent("remote", isDirectory: true)
+        try FileManager.default.createDirectory(at: localRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: remoteRoot, withIntermediateDirectories: true)
+        return (
+            LocalFolderBackend(rootURL: localRoot, name: "local"),
+            LocalFolderBackend(rootURL: remoteRoot, name: "remote")
+        )
+    }
+
+    private func write(_ text: String, to backend: LocalFolderBackend, path: String) throws {
+        try backend.write(Data(text.utf8), to: path)
+    }
+
+    private func read(_ backend: LocalFolderBackend, _ path: String) throws -> String {
+        String(decoding: try backend.read(relativePath: path), as: UTF8.self)
+    }
+
+    @Test func newLocalFileUploads() throws {
+        let (local, remote) = try makeBackends()
+        try write("hello", to: local, path: "project.json")
+
+        let outcome = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+        #expect(outcome.report.uploaded == ["project.json"])
+        #expect(try read(remote, "project.json") == "hello")
+    }
+
+    @Test func newRemoteFileDownloads() throws {
+        let (local, remote) = try makeBackends()
+        try write("remote", to: remote, path: "Sheets/main.ohmlab")
+
+        let outcome = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+        #expect(outcome.report.downloaded == ["Sheets/main.ohmlab"])
+        #expect(try read(local, "Sheets/main.ohmlab") == "remote")
+    }
+
+    @Test func secondSyncIsNoOp() throws {
+        let (local, remote) = try makeBackends()
+        try write("v1", to: local, path: "project.json")
+
+        let first = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+        let second = try ProjectSync.sync(local: local, remote: remote, state: first.state)
+        #expect(second.report.isEmpty)
+        #expect(second.report.unchanged == 1)
+    }
+
+    @Test func localChangeUploadsRemoteChangeDownloads() throws {
+        let (local, remote) = try makeBackends()
+        try write("v1", to: local, path: "a.txt")
+        try write("v1", to: local, path: "b.txt")
+        let synced = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+
+        try write("v2-local", to: local, path: "a.txt")
+        try write("v2-remote", to: remote, path: "b.txt")
+
+        let outcome = try ProjectSync.sync(local: local, remote: remote, state: synced.state)
+        #expect(outcome.report.uploaded == ["a.txt"])
+        #expect(outcome.report.downloaded == ["b.txt"])
+        #expect(try read(remote, "a.txt") == "v2-local")
+        #expect(try read(local, "b.txt") == "v2-remote")
+    }
+
+    @Test func conflictingEditsPreserveBothVersions() throws {
+        let (local, remote) = try makeBackends()
+        try write("base", to: local, path: "a.txt")
+        let synced = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+
+        try write("local-edit", to: local, path: "a.txt")
+        try write("remote-edit", to: remote, path: "a.txt")
+
+        let outcome = try ProjectSync.sync(
+            local: local, remote: remote, state: synced.state,
+            now: Date(timeIntervalSince1970: 0)
+        )
+        #expect(outcome.report.conflicts == ["a.txt"])
+        #expect(try read(local, "a.txt") == "local-edit")   // local stays canonical
+        #expect(try read(remote, "a.txt") == "local-edit")
+
+        let copies = try local.snapshot().keys.filter { $0.contains("conflict") }
+        #expect(copies.count == 1)
+        let copy = try #require(copies.first)
+        #expect(try read(local, copy) == "remote-edit")      // losing version preserved
+        #expect(try read(remote, copy) == "remote-edit")
+    }
+
+    @Test func localDeletionPropagatesToRemote() throws {
+        let (local, remote) = try makeBackends()
+        try write("x", to: local, path: "a.txt")
+        let synced = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+
+        try local.remove(relativePath: "a.txt")
+        let outcome = try ProjectSync.sync(local: local, remote: remote, state: synced.state)
+        #expect(outcome.report.removedRemote == ["a.txt"])
+        #expect(try remote.snapshot()["a.txt"] == nil)
+    }
+
+    @Test func remoteDeletionPropagatesToLocal() throws {
+        let (local, remote) = try makeBackends()
+        try write("x", to: local, path: "a.txt")
+        let synced = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+
+        try remote.remove(relativePath: "a.txt")
+        let outcome = try ProjectSync.sync(local: local, remote: remote, state: synced.state)
+        #expect(outcome.report.removedLocal == ["a.txt"])
+        #expect(try local.snapshot()["a.txt"] == nil)
+    }
+
+    @Test func stateFileIsNotSynced() throws {
+        let (local, remote) = try makeBackends()
+        try write("v1", to: local, path: "project.json")
+        let outcome = try ProjectSync.sync(local: local, remote: remote, state: SyncState())
+        try SyncStateStore.save(outcome.state, to: local.rootURL)
+
+        #expect(try local.snapshot()[SyncStateStore.fileName] == nil)
+        let reloaded = SyncStateStore.load(from: local.rootURL)
+        #expect(reloaded.entries["project.json"] != nil)
+    }
+}
+
 // MARK: - Helpers
 
 private func net(containing pin: PinRef, in nets: [Net]) -> Net? {

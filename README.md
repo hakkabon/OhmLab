@@ -141,6 +141,15 @@ Multi-sheet work is stored as a **project bundle** (`.ohmlabproj`): a folder hol
 *   **Import** — `KiCadProjectInterchange.importProject(at:)` accepts a `.kicad_pro` (or its top `.kicad_sch`), locates the top schematic, and runs `kicad-cli sch export netlist --format spice`. `kicad-cli` flattens the KiCad sheet hierarchy, so the result is a single, engine-ready netlist stored as the project's sheet; the source paths and an import timestamp are recorded in the manifest.
 *   **Export** — `KiCadProjectInterchange.exportProject(_:to:)` writes a valid `.ohmlabproj` and, alongside it, one SPICE netlist per sheet under `netlists/` plus the active sheet as `top.cir`, so KiCad and ngspice can consume the project directly.
 
+### Sync
+
+`ProjectSync` keeps the local working copy in step with any folder-shaped remote through the `SyncBackend` protocol: `LocalFolderBackend` (a plain folder — a shared drive, a Dropbox/Drive directory, a git working tree) and `ICloudSyncBackend` (rooted at the iCloud ubiquity container; coordinated and best-effort). It compares **content hashes**, not timestamps, against a hidden `.ohmlab-sync.json` state file:
+
+*   New or changed files are uploaded or downloaded; deletions propagate to the other side.
+*   When both sides edit the same file, the local version stays canonical and the other is preserved as a timestamped `(conflict …)` copy on both sides — nothing is lost and no merge UI is needed.
+
+Because a SwiftPM app cannot declare the iCloud entitlement, `ICloudSyncBackend.make()` returns nil when the container is unreachable and callers fall back to local storage.
+
 ## Project Structure
 
 ```text
@@ -175,6 +184,7 @@ Sources/
 │   │   └── ZipArchive.swift          # Minimal stored ZIP for .ohmlabzip bundles
 │   ├── Interop/                  # KiCad/ngspice interchange (kicad-cli bridge)
 │   ├── Project/                  # .ohmlabproj bundle model + store (+ a .ohmlabzip archive)
+│   ├── Sync/                     # Provider-agnostic ProjectSync engine + backends
 │   ├── Batch/                    # Headless runner: BatchRunner, JSON/CSV output
 │   ├── Plugins/                  # CircuitPlugin API, JSON manifests, samples
 │   └── Circuit/                  # Simulator UI and document model
