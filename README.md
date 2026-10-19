@@ -2,7 +2,7 @@
 
 **OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, MOSFETs, and JFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
-The Swift package builds and runs by itself — no Rust toolchain required. Simulation goes through a pluggable **engine façade**, so an optional Rust `ohm-core` (`audio-spice-core`) MNA engine can be linked behind the same interface; the built-in pure-Swift engine remains the default and the reference.
+The Swift package builds and runs by itself — no Rust toolchain required. Simulation goes through a pluggable **engine façade**, so an optional Rust `ohm-core` (`audio-spice-core`) MNA engine can be linked behind the same interface; the built-in pure-Swift engine remains the default and the reference. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
 ## Architecture: The Four-Layer Model
 
@@ -64,6 +64,8 @@ Simulation is reached through `SimulationEngine`, a façade that dispatches to a
 *   **Hierarchical Sheets:** A document holds named sheets (the root plus any number of subcircuits). A subcircuit-instance symbol references a sheet, exposes its ports as pins, and can be double-clicked to descend into it; a breadcrumb walks back up. Simulation and export flatten the tree.
 *   **Buses:** `DATA[7:0]` declares a bus, a thick blue bus wire carries its labels, and member labels (`DATA[3]`) tap individual bits. Members merge by name and expand to ordinary nets at simulation/export; bus-declaration labels are names only and carry no conduction.
 *   **Netlist → Schematic:** **Draw Schematic** on the netlist editor auto-lays out any supported SPICE netlist as an editable schematic — components on a grid, orthogonal wires routed from connectivity, nets labelled, and `.subckt` blocks reconstructed as subcircuit-instance symbols referencing generated sheets.
+*   **Pluggable Engine:** Simulation goes through a façade (`SimulationEngine`) over a registered backend; the native Swift MNA engine is the default and an optional Rust `ohm-core` can be swapped in at runtime (see **Engine Façade & the Optional Rust Core**).
+*   **Headless / Batch:** `ohm` runs a `.ohmlab` document or a netlist file (or stdin) without the UI and writes CSV or JSON — see **Headless / Batch Mode**.
 *   **Undo / Redo:** Structural edits (place, move, rotate, delete, wire, label, value changes) are undoable.
 
 ## Supported elements (passive)
@@ -159,8 +161,10 @@ Sources/
 │   │   ├── CircuitFileDocument.swift # FileDocument for the DocumentGroup scene
 │   │   └── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
 │   ├── Interop/                  # KiCad/ngspice interchange (kicad-cli bridge)
+│   ├── Batch/                    # Headless runner: BatchRunner, JSON/CSV output
 │   └── Circuit/                  # Simulator UI and document model
 ├── OhmLab/                       # SwiftUI app shell (OhmLabApp.swift — the @main scene)
+├── OhmLabCLI/                    # `ohm` headless/batch command-line front end
 └── CCOhmCore/                    # systemLibrary module map + header for the Rust core
 rust/ohm-core/                    # Optional Rust engine crate (C ABI + cargo tests)
 scripts/build-rust-core.sh        # Builds/stages libohm_core.a for the optional core
@@ -172,10 +176,19 @@ The result plots live under `OhmLabCore/Shared/Plot/`: `PlotModel.swift` (pure s
 
 ```bash
 cd OhmLab
-swift run
+swift run OhmLab        # the SwiftUI app
 ```
 
 Create a circuit, place components (R, C, L, V, I, D, Q, M, ground), draw wires, and press **Run**. The DC operating point, AC magnitude/phase plots, and transient waveforms all come from the built-in solver.
+
+For scripted/batch use, the same engine is available headlessly as `ohm`:
+
+```bash
+swift build
+.build/debug/ohm divider.cir --analysis dc --format json
+.build/debug/ohm amp.ohmlab -f csv -o amp.csv
+cat filter.cir | .build/debug/ohm - --ac dec 20 1 1meg
+```
 
 ## Workflows
 
@@ -190,6 +203,18 @@ Create a circuit, place components (R, C, L, V, I, D, Q, M, ground), draw wires,
 
 ### Netlist
 Enter or paste SPICE (R, C, L, V, I, D, Q, M, J with `.ac dec|oct|lin`, `.tran`, `.dc`, `.step param`, and `.four`), or use **Import** to load a SPICE netlist (or a KiCad `.kicad_sch` on macOS), then **Run**. Vendor model files can be loaded as libraries so their `.model`/`.subckt` cards are visible without an explicit `.include` (cards written in the netlist itself still take precedence). Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. JFETs use `J<name> <drain> <gate> <source> <model>` with a `.model JNJF NJF(VTO=-2 BETA=1m LAMBDA=0)` (or `PJF(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Parameter (`.param`/`{…}`), include (`.include`/`.lib`), and initial-condition (`.ic`) cards are supported; unsupported cards are reported rather than ignored. Device models accept SPICE's temperature parameters (`XTI`, `EG`, `XTB` for diodes/transistors; `BEX`, `TCV` for MOSFETs and JFETs) and the operating temperature is set with `.temp` or `.options temp=…`. Press **Draw Schematic** to auto-layout the netlist as an editable schematic (with `.subckt` blocks reconstructed as subcircuit-instance symbols).
+
+## Headless / Batch Mode (`ohm`)
+
+The `ohm` executable runs the same engine without the UI, so simulations can live in scripts, CI, or a Makefile:
+
+*   **Input** — a `.ohmlab` document (its saved settings, schematic or netlist, and embedded model libraries are used), a SPICE netlist file, inline `--netlist <text>`, or `-` for standard input. The input kind is detected by file extension.
+*   **Analysis** — with no flags, a document uses its saved settings and a bare netlist uses its own `.ac`/`.tran`/`.dc` cards plus a DC operating point. Flags override: `--analysis dc,ac,tran`, `--ac <dec|oct|lin> <pts> <f1> <f2>`, `--tran <step> <stop> [start]`, `--dc <src> <start> <stop> <step>`. Numeric arguments accept SPICE suffixes (`1k`, `10m`, `1meg`).
+*   **Output** — `-f csv` (the long-format table used by the app's export) or `-f json` (the structured `CircuitResultJSON` projection: `dc`/`ac`/`transient`/`sweep`/`fourier` plus `warnings`), to stdout or `-o <file>`.
+*   **Engine** — `-e native` (default) or `-e rust` when the optional Rust core is linked; unknown names error out and list what is available.
+*   **Exit status** — `0` success, `1` simulation/parse error, `2` usage error; non-fatal notes go to stderr (suppress with `-q`).
+
+`BatchRunner` (in `OhmLabCore`) is the testable core of this: it is pure (no file I/O beyond what it is handed), and the CLI adds argument parsing, file reading, and output writing on top.
 
 ## Document format
 

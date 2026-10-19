@@ -4,8 +4,8 @@
 
 import Foundation
 
-enum CircuitResultExport {
-    static func csv(_ result: CircuitSimResult) -> String {
+public enum CircuitResultExport {
+    public static func csv(_ result: CircuitSimResult) -> String {
         var rows = ["analysis,frequency_hz,signal,quantity,value,time_s,sweep"]
 
         if let dc = result.dc {

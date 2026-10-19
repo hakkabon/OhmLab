@@ -3043,29 +3043,22 @@ private func toneSamples(
 
 // MARK: - Engine backend façade (Phase 15)
 
-/// A stub backend that records the fact it was called, used to prove the façade
-/// dispatches to whichever backend is registered.
+/// A stub backend that tags its results, used to prove the façade dispatches to
+/// whichever backend is registered. It delegates the actual solve to the native
+/// engine and prepends a marker warning, so a concurrent test that briefly
+/// observes it still gets numerically correct results.
 private struct StubEngineBackend: SimulationEngineBackend {
     let identifier = "stub"
+    private let reference = NativeMNAEngine()
 
     func solve(
         netlist: String,
         settings: AnalysisSettings,
         libraries: [SpiceModelLibrary]
     ) throws -> CircuitSimResult {
-        CircuitSimResult(
-            dc: CircuitSimResult.DCResult(
-                nodes: [("stub-node", 42)],
-                components: [],
-                sources: [],
-                converged: true
-            ),
-            ac: nil,
-            transient: nil,
-            sweep: nil,
-            fourier: [],
-            warnings: ["stub ran"]
-        )
+        var result = try reference.solve(netlist: netlist, settings: settings, libraries: libraries)
+        result.warnings.insert("stub ran", at: 0)
+        return result
     }
 }
 
@@ -3079,10 +3072,20 @@ private struct StubEngineBackend: SimulationEngineBackend {
     SimulationEngine.register(StubEngineBackend(), makeDefault: true)
     #expect(SimulationEngine.backendIdentifier == "stub")
 
-    let result = try SimulationEngine.solve(netlist: "R1 1 0 1k", settings: .default)
-    #expect(result.warnings == ["stub ran"])
-    #expect(result.dc?.nodes.first?.name == "stub-node")
-    #expect(result.dc?.nodes.first?.voltage == 42)
+    let settings = AnalysisSettings(
+        runDC: true,
+        runAC: false,
+        acStartFrequency: 1,
+        acStopFrequency: 1e3,
+        acPointsPerDecade: 10
+    )
+    let result = try SimulationEngine.solve(
+        netlist: "V1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n",
+        settings: settings
+    )
+    #expect(result.warnings.contains("stub ran"))
+    let node2 = result.dc?.nodes.first { $0.name == "2" }?.voltage
+    #expect(abs((node2 ?? 0) - 2.5) < 1e-9)
 }
 
 @Test func engineFacadeDefaultBackendSolvesDivider() throws {
@@ -3124,6 +3127,85 @@ private struct StubEngineBackend: SimulationEngineBackend {
     #expect(abs((node2 ?? 0) - 2.5) < 1e-9)
 }
 #endif
+
+// MARK: - Headless / batch (Phase 15)
+
+private let dividerNetlist = "V1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n"
+
+private func dcOnlySettings() -> AnalysisSettings {
+    AnalysisSettings(
+        runDC: true,
+        runAC: false,
+        acStartFrequency: 1,
+        acStopFrequency: 1e3,
+        acPointsPerDecade: 10
+    )
+}
+
+@Test func batchRunnerEmitsCSV() throws {
+    let outcome = try BatchRunner.run(BatchRequest(
+        input: .netlist(dividerNetlist),
+        format: .csv,
+        settingsOverride: dcOnlySettings()
+    ))
+    #expect(outcome.engine == "native-mna")
+    #expect(outcome.text.contains("analysis,frequency_hz,signal,quantity,value,time_s,sweep"))
+    #expect(outcome.text.contains("dc,,2,voltage,2.5,"))
+}
+
+@Test func batchRunnerEmitsJSON() throws {
+    let outcome = try BatchRunner.run(BatchRequest(
+        input: .netlist(dividerNetlist),
+        format: .json,
+        settingsOverride: dcOnlySettings()
+    ))
+    let object = try JSONSerialization.jsonObject(with: Data(outcome.text.utf8)) as? [String: Any]
+    let dc = object?["dc"] as? [String: Any]
+    #expect(dc?["converged"] as? Bool == true)
+    let nodes = dc?["nodes"] as? [[String: Any]]
+    let node2 = nodes?.first { $0["name"] as? String == "2" }
+    #expect(abs(((node2?["voltage"] as? Double) ?? 0) - 2.5) < 1e-9)
+}
+
+@Test func batchRunnerDocumentNetlistMode() throws {
+    let file = CircuitFile(
+        name: "Divider",
+        schematic: SchematicSnapshot(),
+        analysis: dcOnlySettings(),
+        netlistText: dividerNetlist,
+        usesSchematic: false
+    )
+    let outcome = try BatchRunner.run(BatchRequest(input: .document(file), format: .csv))
+    #expect(outcome.text.contains("dc,,2,voltage,2.5,"))
+}
+
+@Test func batchRunnerEmptyNetlistThrows() {
+    #expect(throws: BatchError.self) {
+        try BatchRunner.run(BatchRequest(input: .netlist("   \n")))
+    }
+}
+
+@Test func batchRunnerUnknownEngineThrows() {
+    #expect(throws: BatchError.self) {
+        try BatchRunner.run(BatchRequest(input: .netlist(dividerNetlist), engine: "nope"))
+    }
+    SimulationEngine.resetToDefaultBackend()
+}
+
+@Test func engineBackendsKnowNative() throws {
+    try EngineBackends.activate("native")
+    #expect(EngineBackends.isActive("native"))
+    #expect(EngineBackends.available.contains("native"))
+    SimulationEngine.resetToDefaultBackend()
+}
+
+@Test func spiceNumberParsesSuffixes() {
+    #expect(SpiceNumber.parse("1k") == 1000)
+    #expect(SpiceNumber.parse("1meg") == 1e6)
+    #expect(abs((SpiceNumber.parse("10uF") ?? 0) - 1e-5) < 1e-18)
+    #expect(SpiceNumber.parse("-5") == -5)
+    #expect(SpiceNumber.parse("abc") == nil)
+}
 
 // MARK: - Helpers
 

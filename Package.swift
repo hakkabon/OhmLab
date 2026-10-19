@@ -52,6 +52,7 @@ let package = Package(
     products: [
         .library(name: "OhmLabCore", targets: ["OhmLabCore"]),
         .executable(name: "OhmLab", targets: ["OhmLab"]),
+        .executable(name: "ohm", targets: ["OhmLabCLI"]),
     ],
 
     // ── Dependencies ─────────────────────────────────────────────────────────
@@ -70,6 +71,13 @@ let package = Package(
             name: "OhmLab",
             dependencies: ["OhmLabCore"],
             path: "Sources/OhmLab"
+        ),
+
+        // ── Headless / batch front end (`ohm`) ────────────────────────────────
+        .executableTarget(
+            name: "OhmLabCLI",
+            dependencies: ["OhmLabCore"],
+            path: "Sources/OhmLabCLI"
         ),
 
         // ── Tests ─────────────────────────────────────────────────────────────
