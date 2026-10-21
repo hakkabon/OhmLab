@@ -119,6 +119,7 @@ public enum MonteCarloAnalysis {
         var generator = SeededGenerator(seed: request.seed)
 
         for _ in 0..<request.samples {
+            try Task.checkCancellation()
             var values: [String: Double] = [:]
             for designator in orderedVariables {
                 let tolerance = variables[designator]!

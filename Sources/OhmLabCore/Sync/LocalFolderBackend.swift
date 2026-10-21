@@ -22,7 +22,12 @@ public struct LocalFolderBackend: SyncBackend {
     }
 
     public func read(relativePath: String) throws -> Data {
-        let url = rootURL.appendingPathComponent(relativePath)
+        let url: URL
+        do {
+            url = try ProjectPath.resolve(relativePath, under: rootURL)
+        } catch {
+            throw SyncBackendError.ioFailed("read unsafe path", relativePath)
+        }
         do {
             return try Data(contentsOf: url)
         } catch {
@@ -31,7 +36,12 @@ public struct LocalFolderBackend: SyncBackend {
     }
 
     public func write(_ data: Data, to relativePath: String) throws {
-        let url = rootURL.appendingPathComponent(relativePath)
+        let url: URL
+        do {
+            url = try ProjectPath.resolve(relativePath, under: rootURL)
+        } catch {
+            throw SyncBackendError.ioFailed("write unsafe path", relativePath)
+        }
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
@@ -44,7 +54,12 @@ public struct LocalFolderBackend: SyncBackend {
     }
 
     public func remove(relativePath: String) throws {
-        let url = rootURL.appendingPathComponent(relativePath)
+        let url: URL
+        do {
+            url = try ProjectPath.resolve(relativePath, under: rootURL)
+        } catch {
+            throw SyncBackendError.ioFailed("remove unsafe path", relativePath)
+        }
         do {
             if FileManager.default.fileExists(atPath: url.path) {
                 try FileManager.default.removeItem(at: url)

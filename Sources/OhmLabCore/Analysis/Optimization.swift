@@ -105,15 +105,25 @@ public enum Optimization {
         var history: [OptimizeResult.Step] = []
 
         func evaluate(_ x: [Double]) throws -> (values: [String: Double], objective: Double, cost: Double) {
+            try Task.checkCancellation()
             var values: [String: Double] = [:]
             for (index, bound) in bounds.enumerated() {
                 values[bound.designator] = x[index]
             }
             let text = NetlistValueRewriter.rewrite(request.netlist, values: values)
             evaluations += 1
-            guard let result = try? SimulationEngine.solve(
-                    netlist: text, settings: settings, libraries: request.libraries),
-                  let dc = result.dc,
+            let result: CircuitSimResult
+            do {
+                result = try SimulationEngine.solve(
+                    netlist: text, settings: settings, libraries: request.libraries
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                failures += 1
+                return (values, .nan, .infinity)
+            }
+            guard let dc = result.dc,
                   let objective = request.objective.value(in: dc) else {
                 failures += 1
                 return (values, .nan, .infinity)
@@ -132,6 +142,7 @@ public enum Optimization {
         var bestObjective = Double.nan
 
         for point in grid(bounds: bounds, divisions: divisions) {
+            try Task.checkCancellation()
             let outcome = try evaluate(point)
             if outcome.cost < bestCost {
                 bestCost = outcome.cost
@@ -148,8 +159,10 @@ public enum Optimization {
             step: initialStep,
             maxIterations: request.maxIterations
         ) { x in
-            (try? evaluate(x).cost) ?? .infinity
+            guard !Task.isCancelled else { return .infinity }
+            return (try? evaluate(x).cost) ?? .infinity
         }
+        try Task.checkCancellation()
         let final = try evaluate(refined)
         if final.cost < bestCost {
             bestCost = final.cost

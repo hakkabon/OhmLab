@@ -45,6 +45,7 @@ public enum EngineBackends {
         switch name.lowercased() {
         case "native", "native-mna": canonical = "native-mna"
         case "rust", "ohm-core": canonical = "ohm-core"
+        case "numericcore", "numeric-core": canonical = "numeric-core"
         default: canonical = name.lowercased()
         }
         return SimulationEngine.backendIdentifier.caseInsensitiveCompare(canonical) == .orderedSame
@@ -54,6 +55,8 @@ public enum EngineBackends {
         var map: [String: Factory] = [
             "native": { NativeMNAEngine() },
             "native-mna": { NativeMNAEngine() },
+            "numeric-core": { NumericCoreEngineBackend() },
+            "numericcore": { NumericCoreEngineBackend() },
         ]
         #if canImport(CCOhmCore)
         map["rust"] = { RustEngineBackend() }

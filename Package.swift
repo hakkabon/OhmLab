@@ -56,13 +56,24 @@ let package = Package(
     ],
 
     // ── Dependencies ─────────────────────────────────────────────────────────
-    dependencies: [],
+    dependencies: [
+        // NumericCore's circuit-analysis API is currently provisional and has
+        // not reached a tagged release. Pin the reviewed revision exactly until
+        // the API ships in a stable release, then move this to a semantic range.
+        .package(
+            url: "https://github.com/hakkabon/Swift-NumericCore.git",
+            revision: "7318e8c470079b5255142d223750c251e9b2cfe7"
+        ),
+    ],
 
     // ── Targets ──────────────────────────────────────────────────────────────
     targets: [
         // ── Core (no app lifecycle) ───────────────────────────────────────────
         .target(
             name: "OhmLabCore",
+            dependencies: [
+                .product(name: "NumericCoreOptimization", package: "Swift-NumericCore"),
+            ],
             path: "Sources/OhmLabCore"
         ),
 

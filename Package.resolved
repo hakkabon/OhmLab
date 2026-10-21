@@ -1,0 +1,14 @@
+{
+  "originHash" : "ae546368356bb29ca5a50dc3fc5ee6911fd41346cc2b12163f758e423210d5ff",
+  "pins" : [
+    {
+      "identity" : "swift-numericcore",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/hakkabon/Swift-NumericCore.git",
+      "state" : {
+        "revision" : "7318e8c470079b5255142d223750c251e9b2cfe7"
+      }
+    }
+  ],
+  "version" : 3
+}

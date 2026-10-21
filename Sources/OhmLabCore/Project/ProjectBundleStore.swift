@@ -33,7 +33,7 @@ public enum ProjectBundleStore {
 
         var documents: [String: CircuitFile] = [:]
         for sheet in manifest.sheets {
-            let url = directory.appendingPathComponent(sheet.fileName)
+            let url = try ProjectPath.resolve(sheet.fileName, under: directory)
             guard let data = try? Data(contentsOf: url) else {
                 throw ProjectBundleError.missingSheet(sheet.fileName)
             }
@@ -56,7 +56,7 @@ public enum ProjectBundleStore {
 
         for sheet in bundle.manifest.sheets {
             guard let document = bundle.documents[sheet.id] else { continue }
-            let url = directory.appendingPathComponent(sheet.fileName)
+            let url = try ProjectPath.resolve(sheet.fileName, under: directory)
             try fileManager.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true

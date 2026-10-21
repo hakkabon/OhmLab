@@ -66,6 +66,8 @@ final class CircuitDocument: ObservableObject, Identifiable {
     private var cancellables = Set<AnyCancellable>()
     private var autosaveTask: Task<Void, Never>?
     private var diagnosticsTask: Task<Void, Never>?
+    private var simulationTask: Task<Void, Never>?
+    private var simulationGeneration: UInt64 = 0
 
     /// Set while `importNetlist` is assigning `netlistText`, so the change
     /// observer does not clear the provenance it is about to record.
@@ -110,13 +112,7 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
         $usesSchematic
             .dropFirst()
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.simulationResult = nil
-                    self?.simulationError = nil
-                    self?.refreshDiagnostics()
-                }
-            }
+            .sink { [weak self] _ in self?.contentDidChange() }
             .store(in: &cancellables)
 
         refreshDiagnostics()
@@ -125,6 +121,7 @@ final class CircuitDocument: ObservableObject, Identifiable {
     // MARK: - Change tracking
 
     private func contentDidChange() {
+        cancelSimulation()
         isDirty = true
         contentVersion &+= 1
         simulationResult = nil
@@ -165,10 +162,35 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     // MARK: - Simulation
 
+    /// Starts a document-owned simulation. A new run or a content edit cancels
+    /// the previous task and invalidates any result it might still produce.
+    func startSimulation() {
+        cancelSimulation()
+        simulationTask = Task { @MainActor [weak self] in
+            await self?.runSimulation()
+        }
+    }
+
+    func cancelSimulation() {
+        simulationGeneration &+= 1
+        simulationTask?.cancel()
+        simulationTask = nil
+        isSimulating = false
+    }
+
     func runSimulation() async {
+        simulationGeneration &+= 1
+        let generation = simulationGeneration
+        let startingContentVersion = contentVersion
         isSimulating = true
         simulationError = nil
         simulationResult = nil
+        defer {
+            if generation == simulationGeneration {
+                isSimulating = false
+                simulationTask = nil
+            }
+        }
         do {
             let result: CircuitSimResult
             if usesSchematic {
@@ -183,12 +205,18 @@ final class CircuitDocument: ObservableObject, Identifiable {
                     libraries: modelLibraries
                 )
             }
+            guard !Task.isCancelled,
+                  generation == simulationGeneration,
+                  startingContentVersion == contentVersion else { return }
             simulationResult = result
             recordRun(result)
+        } catch is CancellationError {
+            // Cancellation is expected when the document changes or closes.
         } catch {
+            guard generation == simulationGeneration,
+                  startingContentVersion == contentVersion else { return }
             simulationError = error.localizedDescription
         }
-        isSimulating = false
     }
 
     // MARK: - Run history

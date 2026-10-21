@@ -2,7 +2,7 @@
 
 **OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, MOSFETs, and JFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
-The Swift package builds and runs by itself — no Rust toolchain required. Simulation goes through a pluggable **engine façade**, so an optional Rust `ohm-core` (`audio-spice-core`) MNA engine can be linked behind the same interface; the built-in pure-Swift engine remains the default and the reference. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
+The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while a transitional `NumericCoreEngineBackend` validates linear DC/AC circuits against NumericCore. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
 ## Architecture: The Four-Layer Model
 
@@ -45,6 +45,7 @@ The simulation layer is a **native Swift linear solver**:
 Simulation is reached through `SimulationEngine`, a façade that dispatches to a registered `SimulationEngineBackend`:
 
 *   **`NativeMNAEngine`** (identifier `"native-mna"`) is the built-in Swift engine and the default backend — the full DC/AC/transient/DC-sweep/`.four` feature set described above.
+*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) adapts OhmLab's parsed linear R/C/L/V/I circuits to NumericCore's provisional circuit API. It currently provides DC and AC analysis and fails explicitly for unsupported devices or analyses. The dependency is pinned to an exact reviewed revision until NumericCore publishes the circuit API in a stable release.
 *   **Backends are swappable at runtime** with `SimulationEngine.register(_:makeDefault:)` and `SimulationEngine.resetToDefaultBackend()`. Because the façade is the single entry point (`EngineClient` and the CLI both call it), no call site changes when a backend changes. The schematic entry point has a default implementation that projects a snapshot to a netlist, so a foreign backend only has to implement the netlist solve.
 *   **`ohm-core`** (Rust) is an optional alternative backend, `rust/ohm-core`, exposed over a tiny JSON C ABI (`ohm_engine_version`, `ohm_solve`, `ohm_free_string`) — no generated bindings required. It is dependency-free and covers DC operating points and AC sweeps for linear R/C/L/V/I circuits; unsupported analyses (transient, DC sweeps, model libraries, nonlinear devices) are reported as warnings. `RustEngineBackend.swift` bridges it behind the façade.
 *   **Opt-in build.** Nothing Rust-related is compiled unless you ask: `RustEngineBackend` is gated on `#if canImport(CCOhmCore)`. To enable it, run `scripts/build-rust-core.sh` (which runs `cargo test` and builds `libohm_core.a`) and follow the "Enabling the Rust core" block in `Package.swift`.

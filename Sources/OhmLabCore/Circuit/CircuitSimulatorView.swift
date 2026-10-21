@@ -127,7 +127,7 @@ struct CircuitSimulatorView: View {
             .frame(maxWidth: 220)
 
             Button {
-                Task { await document.runSimulation() }
+                document.startSimulation()
             } label: {
                 if document.isSimulating {
                     ProgressView().controlSize(.small)

@@ -118,6 +118,7 @@ public enum CornerAnalysis {
         var evaluated = 0
 
         for corner in 0..<cornerCount {
+            try Task.checkCancellation()
             var bitIndex = 0
             var values: [String: Double] = [:]
             for designator in orderedVariables {
