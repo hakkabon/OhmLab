@@ -24,6 +24,13 @@ import Foundation
 struct RustEngineBackend: SimulationEngineBackend {
     let identifier = "ohm-core"
 
+    let capabilities = SimulationBackendCapabilities(
+        backendIdentifier: "ohm-core",
+        analyses: [.dcOperatingPoint, .acSmallSignal],
+        devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource],
+        features: [.spiceNetlistInput]
+    )
+
     /// The Rust core version reported by the library, e.g. `"ohm-core 0.1.0"`.
     var engineVersion: String {
         guard let ptr = ohm_engine_version() else { return "ohm-core" }

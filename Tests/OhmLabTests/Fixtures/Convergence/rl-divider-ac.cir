@@ -1,0 +1,5 @@
+* Circuit IR v1 differential fixture: RL network and branch-current convention
+V1 in 0 DC 2 AC 1 17
+R1 in out 330
+L1 out 0 10m
+.end

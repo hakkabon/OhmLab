@@ -1,0 +1,5 @@
+* Circuit IR v1 differential fixture: current source and resistor
+I1 0 out DC 2m
+R1 out 0 1.5k
+.op
+.end

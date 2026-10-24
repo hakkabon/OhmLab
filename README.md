@@ -4,6 +4,18 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while a transitional `NumericCoreEngineBackend` validates linear DC/AC circuits against NumericCore. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
+## 0.8 Convergence Contract
+
+OhmLab 0.8 establishes a versioned boundary between circuit frontends and numerical engines:
+
+* **Circuit IR v1** is a Codable, validated, engine-neutral representation of topology, devices, sources, model values, solver controls, and initial conditions. Schematics and SPICE lower into this IR; they are not solver ABIs. See [`docs/contracts/circuit-ir-v1.md`](docs/contracts/circuit-ir-v1.md).
+* **Backend capabilities** declare supported analyses, devices, and input/execution features in a deterministic machine-readable matrix. Undeclared capabilities fail closed.
+* **Simulation result contract v1** fixes SI units, current/voltage signs, AC representation, naming, axis, and finite-value requirements. Results are validated at the engine façade before reaching plugins or UI code. See [`docs/contracts/simulation-result-v1.md`](docs/contracts/simulation-result-v1.md).
+* **Differential fixtures** under `Tests/OhmLabTests/Fixtures/Convergence` run through Circuit IR against the native and NumericCore engines.
+* **Native remains the default** while NumericCore parity is expanded.
+
+Run `ohm engines` (or `ohm engines --json`) to inspect the capability matrix for the backends linked into the current build.
+
 ## Architecture: The Four-Layer Model
 
 Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
@@ -123,6 +135,8 @@ Beyond elements, the reader understands a useful subset of control cards:
 Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel with the parsed netlist and are surfaced in the results panel.
 
 ### KiCad interchange
+
+The precise 0.8 compatibility promise is documented in [`docs/compatibility/kicad.md`](docs/compatibility/kicad.md): current support is SPICE-level simulation interoperability, not lossless KiCad schematic round-tripping.
 
 Interchange is netlist-level: OhmLab does not parse `.kicad_sch` itself, it borrows KiCad's exporter.
 

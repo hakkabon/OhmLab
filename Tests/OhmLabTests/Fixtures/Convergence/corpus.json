@@ -1,0 +1,31 @@
+{
+  "contractVersion": 1,
+  "fixtures": [
+    {
+      "id": "linear-divider-dc",
+      "file": "linear-divider-dc.cir",
+      "analyses": ["dc"],
+      "absoluteTolerance": 1e-9
+    },
+    {
+      "id": "current-source-dc",
+      "file": "current-source-dc.cir",
+      "analyses": ["dc"],
+      "absoluteTolerance": 1e-9
+    },
+    {
+      "id": "rc-lowpass-ac",
+      "file": "rc-lowpass-ac.cir",
+      "analyses": ["dc", "ac"],
+      "acSweep": { "type": "dec", "start": 10, "stop": 100000, "count": 12 },
+      "absoluteTolerance": 1e-7
+    },
+    {
+      "id": "rl-divider-ac",
+      "file": "rl-divider-ac.cir",
+      "analyses": ["dc", "ac"],
+      "acSweep": { "type": "dec", "start": 10, "stop": 100000, "count": 12 },
+      "absoluteTolerance": 1e-7
+    }
+  ]
+}

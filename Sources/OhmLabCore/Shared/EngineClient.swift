@@ -22,6 +22,9 @@ public struct FreqPoint: Identifiable, Sendable {
 }
 
 public struct CircuitSimResult: Sendable {
+    /// Version of the units, naming, and sign convention contract obeyed by
+    /// this result. Backends must emit the current version.
+    public let contractVersion: Int
     public let dc: DCResult?
     public let ac: ACResult?
     public let transient: TransientResult?
@@ -33,6 +36,7 @@ public struct CircuitSimResult: Sendable {
     public var warnings: [String]
 
     public init(
+        contractVersion: Int = SimulationResultContract.currentVersion,
         dc: DCResult?,
         ac: ACResult?,
         transient: TransientResult?,
@@ -40,6 +44,7 @@ public struct CircuitSimResult: Sendable {
         fourier: [FourierResult],
         warnings: [String]
     ) {
+        self.contractVersion = contractVersion
         self.dc = dc
         self.ac = ac
         self.transient = transient
@@ -207,20 +212,36 @@ public protocol SimulationEngineBackend: Sendable {
     /// A stable, human-readable identifier (surfaced in diagnostics and the CLI).
     var identifier: String { get }
 
+    /// Machine-readable support declaration. The default is deliberately
+    /// empty so existing third-party backends fail closed until they declare
+    /// their contract.
+    var capabilities: SimulationBackendCapabilities { get }
+
     /// Solves a schematic snapshot.
     func solve(snapshot: SchematicSnapshot, settings: AnalysisSettings) throws -> CircuitSimResult
 
     /// Solves a SPICE netlist, optionally seeding model libraries.
     func solve(netlist: String, settings: AnalysisSettings, libraries: [SpiceModelLibrary]) throws -> CircuitSimResult
+
+    /// Solves a normalized Circuit IR v1 request without reparsing SPICE.
+    func solve(circuit: CircuitIR, settings: AnalysisSettings) throws -> CircuitSimResult
 }
 
 public extension SimulationEngineBackend {
+    var capabilities: SimulationBackendCapabilities {
+        .unspecified(backendIdentifier: identifier)
+    }
+
     /// Default schematic path for foreign backends: project the schematic to a
     /// netlist and hand that to the netlist entry point. The built-in engine
     /// overrides this with a direct MNA compile.
     func solve(snapshot: SchematicSnapshot, settings: AnalysisSettings) throws -> CircuitSimResult {
         let netlist = try SpiceNetlistBuilder.build(snapshot: snapshot)
         return try solve(netlist: netlist, settings: settings, libraries: [])
+    }
+
+    func solve(circuit: CircuitIR, settings: AnalysisSettings) throws -> CircuitSimResult {
+        throw SimulationContractError.backendDoesNotAcceptCircuitIR(identifier)
     }
 }
 
@@ -257,6 +278,11 @@ public enum SimulationEngine {
     /// The identifier of the backend currently in use.
     public static var backendIdentifier: String { EngineBackendRegistry.shared.active.identifier }
 
+    /// Capabilities declared by the backend currently receiving solves.
+    public static var backendCapabilities: SimulationBackendCapabilities {
+        EngineBackendRegistry.shared.active.capabilities
+    }
+
     /// Registers `backend`; pass `makeDefault: true` to route all solves to it.
     public static func register(_ backend: any SimulationEngineBackend, makeDefault: Bool = false) {
         EngineBackendRegistry.shared.register(backend, makeDefault: makeDefault)
@@ -272,6 +298,7 @@ public enum SimulationEngine {
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
         let result = try EngineBackendRegistry.shared.active.solve(snapshot: snapshot, settings: settings)
+        try SimulationResultContract.validate(result)
         return PluginManager.shared.processResult(
             result,
             context: SimulationPostContext(source: "schematic", engine: backendIdentifier)
@@ -291,9 +318,24 @@ public enum SimulationEngine {
             settings: settings,
             libraries: libraries
         )
+        try SimulationResultContract.validate(result)
         return PluginManager.shared.processResult(
             result,
             context: SimulationPostContext(source: "netlist", engine: backendIdentifier)
+        )
+    }
+
+
+    public static func solve(
+        circuit: CircuitIR,
+        settings: AnalysisSettings
+    ) throws -> CircuitSimResult {
+        try circuit.validate()
+        let result = try EngineBackendRegistry.shared.active.solve(circuit: circuit, settings: settings)
+        try SimulationResultContract.validate(result)
+        return PluginManager.shared.processResult(
+            result,
+            context: SimulationPostContext(source: "circuit-ir", engine: backendIdentifier)
         )
     }
 }
@@ -302,6 +344,13 @@ public enum SimulationEngine {
 /// and the reference implementation.
 struct NativeMNAEngine: SimulationEngineBackend {
     let identifier = "native-mna"
+
+    let capabilities = SimulationBackendCapabilities(
+        backendIdentifier: "native-mna",
+        analyses: SimulationAnalysisKind.allCases,
+        devices: CircuitIR.DeviceKind.allCases,
+        features: SimulationBackendFeature.allCases
+    )
 
     // MARK: - Schematic path
 
@@ -312,6 +361,17 @@ struct NativeMNAEngine: SimulationEngineBackend {
         let circuit = try CircuitCompiler.compile(snapshot: snapshot)
         let axes = try Self.sweepAxes(from: settings)
         return try Self.solve(circuit: circuit, settings: settings, sweepAxes: axes)
+    }
+
+    func solve(circuit ir: CircuitIR, settings: AnalysisSettings) throws -> CircuitSimResult {
+        let circuit = try ir.makeLinearCircuit()
+        let axes = try Self.sweepAxes(from: settings)
+        return try Self.solve(
+            circuit: circuit,
+            settings: settings,
+            initialConditions: ir.nativeInitialConditions,
+            sweepAxes: axes
+        )
     }
 
     // MARK: - Netlist path

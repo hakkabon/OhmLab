@@ -6,7 +6,7 @@ import Foundation
 
 public enum CircuitResultJSON {
     public static func encode(_ result: CircuitSimResult, pretty: Bool = true) -> String {
-        var root: [String: Any] = [:]
+        var root: [String: Any] = ["contractVersion": result.contractVersion]
 
         if let dc = result.dc {
             root["dc"] = [

@@ -25,7 +25,7 @@ enum CommandError: LocalizedError {
 }
 
 enum Subcommand {
-    static let names: Set<String> = ["project", "kicad", "sync", "monte-carlo", "corner", "optimize"]
+    static let names: Set<String> = ["engines", "project", "kicad", "sync", "monte-carlo", "corner", "optimize"]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
 
@@ -43,6 +43,7 @@ enum Subcommand {
 
     private static func dispatch(_ arguments: [String]) throws -> Int32 {
         switch arguments[0] {
+        case "engines": return try runEngines(Array(arguments.dropFirst()))
         case "project": return try runProject(Array(arguments.dropFirst()))
         case "kicad": return try runKicad(Array(arguments.dropFirst()))
         case "sync": return try runSync(Array(arguments.dropFirst()))
@@ -52,6 +53,33 @@ enum Subcommand {
         default:
             throw CommandError.usage("unknown command \(arguments[0])")
         }
+    }
+
+    // MARK: - engines
+
+    private static func runEngines(_ arguments: [String]) throws -> Int32 {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandError.usage("usage: ohm engines [--json]")
+        }
+        let matrix = EngineBackends.capabilityMatrix
+        if arguments == ["--json"] {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(matrix)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CommandError.runtime("could not encode the engine capability matrix")
+            }
+            writeStdout(text + "\n")
+            return 0
+        }
+        for entry in matrix {
+            let marker = entry.backendIdentifier == "native-mna" ? " (default)" : ""
+            writeStdout("\(entry.backendIdentifier)\(marker)\n")
+            writeStdout("  analyses: \(entry.analyses.map(\.rawValue).joined(separator: ", "))\n")
+            writeStdout("  devices:  \(entry.devices.map(\.rawValue).joined(separator: ", "))\n")
+            writeStdout("  features: \(entry.features.map(\.rawValue).joined(separator: ", "))\n")
+        }
+        return 0
     }
 
     // MARK: - project

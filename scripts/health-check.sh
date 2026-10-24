@@ -51,6 +51,9 @@ fi
 ohm=".build/debug/ohm"
 bundle="Examples/07-project-bundle.ohmlabproj"
 
+section "Convergence contract"
+run "engine capability matrix" "$ohm" engines --json
+
 section "Example circuits — CLI runs"
 for file in Examples/*.cir; do
     run "ohm $(basename "$file")" "$ohm" "$file" -f json

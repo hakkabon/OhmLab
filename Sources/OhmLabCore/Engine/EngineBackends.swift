@@ -23,6 +23,29 @@ public enum EngineBackends {
         return factories.keys.sorted()
     }
 
+    /// One capability declaration per canonical backend identifier. Aliases
+    /// are intentionally collapsed so this is directly usable as a support
+    /// matrix in diagnostics, CLI output, and compatibility tests.
+    public static var capabilityMatrix: [SimulationBackendCapabilities] {
+        lock.lock()
+        let factories = Array(factories.values)
+        lock.unlock()
+        var unique: [String: SimulationBackendCapabilities] = [:]
+        for factory in factories {
+            let backend = factory()
+            unique[backend.identifier.lowercased()] = backend.capabilities
+        }
+        return unique.values.sorted { $0.backendIdentifier < $1.backendIdentifier }
+    }
+
+    /// Capabilities for a registered name or alias.
+    public static func capabilities(for name: String) -> SimulationBackendCapabilities? {
+        lock.lock()
+        let factory = factories[name.lowercased()]
+        lock.unlock()
+        return factory?().capabilities
+    }
+
     /// Registers (or replaces) a backend factory under `name` (case-insensitive).
     public static func register(name: String, factory: @escaping Factory) {
         lock.lock(); defer { lock.unlock() }

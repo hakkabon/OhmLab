@@ -1,0 +1,6 @@
+* Circuit IR v1 differential fixture: voltage divider
+V1 in 0 DC 12
+R1 in out 2k
+R2 out 0 1k
+.op
+.end

@@ -26,6 +26,13 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
 public struct NumericCoreEngineBackend: SimulationEngineBackend {
     public let identifier = "numeric-core"
 
+    public let capabilities = SimulationBackendCapabilities(
+        backendIdentifier: "numeric-core",
+        analyses: [.dcOperatingPoint, .acSmallSignal],
+        devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource],
+        features: [.spiceNetlistInput, .circuitIRInput, .modelLibraries]
+    )
+
     public init() {}
 
     public func solve(
@@ -62,17 +69,39 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
             throw CircuitSimulationError.noAnalysisSelected
         }
 
-        let bridge = try Bridge(circuit: parsed.circuit)
+        let ir = try CircuitIR(linearCircuit: parsed.circuit, initialConditions: parsed.initialConditions)
+        var result = try solve(circuit: ir, settings: effective)
+        result.warnings.insert(contentsOf: parsed.warnings, at: 0)
+        return result
+    }
+
+    public func solve(
+        circuit ir: CircuitIR,
+        settings: AnalysisSettings
+    ) throws -> CircuitSimResult {
+        if settings.runTransient {
+            throw NumericCoreAdapterError.unsupportedAnalysis("transient analysis")
+        }
+        if settings.runDCSweep {
+            throw NumericCoreAdapterError.unsupportedAnalysis("DC or parameter sweeps")
+        }
+        guard settings.runDC || settings.runAC else {
+            throw CircuitSimulationError.noAnalysisSelected
+        }
+
+        let unsupported = ir.devices.first { !capabilities.supports($0.kind) }
+        if let unsupported { throw NumericCoreAdapterError.unsupportedElement(unsupported.name) }
+        let bridge = try Bridge(ir: ir)
         let operating = try bridge.model.dcOperatingPointContinuation()
-        let dc = effective.runDC ? try bridge.dcResult(operating) : nil
-        let ac = effective.runAC ? try bridge.acResult(operating, settings: effective) : nil
+        let dc = settings.runDC ? try bridge.dcResult(operating) : nil
+        let ac = settings.runAC ? try bridge.acResult(operating, settings: settings) : nil
         return CircuitSimResult(
             dc: dc,
             ac: ac,
             transient: nil,
             sweep: nil,
             fourier: [],
-            warnings: parsed.warnings
+            warnings: []
         )
     }
 }
@@ -83,7 +112,8 @@ private extension NumericCoreEngineBackend {
         let model: CircuitModel
         let devices: [CircuitDevice]
 
-        init(circuit: LinearCircuit) throws {
+        init(ir: CircuitIR) throws {
+            let circuit = try ir.makeLinearCircuit()
             self.circuit = circuit
             let nodes = circuit.nodeNames.map { CircuitNode(name: $0) }
             var mapped: [CircuitDevice] = []

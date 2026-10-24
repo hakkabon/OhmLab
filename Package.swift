@@ -95,7 +95,8 @@ let package = Package(
         .testTarget(
             name: "OhmLabTests",
             dependencies: ["OhmLabCore"],
-            path: "Tests/OhmLabTests"
+            path: "Tests/OhmLabTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

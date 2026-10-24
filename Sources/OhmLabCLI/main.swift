@@ -8,7 +8,7 @@
 import Foundation
 import OhmLabCore
 
-private let toolVersion = "0.1.0"
+private let toolVersion = "0.8.0"
 
 private let usage = """
 ohm \(toolVersion) — OhmLab headless circuit simulator
@@ -39,12 +39,13 @@ ANALYSIS:
                            Values accept SPICE suffixes (e.g. 1k, 10m, 1meg).
 
 ENGINE:
-  -e, --engine <name>      native (default) or rust (if linked).
+  -e, --engine <name>      native (default), numeric-core, or rust (if linked).
   -q, --quiet              Suppress warnings on stderr.
   -h, --help               Show this help.
   -V, --version            Show the version.
 
 PROJECTS & ANALYSES:
+  ohm engines                               Show backend capability matrix.
   ohm project info <bundle>                 Show a .ohmlabproj manifest.
   ohm project pack <bundle> -o <zip>        Pack a bundle into .ohmlabzip.
   ohm project unpack <zip> <dir>            Unpack an archive.
