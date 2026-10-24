@@ -1,6 +1,6 @@
 //! # ohm-core — OhmLab's optional Rust simulation core
 //!
-//! A dependency-free, modified-nodal-analysis (MNA) engine for linear circuits
+//! A compact modified-nodal-analysis (MNA) engine for linear circuits
 //! (R, C, L, and independent V/I sources) with DC operating-point and AC
 //! frequency-sweep analyses. It is the Rust half of OhmLab's pluggable engine
 //! façade: the Swift app ships with its native Swift MNA engine by default and
@@ -15,11 +15,13 @@
 //!   • `netlist` — parsing into a flat element list plus directives
 //!   • `linalg`  — field-generic Gaussian elimination (real and complex)
 //!   • `dc`/`ac` — the two analyses
-//!   • `json`    — a tiny, dependency-free serializer
+//!   • `json`    — result serialization plus serde-based Circuit IR transport
 //!   • `ffi`     — the exported C functions
 
 use std::ffi::{c_char, CStr, CString};
 use std::os::raw::c_int;
+
+mod transport;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Scalar field: real DC and complex AC share one Gaussian elimination
@@ -322,11 +324,21 @@ struct Circuit {
     elements: Vec<Element>,
     ac: Option<AcDirective>,
     warnings: Vec<String>,
+    /// Explicit Circuit IR order, including reference node. Netlist input keeps
+    /// deriving its order from first use for backward compatibility.
+    node_order: Option<Vec<String>>,
 }
 
 impl Circuit {
     /// The ordered list of non-ground node names (ground is node `"0"`).
     fn node_names(&self) -> Vec<String> {
+        if let Some(order) = &self.node_order {
+            return order
+                .iter()
+                .filter(|name| !is_ground(name))
+                .cloned()
+                .collect();
+        }
         let mut names: Vec<String> = Vec::new();
         for e in &self.elements {
             for n in [e.nodes().0, e.nodes().1] {
@@ -420,7 +432,12 @@ fn parse_netlist(text: &str) -> Result<Circuit, String> {
         }
     }
 
-    Ok(Circuit { elements, ac, warnings })
+    Ok(Circuit {
+        elements,
+        ac,
+        warnings,
+        node_order: None,
+    })
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -629,24 +646,22 @@ fn ac_frequency_points(d: &AcDirective) -> Vec<f64> {
         }
         SweepType::Decade => {
             let ratio = (d.stop / d.start).log10();
-            let total = (ratio * d.points as f64).ceil() as usize;
+            let total = ((ratio * d.points as f64).ceil() as usize).max(1);
             for i in 0..=total {
-                let f = d.start * 10f64.powf(i as f64 / d.points as f64);
-                if f > d.stop * (1.0 + 1e-9) {
-                    break;
-                }
-                out.push(f);
+                out.push((d.start * 10f64.powf(i as f64 / d.points as f64)).min(d.stop));
+            }
+            if out.last().copied() != Some(d.stop) {
+                out.push(d.stop);
             }
         }
         SweepType::Octave => {
             let ratio = (d.stop / d.start).log2();
-            let total = (ratio * d.points as f64).ceil() as usize;
+            let total = ((ratio * d.points as f64).ceil() as usize).max(1);
             for i in 0..=total {
-                let f = d.start * 2f64.powf(i as f64 / d.points as f64);
-                if f > d.stop * (1.0 + 1e-9) {
-                    break;
-                }
-                out.push(f);
+                out.push((d.start * 2f64.powf(i as f64 / d.points as f64)).min(d.stop));
+            }
+            if out.last().copied() != Some(d.stop) {
+                out.push(d.stop);
             }
         }
     }
@@ -809,7 +824,7 @@ fn stamp_vsource_c(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// JSON serialization (dependency-free)
+// JSON result serialization
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn json_number(x: f64) -> String {
@@ -845,12 +860,24 @@ fn json_string_array(items: &[String]) -> String {
 }
 
 fn solve_to_json(circuit: &Circuit) -> (String, Vec<String>) {
+    solve_to_json_selected(circuit, true, circuit.ac.is_some(), None)
+}
+
+fn solve_to_json_selected(
+    circuit: &Circuit,
+    run_dc: bool,
+    run_ac: bool,
+    transport_version: Option<u32>,
+) -> (String, Vec<String>) {
     let mut warnings = circuit.warnings.clone();
+    let mut errors = Vec::new();
+    let strict = transport_version.is_some();
 
     let names = circuit.node_names();
     let mut dc_json = "null".to_string();
-    match solve_dc(circuit) {
-        Ok(sol) => {
+    if run_dc {
+        match solve_dc(circuit) {
+            Ok(sol) => {
             for v in &sol.voltages {
                 if !v.is_finite() {
                     warnings.push("ohm-core: non-finite DC node voltage.".to_string());
@@ -904,16 +931,22 @@ fn solve_to_json(circuit: &Circuit) -> (String, Vec<String>) {
                 components.join(","),
                 sources.join(",")
             );
-        }
-        Err(message) => {
-            warnings.push(format!("ohm-core: {message}"));
+            }
+            Err(message) => {
+                if strict {
+                    errors.push(message)
+                } else {
+                    warnings.push(format!("ohm-core: {message}"))
+                }
+            }
         }
     }
 
     let mut ac_json = "null".to_string();
-    if let Some(directive) = &circuit.ac {
-        match solve_ac(circuit, directive) {
-            Ok(sol) => {
+    if run_ac {
+        if let Some(directive) = &circuit.ac {
+            match solve_ac(circuit, directive) {
+                Ok(sol) => {
                 let freqs: Vec<String> =
                     sol.frequencies.iter().map(|f| json_number(*f)).collect();
                 let nodes: Vec<String> = names
@@ -971,14 +1004,27 @@ fn solve_to_json(circuit: &Circuit) -> (String, Vec<String>) {
                     nodes.join(","),
                     components.join(",")
                 );
+                }
+                Err(message) => {
+                    if strict {
+                        errors.push(message)
+                    } else {
+                        warnings.push(format!("ohm-core: {message}"))
+                    }
+                }
             }
-            Err(message) => warnings.push(format!("ohm-core: {message}")),
         }
     }
 
+    let transport = transport_version
+        .map(|version| format!(",\"transportVersion\":{version}"))
+        .unwrap_or_default();
     let json = format!(
-        "{{\"engine\":{},\"warnings\":{},\"dc\":{},\"ac\":{}}}",
+        "{{\"engine\":{},\"contractVersion\":{}{},\"errors\":{},\"warnings\":{},\"dc\":{},\"ac\":{}}}",
         json_string(ENGINE_ID),
+        transport::RESULT_CONTRACT_VERSION,
+        transport,
+        json_string_array(&errors),
         json_string_array(&warnings),
         dc_json,
         ac_json
@@ -993,7 +1039,7 @@ static VERSION_C: &[u8] = concat!("ohm-core ", env!("CARGO_PKG_VERSION"), "\0").
 // C ABI
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Returns a `'\0'`-terminated static version string, e.g. `"ohm-core 0.1.0"`.
+/// Returns a `'\0'`-terminated static version string, e.g. `"ohm-core 0.2.0"`.
 ///
 /// # Safety
 /// The returned pointer is static and must not be freed.
@@ -1039,11 +1085,64 @@ pub unsafe extern "C" fn ohm_solve(netlist: *const c_char, out_json: *mut *mut c
     }
 }
 
-/// Frees a string previously returned by [`ohm_solve`].
+/// Solves a versioned Circuit IR transport request. Unlike `ohm_solve`, this
+/// entry point never reparses SPICE and rejects unsupported devices atomically.
 ///
 /// # Safety
-/// `s` must be a pointer returned by `ohm_solve` (or null) and must not be used
-/// afterwards.
+/// `request_json` must be a valid NUL-terminated C string and `out_json` a
+/// valid, writable pointer. The returned string must be released exactly once
+/// with [`ohm_free_string`].
+#[no_mangle]
+pub unsafe extern "C" fn ohm_solve_circuit_ir(
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> c_int {
+    if request_json.is_null() || out_json.is_null() {
+        return -1;
+    }
+    let text = match CStr::from_ptr(request_json).to_str() {
+        Ok(value) => value,
+        Err(_) => return -2,
+    };
+    let json = match transport::Request::decode(text) {
+        Ok(request) => {
+            let run_dc = request.run_dc();
+            match request.into_circuit() {
+                Ok(circuit) => solve_to_json_selected(
+                    &circuit,
+                    run_dc,
+                    circuit.ac.is_some(),
+                    Some(transport::TRANSPORT_VERSION),
+                ).0,
+                Err(error) => transport_error_json(&error),
+            }
+        }
+        Err(error) => transport_error_json(&error),
+    };
+    match CString::new(json) {
+        Ok(value) => {
+            *out_json = value.into_raw();
+            0
+        }
+        Err(_) => -3,
+    }
+}
+
+fn transport_error_json(message: &str) -> String {
+    format!(
+        "{{\"engine\":{},\"contractVersion\":{},\"transportVersion\":{},\"errors\":[{}],\"warnings\":[],\"dc\":null,\"ac\":null}}",
+        json_string(ENGINE_ID),
+        transport::RESULT_CONTRACT_VERSION,
+        transport::TRANSPORT_VERSION,
+        json_string(message),
+    )
+}
+
+/// Frees a string returned by either solve entry point.
+///
+/// # Safety
+/// `s` must be a pointer returned by either solve entry point (or null) and must
+/// not be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn ohm_free_string(s: *mut c_char) {
     if !s.is_null() {

@@ -6,10 +6,9 @@
 #   • rust/ohm-core/target/release/libohm_core.a   (static library)
 #   • Sources/CCOhmCore/ohm_core.h                 (public header, kept in sync)
 #
-# After running this, enable the Rust engine by following the "Rust core"
-# instructions in README.md (uncomment the CCOhmCore target/dependency and
-# OHMLAB_RUST_CORE define in Package.swift). The native Swift engine remains the
-# default and no Rust toolchain is required for a normal build.
+# After running this, set OHMLAB_RUST_CORE=1 for Swift build/test commands.
+# The native Swift engine remains the default and no Rust toolchain is required
+# for a normal build.
 #
 # Usage: scripts/build-rust-core.sh [debug|release]   (default: release)
 
@@ -43,5 +42,4 @@ cp "$CRATE_DIR/include/ohm_core.h" "$ROOT/Sources/CCOhmCore/ohm_core.h"
 echo "✓ Done. Static library:"
 ls -l "$CRATE_DIR/target/$PROFILE/libohm_core.a"
 echo
-echo "Enable the engine per README.md (Package.swift: CCOhmCore target + dependency,"
-echo "OHMLAB_RUST_CORE define)."
+echo "Run OHMLAB_RUST_CORE=1 swift test to compile and exercise the bridge."

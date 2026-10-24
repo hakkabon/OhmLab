@@ -2,14 +2,13 @@
 // Optional bridge to the Rust simulation core (`ohm-core`).
 //
 // This file is compiled only when the `CCOhmCore` system-library module is
-// available — i.e. after you have built the static library with
-// `scripts/build-rust-core.sh` and enabled the `CCOhmCore` target + dependency
-// in Package.swift (see README.md, "Rust core"). By default nothing here is
-// compiled and the native Swift engine is the sole backend.
+// available: run `scripts/build-rust-core.sh`, then set `OHMLAB_RUST_CORE=1`
+// for the Swift build. By default nothing here is compiled and the native Swift
+// engine is the sole backend.
 //
-// The bridge marshals a netlist to the C entry point `ohm_solve`, which returns
-// a JSON document, and decodes it into the same `CircuitSimResult` the native
-// engine produces. No generated bindings are required.
+// The bridge marshals Circuit IR v1 through `ohm_solve_circuit_ir`, which
+// returns a versioned JSON result. The older netlist ABI remains available to
+// external callers but is no longer the backend's internal solver boundary.
 
 #if canImport(CCOhmCore)
 import CCOhmCore
@@ -18,9 +17,8 @@ import Foundation
 /// A `SimulationEngineBackend` backed by the Rust `ohm-core` MNA engine.
 ///
 /// Scope note: the Rust core implements DC operating points and AC sweeps for
-/// linear R/C/L/V/I circuits. Unsupported analyses (transient, DC sweeps, model
-/// libraries, nonlinear devices) are reported as warnings rather than silently
-/// dropped; use the native engine for the full feature set.
+/// linear R/C/L/V/I circuits. Unsupported analyses and devices fail before the
+/// FFI call; use the native engine for the full feature set.
 struct RustEngineBackend: SimulationEngineBackend {
     let identifier = "ohm-core"
 
@@ -28,10 +26,10 @@ struct RustEngineBackend: SimulationEngineBackend {
         backendIdentifier: "ohm-core",
         analyses: [.dcOperatingPoint, .acSmallSignal],
         devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource],
-        features: [.spiceNetlistInput]
+        features: [.spiceNetlistInput, .circuitIRInput, .modelLibraries]
     )
 
-    /// The Rust core version reported by the library, e.g. `"ohm-core 0.1.0"`.
+    /// The Rust core version reported by the library, e.g. `"ohm-core 0.2.0"`.
     var engineVersion: String {
         guard let ptr = ohm_engine_version() else { return "ohm-core" }
         return String(cString: ptr)
@@ -45,36 +43,74 @@ struct RustEngineBackend: SimulationEngineBackend {
         settings: AnalysisSettings,
         libraries: [SpiceModelLibrary]
     ) throws -> CircuitSimResult {
-        var warnings: [String] = []
-        if !libraries.isEmpty {
-            warnings.append("ohm-core: model libraries are ignored by the Rust core; only R/C/L/V/I are modeled.")
+        guard !netlist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CircuitSimulationError.emptyNetlist
         }
-        if settings.runTransient {
-            warnings.append("ohm-core: transient analysis is not supported; only DC and AC were run.")
+        let include = SpiceLibraryManager(libraries: libraries).includeResolver()
+        let parsed = try SpiceNetlistParser.parse(netlist, include: include, libraries: libraries)
+        var effective = settings
+        if parsed.analysis.hasAC {
+            effective.runAC = true
+            if settings.acStartFrequency == AnalysisSettings.default.acStartFrequency,
+               settings.acStopFrequency == AnalysisSettings.default.acStopFrequency {
+                effective.acSweepType = parsed.analysis.sweep
+                effective.acStartFrequency = parsed.analysis.startFrequency
+                effective.acStopFrequency = parsed.analysis.stopFrequency
+                effective.acPointsPerDecade = parsed.analysis.points
+            }
         }
-        if settings.runDCSweep {
-            warnings.append("ohm-core: DC sweeps are not supported by the Rust core.")
+        if effective.runTransient || parsed.analysis.hasTransient {
+            throw RustCircuitTransportError.unsupportedAnalysis("transient analysis")
         }
+        if effective.runDCSweep || !parsed.analysis.dcSweep.isEmpty || parsed.analysis.step != nil {
+            throw RustCircuitTransportError.unsupportedAnalysis("DC or parameter sweeps")
+        }
+        if !parsed.analysis.fourier.isEmpty {
+            throw RustCircuitTransportError.unsupportedAnalysis("Fourier analysis")
+        }
+        let ir = try CircuitIR(
+            linearCircuit: parsed.circuit,
+            initialConditions: parsed.initialConditions
+        )
+        var result = try solve(circuit: ir, settings: effective)
+        result.warnings.insert(contentsOf: parsed.warnings, at: 0)
+        return result
+    }
 
-        var text = netlist
-        if settings.runAC {
-            // The core reads the standard `.ac` directive; synthesize one from
-            // the UI settings.
-            text += "\n.ac \(settings.acSweepType.rawValue) \(settings.acPointsPerDecade) "
-            text += "\(settings.acStartFrequency) \(settings.acStopFrequency)\n"
+    func solve(circuit: CircuitIR, settings: AnalysisSettings) throws -> CircuitSimResult {
+        let request = try RustCircuitTransport.Request(circuit: circuit, settings: settings)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let requestData = try encoder.encode(request)
+        guard let requestJSON = String(data: requestData, encoding: .utf8) else {
+            throw RustEngineError.invalidPayload
         }
-
-        let payload = try run(text)
-        warnings.insert(contentsOf: payload.warnings, at: 0)
-        return payload.makeResult(runDC: settings.runDC, runAC: settings.runAC, extraWarnings: warnings)
+        let payload = try runCircuitIR(requestJSON)
+        guard payload.transportVersion == RustCircuitTransport.currentVersion else {
+            throw RustCircuitTransportError.incompatibleResult(
+                expectedTransport: RustCircuitTransport.currentVersion,
+                actualTransport: payload.transportVersion
+            )
+        }
+        guard payload.contractVersion == SimulationResultContract.currentVersion else {
+            throw SimulationContractError.unsupportedResultVersion(payload.contractVersion)
+        }
+        if !payload.errors.isEmpty { throw RustCircuitTransportError.rejected(payload.errors) }
+        let result = payload.makeResult(
+            runDC: settings.runDC,
+            runAC: settings.runAC,
+            extraWarnings: payload.warnings
+        )
+        try SimulationResultContract.validate(result)
+        return result
     }
 
     // MARK: - FFI
 
-    private func run(_ netlist: String) throws -> Payload {
+    private func runCircuitIR(_ request: String) throws -> Payload {
         var outPointer: UnsafeMutablePointer<CChar>?
-        let status = netlist.withCString { cString in
-            ohm_solve(cString, &outPointer)
+        let status = request.withCString { cString in
+            ohm_solve_circuit_ir(cString, &outPointer)
         }
         guard status == 0, let raw = outPointer else {
             throw RustEngineError.solveFailed(status: Int(status))
@@ -89,9 +125,12 @@ struct RustEngineBackend: SimulationEngineBackend {
 
     // MARK: - Wire format
 
-    /// The JSON document returned by `ohm_solve`.
+    /// The JSON document returned by `ohm_solve_circuit_ir`.
     private struct Payload: Decodable {
         let engine: String
+        let contractVersion: Int
+        let transportVersion: Int?
+        let errors: [String]
         let warnings: [String]
         let dc: DCDTO?
         let ac: ACDTO?
@@ -113,6 +152,7 @@ struct RustEngineBackend: SimulationEngineBackend {
                 )
             }
             return CircuitSimResult(
+                contractVersion: contractVersion,
                 dc: dcResult,
                 ac: acResult,
                 transient: nil,
