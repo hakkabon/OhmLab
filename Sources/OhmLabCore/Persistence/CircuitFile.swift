@@ -168,12 +168,15 @@ public struct CircuitFile: Codable, Equatable, Sendable {
 
 public enum CircuitFileError: LocalizedError {
     case unsupportedVersion(Int)
+    case unsupportedSchematicVersion(Int)
     case corrupt
 
     public var errorDescription: String? {
         switch self {
         case .unsupportedVersion(let version):
             return "This document was created by a newer version of OhmLab (format \(version)) and cannot be opened."
+        case .unsupportedSchematicVersion(let version):
+            return "This document uses a newer schematic format (\(version)) and cannot be opened."
         case .corrupt:
             return "The document is not a valid OhmLab circuit file."
         }
@@ -204,6 +207,12 @@ public enum CircuitFileStore {
 
     private static func migrate(_ file: CircuitFile) throws -> CircuitFile {
         var file = file
+        guard file.schematic.schemaVersion <= SchematicSnapshot.currentSchemaVersion else {
+            throw CircuitFileError.unsupportedSchematicVersion(file.schematic.schemaVersion)
+        }
+        // Schematic v2 added hierarchy. A missing hierarchy decodes as an
+        // empty array, so the migration is lossless.
+        file.schematic.schemaVersion = SchematicSnapshot.currentSchemaVersion
         switch file.schemaVersion {
         case 1:
             // v1 stored a single `voltage`/`current` magnitude on sources. Split
@@ -257,7 +266,15 @@ public enum CircuitFileStore {
 
     private static let recoveryPrefix = "recovery-"
 
-    private static func recoveryDirectory() -> URL? {
+    private static func recoveryDirectory(override: URL? = nil) -> URL? {
+        if let override {
+            do {
+                try FileManager.default.createDirectory(at: override, withIntermediateDirectories: true)
+                return override
+            } catch {
+                return nil
+            }
+        }
         guard let base = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -269,29 +286,31 @@ public enum CircuitFileStore {
         return directory
     }
 
-    private static func recoveryURL(id: UUID) -> URL? {
-        recoveryDirectory()?.appendingPathComponent("\(recoveryPrefix)\(id.uuidString).\(fileExtension)")
+    private static func recoveryURL(id: UUID, directory: URL? = nil) -> URL? {
+        recoveryDirectory(override: directory)?
+            .appendingPathComponent("\(recoveryPrefix)\(id.uuidString).\(fileExtension)")
     }
 
     /// Mirror the in-memory document to its recovery slot. Best-effort.
-    public static func saveRecovery(_ file: CircuitFile, id: UUID) {
-        guard let url = recoveryURL(id: id) else { return }
+    public static func saveRecovery(_ file: CircuitFile, id: UUID, directory: URL? = nil) {
+        guard let url = recoveryURL(id: id, directory: directory) else { return }
         try? encode(file).write(to: url, options: .atomic)
     }
 
-    public static func loadRecovery(id: UUID) -> CircuitFile? {
-        guard let url = recoveryURL(id: id), FileManager.default.fileExists(atPath: url.path) else { return nil }
+    public static func loadRecovery(id: UUID, directory: URL? = nil) -> CircuitFile? {
+        guard let url = recoveryURL(id: id, directory: directory),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try? read(from: url)
     }
 
-    public static func clearRecovery(id: UUID) {
-        guard let url = recoveryURL(id: id) else { return }
+    public static func clearRecovery(id: UUID, directory: URL? = nil) {
+        guard let url = recoveryURL(id: id, directory: directory) else { return }
         try? FileManager.default.removeItem(at: url)
     }
 
     /// All recoverable documents, stable-sorted by slot name.
-    public static func loadAllRecoveries() -> [CircuitFile] {
-        guard let directory = recoveryDirectory(),
+    public static func loadAllRecoveries(directory override: URL? = nil) -> [CircuitFile] {
+        guard let directory = recoveryDirectory(override: override),
               let urls = try? FileManager.default.contentsOfDirectory(
                   at: directory,
                   includingPropertiesForKeys: nil,

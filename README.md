@@ -38,6 +38,16 @@ OhmLab 1.0 freezes the product-facing boundary while allowing the numerical core
 
 The frozen contract and compatibility policy are documented in [`docs/contracts/production-boundary-v1.md`](docs/contracts/production-boundary-v1.md).
 
+### 1.0.x Release Hardening
+
+Patch releases are protected by immutable legacy-document fixtures, nested
+schema validation, crash-recovery isolation tests, large-document round trips,
+and ZIP payload checksum validation. CI exercises both the standard Swift build
+and the optional Rust transport. [`scripts/package-release.sh`](scripts/package-release.sh)
+produces a validated, signed macOS application/CLI archive with a SHA-256
+checksum; Developer ID signing and notarization are enabled only when release
+credentials are supplied. See [`docs/releasing.md`](docs/releasing.md).
+
 ## Architecture: The Four-Layer Model
 
 Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.

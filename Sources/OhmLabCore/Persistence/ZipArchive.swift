@@ -118,6 +118,7 @@ public enum ZipArchive {
                 throw ZipArchiveError.malformed("bad central-directory entry")
             }
             let method = readU16(bytes, pointer + 10)
+            let expectedChecksum = readU32(bytes, pointer + 16)
             let compressedSize = Int(readU32(bytes, pointer + 20))
             let nameLength = Int(readU16(bytes, pointer + 28))
             let extraLength = Int(readU16(bytes, pointer + 30))
@@ -139,7 +140,11 @@ public enum ZipArchive {
                 throw ZipArchiveError.malformed("entry data out of range for \(name)")
             }
             guard method == 0 else { throw ZipArchiveError.unsupportedCompression(method) }
-            entries.append(Entry(name: name, data: Data(bytes[dataStart..<(dataStart + compressedSize)])))
+            let entryData = Data(bytes[dataStart..<(dataStart + compressedSize)])
+            guard crc32(entryData) == expectedChecksum else {
+                throw ZipArchiveError.malformed("checksum mismatch for \(name)")
+            }
+            entries.append(Entry(name: name, data: entryData))
 
             pointer = nameStart + nameLength + extraLength + commentLength
         }

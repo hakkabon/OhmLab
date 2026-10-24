@@ -15,13 +15,17 @@ if [[ "$version" != "ohm 1.0.0" ]]; then
 fi
 
 report="$(mktemp)"
-trap 'rm -f "$report"' EXIT
+artifacts="$(mktemp -d)"
+trap 'rm -f "$report"; rm -rf "$artifacts"' EXIT
 .build/debug/ohm doctor --json >"$report"
 if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$report"; then
     printf 'production readiness report is not ready\n' >&2
     cat "$report" >&2
     exit 1
 fi
+
+./scripts/package-release.sh "$artifacts"
+(cd "$artifacts" && shasum -a 256 -c ./*.sha256)
 
 if command -v cargo >/dev/null 2>&1; then
     cargo fmt --manifest-path rust/ohm-core/Cargo.toml -- --check

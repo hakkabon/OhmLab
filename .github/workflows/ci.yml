@@ -1,0 +1,39 @@
+name: release-hardening
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift package resolve
+      - run: swift test
+      - run: ./scripts/health-check.sh
+
+  rust-transport:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --manifest-path rust/ohm-core/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path rust/ohm-core/Cargo.toml --all-targets -- -D warnings
+      - run: ./scripts/build-rust-core.sh
+      - run: OHMLAB_RUST_CORE=1 swift test
+
+  artifact:
+    runs-on: macos-14
+    needs: [swift, rust-transport]
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/package-release.sh "$RUNNER_TEMP/artifacts"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OhmLab-macOS
+          path: |
+            ${{ runner.temp }}/artifacts/*.zip
+            ${{ runner.temp }}/artifacts/*.sha256
+          if-no-files-found: error

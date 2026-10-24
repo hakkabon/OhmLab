@@ -212,6 +212,21 @@ public struct SchematicSnapshot: Codable, Equatable, Sendable {
         self.netLabels = netLabels
         self.sheets = sheets
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, symbols, wires, netLabels, sheets
+    }
+
+    /// Keep pre-hierarchy documents readable. `sheets` was added in schema v2;
+    /// synthesized Codable would reject genuine v1 files where it is absent.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        symbols = try container.decode([SymbolInstance].self, forKey: .symbols)
+        wires = try container.decode([WireSegment].self, forKey: .wires)
+        netLabels = try container.decode([NetLabel].self, forKey: .netLabels)
+        sheets = try container.decodeIfPresent([Sheet].self, forKey: .sheets) ?? []
+    }
 }
 
 @MainActor

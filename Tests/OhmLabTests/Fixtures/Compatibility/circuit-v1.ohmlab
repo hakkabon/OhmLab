@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "Legacy voltage source",
+  "schematic": {
+    "schemaVersion": 1,
+    "symbols": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "descriptorId": "voltage-source",
+        "refDes": "V1",
+        "position": { "x": 4, "y": 2 },
+        "rotation": 0,
+        "parameters": { "voltage": 5.0 }
+      }
+    ],
+    "wires": [],
+    "netLabels": []
+  },
+  "analysis": {
+    "runDC": true,
+    "runAC": true,
+    "acStartFrequency": 1.0,
+    "acStopFrequency": 1000000.0,
+    "acPointsPerDecade": 20
+  }
+}
