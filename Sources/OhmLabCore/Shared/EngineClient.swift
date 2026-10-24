@@ -212,9 +212,14 @@ public protocol SimulationEngineBackend: Sendable {
     /// A stable, human-readable identifier (surfaced in diagnostics and the CLI).
     var identifier: String { get }
 
-    /// Release status at the stable product boundary. Only the native reference
-    /// engine is production-qualified in 1.0; alternative engines are preview.
+    /// Release status at the stable product boundary. Full-production and
+    /// linear-production are separate promises.
     var maturity: SimulationBackendMaturity { get }
+
+    /// Whether this backend is supported or retained only for migration.
+    var lifecycle: SimulationBackendLifecycle { get }
+    var deprecationMessage: String? { get }
+    var removalVersion: String? { get }
 
     /// Backend implementation version, independent of the wire contracts.
     var implementationVersion: String? { get }
@@ -236,6 +241,9 @@ public protocol SimulationEngineBackend: Sendable {
 
 public extension SimulationEngineBackend {
     var maturity: SimulationBackendMaturity { .external }
+    var lifecycle: SimulationBackendLifecycle { .supported }
+    var deprecationMessage: String? { nil }
+    var removalVersion: String? { nil }
     var implementationVersion: String? { nil }
 
     var capabilities: SimulationBackendCapabilities {

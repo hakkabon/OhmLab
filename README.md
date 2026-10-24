@@ -31,12 +31,12 @@ OhmLab 0.9 extends the common native/NumericCore/Rust surface from DC and AC to 
 OhmLab 1.0 freezes the product-facing boundary while allowing the numerical cores to continue evolving independently:
 
 * `OhmLabRelease.version` is the single source of truth for the application and `ohm` CLI version. Circuit IR, backend capabilities, simulation results, and Rust transport retain independently negotiated contract versions.
-* Every backend declares its maturity and implementation version. Declarations are validated before activation or simulation; only `native-mna` is production-qualified, while NumericCore and Rust remain explicitly selectable preview backends.
+* Every backend declares its maturity, lifecycle, and implementation version. Declarations are validated before activation or simulation; `native-mna` is full-production, `numeric-core` is linear-production, and standalone Rust is a deprecated compatibility backend.
 * A solve snapshots one backend for execution and result attribution, preventing concurrent backend selection from mislabelling a result.
 * Results are validated both before and after plugin result processors. Extensions may annotate valid output but cannot publish malformed axes, duplicate names, incompatible versions, or non-finite values.
 * `ohm doctor [--json]` emits a machine-readable production-readiness report. [`scripts/release-check.sh`](scripts/release-check.sh) runs the complete release gate.
 
-The frozen contract and compatibility policy are documented in [`docs/contracts/production-boundary-v1.md`](docs/contracts/production-boundary-v1.md).
+The original compatibility policy is documented in [`production-boundary-v1.md`](docs/contracts/production-boundary-v1.md); 1.2's scoped maturity and lifecycle additions are versioned in [`production-boundary-v2.md`](docs/contracts/production-boundary-v2.md).
 
 ### 1.0.x Release Hardening
 
@@ -57,6 +57,21 @@ expected values, actual values, errors, tolerances, failures, and timing.
 Native MNA and Swift-NumericCore are mandatory; Rust is mandatory whenever it
 is linked. The report is versioned independently and is part of the release
 gate. See [`docs/contracts/numerical-trust-v1.md`](docs/contracts/numerical-trust-v1.md).
+
+## 1.2 Linear Backend Graduation
+
+OhmLab 1.2 graduates `numeric-core` from preview to the scoped
+`linear-production` tier for DC, AC, and transient R/C/L/V/I circuits. The
+release gate now combines declaration validation, the complete analytical
+DC/AC trust corpus, and six analytical RC transient cases. The implementation
+identity records the pinned Swift-NumericCore revision and its bundled
+Rust-NumericCore 0.34.0 binary. Native MNA remains the default and only
+full-production backend.
+
+The standalone `rust/ohm-core` backend is deprecated for this compatibility
+release. Use `numeric-core`; standalone removal is scheduled for OhmLab 1.3.0.
+Run `ohm qualify-linear [--json]` for the machine-readable evidence. See
+[`docs/contracts/linear-backend-graduation-v1.md`](docs/contracts/linear-backend-graduation-v1.md).
 
 ## Architecture: The Four-Layer Model
 
@@ -99,9 +114,9 @@ The simulation layer is a **native Swift linear solver**:
 Simulation is reached through `SimulationEngine`, a façade that dispatches to a registered `SimulationEngineBackend`:
 
 *   **`NativeMNAEngine`** (identifier `"native-mna"`) is the built-in Swift engine and the default backend — the full DC/AC/transient/DC-sweep/`.four` feature set described above.
-*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) adapts OhmLab's parsed linear R/C/L/V/I circuits to NumericCore's provisional circuit API. It provides DC, AC, and transient analysis with initial conditions. NumericCore currently accepts `PULSE` and undelayed/undamped `SIN` sources; unsupported waveform variants and nonlinear devices fail explicitly. The dependency is pinned to an exact reviewed revision until NumericCore publishes the circuit API in a stable release.
+*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) is the linear-production adapter for parsed linear R/C/L/V/I circuits. It provides DC, AC, and transient analysis with initial conditions. NumericCore currently accepts `PULSE` and undelayed/undamped `SIN` sources; unsupported waveform variants and nonlinear devices fail explicitly. The dependency is pinned to an exact reviewed revision and qualified together with its Rust-NumericCore binary.
 *   **Backends are swappable at runtime** with `SimulationEngine.register(_:makeDefault:)` and `SimulationEngine.resetToDefaultBackend()`. Because the façade is the single entry point (`EngineClient` and the CLI both call it), no call site changes when a backend changes. The schematic entry point has a default implementation that projects a snapshot to a netlist, so a foreign backend only has to implement the netlist solve.
-*   **`ohm-core`** (Rust) is an optional alternative backend, `rust/ohm-core`, exposed over a small JSON C ABI (`ohm_engine_version`, `ohm_solve_circuit_ir`, the legacy `ohm_solve`, and `ohm_free_string`) — no generated bindings required. Its preferred entry point consumes Circuit IR transport v1 and covers DC, AC, and backward-Euler transient analysis for linear R/C/L/V/I circuits, including source waveforms and initial conditions. Unsupported analyses and devices fail closed before partial results can reach the application. `RustEngineBackend.swift` bridges it behind the façade.
+*   **`ohm-core`** (Rust) is the deprecated standalone compatibility backend in `rust/ohm-core`, exposed over a small JSON C ABI. It remains available and tested in 1.2, but new integrations must use `numeric-core`; removal is scheduled for 1.3.0.
 *   **Opt-in build.** Nothing Rust-related is compiled unless requested. Run `scripts/build-rust-core.sh`, then build or test with `OHMLAB_RUST_CORE=1`; the package manifest links the staged library and exposes `RustEngineBackend`. Native Swift remains the runtime default.
 
 ## Key Frontend Features

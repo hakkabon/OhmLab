@@ -12,9 +12,9 @@
 // Engine:
 //   • Default:  the built-in pure-Swift MNA engine (OhmLabCore). No Rust
 //               toolchain is required for a normal build or test run.
-//   • Optional: a Rust `ohm-core` crate (rust/ohm-core) can be linked behind the
-//               same EngineBackend façade. It provides DC/AC/transient for linear R/C/L/V/I
-//               circuits and returns versioned JSON over a Circuit IR C ABI.
+//   • Compatibility only: the deprecated Rust `ohm-core` crate can be linked
+//               behind the same façade through 1.2. New integrations use the
+//               Swift-NumericCore adapter; standalone removal is planned for 1.3.
 //
 // ── Enabling the Rust core (optional) ────────────────────────────────────────
 //   1. scripts/build-rust-core.sh          # runs cargo test + builds libohm_core.a

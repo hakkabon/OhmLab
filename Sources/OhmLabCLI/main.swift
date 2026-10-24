@@ -39,7 +39,7 @@ ANALYSIS:
                            Values accept SPICE suffixes (e.g. 1k, 10m, 1meg).
 
 ENGINE:
-  -e, --engine <name>      native (default), numeric-core, or rust (if linked).
+  -e, --engine <name>      native (default), numeric-core, or deprecated rust (if linked).
   -q, --quiet              Suppress warnings on stderr.
   -h, --help               Show this help.
   -V, --version            Show the version.
@@ -47,7 +47,8 @@ ENGINE:
 PROJECTS & ANALYSES:
   ohm engines                               Show backend capability matrix.
   ohm doctor [--json]                       Verify the stable 1.x production boundary.
-  ohm verify [--json] [--seed <n>]          Run the 1.1 numerical trust suite.
+  ohm verify [--json] [--seed <n>]          Run the numerical trust suite.
+  ohm qualify-linear [--json]               Verify the 1.2 linear-production backend.
   ohm project info <bundle>                 Show a .ohmlabproj manifest.
   ohm project pack <bundle> -o <zip>        Pack a bundle into .ohmlabzip.
   ohm project unpack <zip> <dir>            Unpack an archive.

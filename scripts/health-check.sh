@@ -55,11 +55,14 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 1.1 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 1.1.0"'
+run "OhmLab 1.2 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 1.2.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
 run "analytical backend qualification" "$ohm" verify --json
+
+section "Linear backend graduation"
+run "linear-production qualification" "$ohm" qualify-linear --json
 
 section "Example circuits — CLI runs"
 for file in Examples/*.cir; do

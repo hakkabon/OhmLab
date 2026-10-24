@@ -26,7 +26,7 @@ enum CommandError: LocalizedError {
 
 enum Subcommand {
     static let names: Set<String> = [
-        "engines", "doctor", "verify", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+        "engines", "doctor", "verify", "qualify-linear", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
     ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
@@ -48,6 +48,7 @@ enum Subcommand {
         case "engines": return try runEngines(Array(arguments.dropFirst()))
         case "doctor": return try runDoctor(Array(arguments.dropFirst()))
         case "verify": return try runVerify(Array(arguments.dropFirst()))
+        case "qualify-linear": return try runLinearQualification(Array(arguments.dropFirst()))
         case "project": return try runProject(Array(arguments.dropFirst()))
         case "kicad": return try runKicad(Array(arguments.dropFirst()))
         case "sync": return try runSync(Array(arguments.dropFirst()))
@@ -78,9 +79,13 @@ enum Subcommand {
             writeStdout("OhmLab \(report.productVersion) production boundary\n")
             writeStdout("  default: \(report.defaultBackend)\n")
             for backend in report.backends {
-                let state = backend.isProductionReady ? "production" : backend.maturity.rawValue
+                let state = backend.maturity.rawValue
                 let version = backend.implementationVersion.map { " \($0)" } ?? ""
                 writeStdout("  \(backend.identifier): \(state)\(version)\n")
+                if backend.lifecycle == .deprecated {
+                    let removal = backend.removalVersion.map { ", removal \($0)" } ?? ""
+                    writeStdout("    deprecated\(removal): \(backend.deprecationMessage ?? "migration required")\n")
+                }
                 for issue in backend.issues { writeStdout("    issue: \(issue)\n") }
             }
             writeStdout(report.ready ? "READY\n" : "NOT READY\n")
@@ -129,6 +134,33 @@ enum Subcommand {
             }
             for issue in report.issues { writeStdout("  issue: \(issue)\n") }
             writeStdout(report.ready ? "TRUSTED\n" : "NOT TRUSTED\n")
+        }
+        return report.ready ? 0 : 1
+    }
+
+    // MARK: - linear backend graduation
+
+    private static func runLinearQualification(_ arguments: [String]) throws -> Int32 {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandError.usage("usage: ohm qualify-linear [--json]")
+        }
+        let report = LinearBackendGraduation.evaluate()
+        if arguments == ["--json"] {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(report)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CommandError.runtime("could not encode the linear-backend qualification report")
+            }
+            writeStdout(text + "\n")
+        } else {
+            writeStdout("OhmLab linear backend graduation v\(report.contractVersion)\n")
+            for backend in report.backends {
+                let passed = backend.transientCases.filter(\.passed).count
+                writeStdout("  \(backend.identifier): DC/AC \(backend.numericalTrustPassed ? "pass" : "fail"), transient \(passed)/\(backend.transientCases.count)\n")
+            }
+            for issue in report.issues { writeStdout("  issue: \(issue)\n") }
+            writeStdout(report.ready ? "GRADUATED\n" : "NOT GRADUATED\n")
         }
         return report.ready ? 0 : 1
     }

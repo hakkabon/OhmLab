@@ -18,22 +18,25 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
     }
 }
 
-/// Transitional backend over NumericCore's provisional circuit-analysis API.
+/// Linear-production backend over NumericCore's circuit-analysis API.
 ///
-/// The native engine remains the product default while nonlinear-device,
-/// waveform, and advanced-analysis parity are completed. This adapter
+/// The native engine remains the full-feature product default while nonlinear
+/// and advanced-analysis parity are completed. This adapter
 /// deliberately fails closed for unsupported features instead of silently
 /// returning a partial simulation.
 public struct NumericCoreEngineBackend: SimulationEngineBackend {
     public let identifier = "numeric-core"
-    public let maturity: SimulationBackendMaturity = .preview
-    public let implementationVersion: String? = "swift-numeric-core-7318e8c"
+    public let maturity: SimulationBackendMaturity = .linearProduction
+    public let implementationVersion: String? = "swift-numeric-core-7318e8c+rust-numeric-core-0.34.0"
 
     public let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "numeric-core",
         analyses: [.dcOperatingPoint, .acSmallSignal, .transient],
         devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource],
-        features: [.spiceNetlistInput, .circuitIRInput, .modelLibraries, .initialConditions]
+        features: [
+            .spiceNetlistInput, .circuitIRInput, .modelLibraries,
+            .sourceWaveforms, .initialConditions,
+        ]
     )
 
     public init() {}

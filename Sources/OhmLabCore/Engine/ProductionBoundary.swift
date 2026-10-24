@@ -2,17 +2,25 @@ import Foundation
 
 /// Product version shipped on the stable 1.x production boundary.
 public enum OhmLabRelease {
-    public static let version = "1.1.0"
-    public static let productionBoundaryVersion = 1
+    public static let version = "1.2.0"
+    public static let productionBoundaryVersion = 2
 }
 
 /// Whether a backend is covered by OhmLab's production compatibility promise.
 public enum SimulationBackendMaturity: String, Codable, Sendable, Comparable {
     case production
+    case linearProduction = "linear-production"
     case preview
     case external
 
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+/// Lifecycle information is separate from numerical maturity so a backend can
+/// remain available for a compatibility window without being recommended.
+public enum SimulationBackendLifecycle: String, Codable, Sendable {
+    case supported
+    case deprecated
 }
 
 /// A backend declaration plus the validation findings that qualify it for use.
@@ -20,21 +28,32 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
     public let identifier: String
     public let implementationVersion: String?
     public let maturity: SimulationBackendMaturity
+    public let lifecycle: SimulationBackendLifecycle
+    public let deprecationMessage: String?
+    public let removalVersion: String?
     public let capabilities: SimulationBackendCapabilities
     public let issues: [String]
 
     public var isValid: Bool { issues.isEmpty }
     public var isProductionReady: Bool { maturity == .production && isValid }
+    public var isLinearProductionReady: Bool { maturity == .linearProduction && isValid }
+    public var isProductionQualified: Bool { isProductionReady || isLinearProductionReady }
 
     init(backend: any SimulationEngineBackend) {
         identifier = backend.identifier
         implementationVersion = backend.implementationVersion
         maturity = backend.maturity
+        lifecycle = backend.lifecycle
+        deprecationMessage = backend.deprecationMessage
+        removalVersion = backend.removalVersion
         capabilities = backend.capabilities
         issues = Self.validate(
             identifier: backend.identifier,
             implementationVersion: backend.implementationVersion,
             maturity: backend.maturity,
+            lifecycle: backend.lifecycle,
+            deprecationMessage: backend.deprecationMessage,
+            removalVersion: backend.removalVersion,
             capabilities: backend.capabilities
         )
     }
@@ -43,6 +62,9 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
         identifier: String,
         implementationVersion: String?,
         maturity: SimulationBackendMaturity,
+        lifecycle: SimulationBackendLifecycle,
+        deprecationMessage: String?,
+        removalVersion: String?,
         capabilities: SimulationBackendCapabilities
     ) -> [String] {
         var issues: [String] = []
@@ -69,6 +91,16 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
         if let implementationVersion, implementationVersion.trimmingCharacters(in: .whitespaces).isEmpty {
             issues.append("implementation version is empty")
         }
+        if lifecycle == .deprecated {
+            if deprecationMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                issues.append("deprecated backend has no migration guidance")
+            }
+            if removalVersion?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                issues.append("deprecated backend has no removal version")
+            }
+        } else if deprecationMessage != nil || removalVersion != nil {
+            issues.append("supported backend declares deprecation metadata")
+        }
         if maturity == .production {
             if implementationVersion == nil { issues.append("production backend has no implementation version") }
             if capabilities.analyses != SimulationAnalysisKind.allCases.sorted() {
@@ -79,6 +111,21 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
             }
             if capabilities.features != SimulationBackendFeature.allCases.sorted() {
                 issues.append("production backend does not cover every execution feature")
+            }
+        }
+        if maturity == .linearProduction {
+            let analyses: Set<SimulationAnalysisKind> = [.dcOperatingPoint, .acSmallSignal, .transient]
+            let devices: Set<CircuitIR.DeviceKind> = [.resistor, .capacitor, .inductor, .voltageSource, .currentSource]
+            let features: Set<SimulationBackendFeature> = [.spiceNetlistInput, .circuitIRInput, .sourceWaveforms, .initialConditions]
+            if implementationVersion == nil { issues.append("linear-production backend has no implementation version") }
+            if !analyses.isSubset(of: Set(capabilities.analyses)) {
+                issues.append("linear-production backend does not cover DC, AC, and transient analysis")
+            }
+            if !devices.isSubset(of: Set(capabilities.devices)) {
+                issues.append("linear-production backend does not cover linear R/C/L/V/I devices")
+            }
+            if !features.isSubset(of: Set(capabilities.features)) {
+                issues.append("linear-production backend lacks a required execution feature")
             }
         }
         return issues
@@ -92,6 +139,7 @@ public struct ProductionContractVersions: Codable, Equatable, Sendable {
     public let simulationResult: Int
     public let rustTransport: Int
     public let numericalTrust: Int
+    public let linearBackendGraduation: Int
 }
 
 /// Machine-readable answer to “is this build safe to ship on the stable 1.x boundary?”.
@@ -124,9 +172,13 @@ public enum ProductionBoundary {
         var issues = descriptors.flatMap { descriptor in
             descriptor.issues.map { "\(descriptor.identifier): \($0)" }
         }
-        let production = descriptors.filter(\.isProductionReady)
-        if production.map(\.identifier) != ["native-mna"] {
-            issues.append("native-mna must be the sole production-qualified backend")
+        let fullProduction = descriptors.filter(\.isProductionReady)
+        if fullProduction.map(\.identifier) != ["native-mna"] {
+            issues.append("native-mna must be the sole full-production backend")
+        }
+        let linearProduction = descriptors.filter(\.isLinearProductionReady)
+        if linearProduction.map(\.identifier) != ["numeric-core"] {
+            issues.append("numeric-core must be the sole linear-production backend")
         }
         if SimulationEngine.defaultBackendIdentifier != "native-mna" {
             issues.append("the default backend must be native-mna")
@@ -139,7 +191,8 @@ public enum ProductionBoundary {
                 circuitIR: CircuitIR.currentSchemaVersion,
                 simulationResult: SimulationResultContract.currentVersion,
                 rustTransport: RustCircuitTransport.currentVersion,
-                numericalTrust: NumericalTrust.currentContractVersion
+                numericalTrust: NumericalTrust.currentContractVersion,
+                linearBackendGraduation: LinearBackendGraduation.currentContractVersion
             ),
             defaultBackend: SimulationEngine.defaultBackendIdentifier,
             backends: descriptors,

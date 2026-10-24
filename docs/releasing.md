@@ -9,6 +9,11 @@ For OhmLab 1.1 and later, `ohm verify --json` must also report `ready: true`.
 This is the deterministic analytical qualification for every linked numerical
 backend; `ohm doctor` alone is necessary but no longer sufficient.
 
+For OhmLab 1.2 and later, `ohm qualify-linear --json` must report `ready: true`.
+This freezes the scoped `numeric-core` graduation evidence. Rust-linked builds
+must additionally expose standalone `ohm-core` as deprecated with removal
+version 1.3.0 throughout the one-release compatibility window.
+
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
 documents, release metadata, and a SHA-256 checksum. Without credentials it
@@ -28,7 +33,11 @@ Compatibility rules for the 1.x line:
 
 - Do not change production-boundary, Circuit IR, result, capability, or Rust
   transport versions in a patch release.
+- Production boundary v2 is required for 1.2 because the new maturity and
+  lifecycle values are semantic additions; the other wire contracts remain v1.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
 - Never weaken `ohm doctor` or `ohm verify`; `ready: false` blocks a release.
-- Keep `native-mna` the default and sole production-qualified backend.
+- Keep `native-mna` the default and sole full-production backend.
+- Keep `numeric-core` as the sole linear-production backend until a later
+  contract explicitly graduates another implementation.

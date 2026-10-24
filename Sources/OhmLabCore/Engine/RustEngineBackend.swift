@@ -22,6 +22,9 @@ import Foundation
 struct RustEngineBackend: SimulationEngineBackend {
     let identifier = "ohm-core"
     let maturity: SimulationBackendMaturity = .preview
+    let lifecycle: SimulationBackendLifecycle = .deprecated
+    let deprecationMessage: String? = "Use numeric-core; it reaches Rust-NumericCore through Swift-NumericCore."
+    let removalVersion: String? = "1.3.0"
     var implementationVersion: String? { engineVersion }
 
     let capabilities = SimulationBackendCapabilities(
