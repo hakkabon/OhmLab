@@ -212,6 +212,13 @@ public protocol SimulationEngineBackend: Sendable {
     /// A stable, human-readable identifier (surfaced in diagnostics and the CLI).
     var identifier: String { get }
 
+    /// Release status at the stable product boundary. Only the native reference
+    /// engine is production-qualified in 1.0; alternative engines are preview.
+    var maturity: SimulationBackendMaturity { get }
+
+    /// Backend implementation version, independent of the wire contracts.
+    var implementationVersion: String? { get }
+
     /// Machine-readable support declaration. The default is deliberately
     /// empty so existing third-party backends fail closed until they declare
     /// their contract.
@@ -228,6 +235,9 @@ public protocol SimulationEngineBackend: Sendable {
 }
 
 public extension SimulationEngineBackend {
+    var maturity: SimulationBackendMaturity { .external }
+    var implementationVersion: String? { nil }
+
     var capabilities: SimulationBackendCapabilities {
         .unspecified(backendIdentifier: identifier)
     }
@@ -275,6 +285,8 @@ final class EngineBackendRegistry: @unchecked Sendable {
 /// dispatches to whichever backend is registered (the native Swift MNA engine by
 /// default).
 public enum SimulationEngine {
+    public static let defaultBackendIdentifier = "native-mna"
+
     /// The identifier of the backend currently in use.
     public static var backendIdentifier: String { EngineBackendRegistry.shared.active.identifier }
 
@@ -288,6 +300,16 @@ public enum SimulationEngine {
         EngineBackendRegistry.shared.register(backend, makeDefault: makeDefault)
     }
 
+    /// Registers a backend only after validating its production-boundary
+    /// declaration. Front ends should prefer this over unchecked registration.
+    public static func registerValidated(
+        _ backend: any SimulationEngineBackend,
+        makeDefault: Bool = false
+    ) throws {
+        try ProductionBoundary.requireValid(backend)
+        EngineBackendRegistry.shared.register(backend, makeDefault: makeDefault)
+    }
+
     /// Restores the built-in native engine as the active backend.
     public static func resetToDefaultBackend() {
         EngineBackendRegistry.shared.reset()
@@ -297,12 +319,15 @@ public enum SimulationEngine {
         snapshot: SchematicSnapshot,
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
-        let result = try EngineBackendRegistry.shared.active.solve(snapshot: snapshot, settings: settings)
-        try SimulationResultContract.validate(result)
-        return PluginManager.shared.processResult(
-            result,
-            context: SimulationPostContext(source: "schematic", engine: backendIdentifier)
+        let backend = EngineBackendRegistry.shared.active
+        try ProductionBoundary.requireValid(backend)
+        let raw = try backend.solve(snapshot: snapshot, settings: settings)
+        let processed = PluginManager.shared.processResult(
+            raw,
+            context: SimulationPostContext(source: "schematic", engine: backend.identifier)
         )
+        try ProductionBoundary.validate(raw: raw, processed: processed)
+        return processed
     }
 
     public static func solve(
@@ -313,16 +338,19 @@ public enum SimulationEngine {
         // Netlist processors run before the backend sees the text, so a plugin
         // can macro-expand custom devices into supported primitives.
         let processed = try PluginManager.shared.processNetlist(netlist)
-        let result = try EngineBackendRegistry.shared.active.solve(
+        let backend = EngineBackendRegistry.shared.active
+        try ProductionBoundary.requireValid(backend)
+        let raw = try backend.solve(
             netlist: processed,
             settings: settings,
             libraries: libraries
         )
-        try SimulationResultContract.validate(result)
-        return PluginManager.shared.processResult(
-            result,
-            context: SimulationPostContext(source: "netlist", engine: backendIdentifier)
+        let result = PluginManager.shared.processResult(
+            raw,
+            context: SimulationPostContext(source: "netlist", engine: backend.identifier)
         )
+        try ProductionBoundary.validate(raw: raw, processed: result)
+        return result
     }
 
 
@@ -331,12 +359,15 @@ public enum SimulationEngine {
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
         try circuit.validate()
-        let result = try EngineBackendRegistry.shared.active.solve(circuit: circuit, settings: settings)
-        try SimulationResultContract.validate(result)
-        return PluginManager.shared.processResult(
-            result,
-            context: SimulationPostContext(source: "circuit-ir", engine: backendIdentifier)
+        let backend = EngineBackendRegistry.shared.active
+        try ProductionBoundary.requireValid(backend)
+        let raw = try backend.solve(circuit: circuit, settings: settings)
+        let processed = PluginManager.shared.processResult(
+            raw,
+            context: SimulationPostContext(source: "circuit-ir", engine: backend.identifier)
         )
+        try ProductionBoundary.validate(raw: raw, processed: processed)
+        return processed
     }
 }
 
@@ -344,6 +375,8 @@ public enum SimulationEngine {
 /// and the reference implementation.
 struct NativeMNAEngine: SimulationEngineBackend {
     let identifier = "native-mna"
+    let maturity: SimulationBackendMaturity = .production
+    let implementationVersion: String? = OhmLabRelease.version
 
     let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "native-mna",

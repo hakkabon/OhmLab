@@ -13,7 +13,7 @@
 //   • Default:  the built-in pure-Swift MNA engine (OhmLabCore). No Rust
 //               toolchain is required for a normal build or test run.
 //   • Optional: a Rust `ohm-core` crate (rust/ohm-core) can be linked behind the
-//               same EngineBackend façade. It provides DC/AC for linear R/C/L/V/I
+//               same EngineBackend façade. It provides DC/AC/transient for linear R/C/L/V/I
 //               circuits and returns versioned JSON over a Circuit IR C ABI.
 //
 // ── Enabling the Rust core (optional) ────────────────────────────────────────

@@ -3049,6 +3049,12 @@ private func toneSamples(
 /// observes it still gets numerically correct results.
 private struct StubEngineBackend: SimulationEngineBackend {
     let identifier = "stub"
+    let capabilities = SimulationBackendCapabilities(
+        backendIdentifier: "stub",
+        analyses: [.dcOperatingPoint],
+        devices: CircuitIR.DeviceKind.allCases,
+        features: [.spiceNetlistInput]
+    )
     private let reference = NativeMNAEngine()
 
     func solve(

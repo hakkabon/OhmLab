@@ -21,6 +21,8 @@ import Foundation
 /// FFI call; use the native engine for the full feature set.
 struct RustEngineBackend: SimulationEngineBackend {
     let identifier = "ohm-core"
+    let maturity: SimulationBackendMaturity = .preview
+    var implementationVersion: String? { engineVersion }
 
     let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "ohm-core",

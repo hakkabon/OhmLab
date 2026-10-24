@@ -25,7 +25,9 @@ enum CommandError: LocalizedError {
 }
 
 enum Subcommand {
-    static let names: Set<String> = ["engines", "project", "kicad", "sync", "monte-carlo", "corner", "optimize"]
+    static let names: Set<String> = [
+        "engines", "doctor", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+    ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
 
@@ -44,6 +46,7 @@ enum Subcommand {
     private static func dispatch(_ arguments: [String]) throws -> Int32 {
         switch arguments[0] {
         case "engines": return try runEngines(Array(arguments.dropFirst()))
+        case "doctor": return try runDoctor(Array(arguments.dropFirst()))
         case "project": return try runProject(Array(arguments.dropFirst()))
         case "kicad": return try runKicad(Array(arguments.dropFirst()))
         case "sync": return try runSync(Array(arguments.dropFirst()))
@@ -53,6 +56,35 @@ enum Subcommand {
         default:
             throw CommandError.usage("unknown command \(arguments[0])")
         }
+    }
+
+    // MARK: - production boundary
+
+    private static func runDoctor(_ arguments: [String]) throws -> Int32 {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandError.usage("usage: ohm doctor [--json]")
+        }
+        let report = ProductionBoundary.report()
+        if arguments == ["--json"] {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(report)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CommandError.runtime("could not encode the production readiness report")
+            }
+            writeStdout(text + "\n")
+        } else {
+            writeStdout("OhmLab \(report.productVersion) production boundary\n")
+            writeStdout("  default: \(report.defaultBackend)\n")
+            for backend in report.backends {
+                let state = backend.isProductionReady ? "production" : backend.maturity.rawValue
+                let version = backend.implementationVersion.map { " \($0)" } ?? ""
+                writeStdout("  \(backend.identifier): \(state)\(version)\n")
+                for issue in backend.issues { writeStdout("    issue: \(issue)\n") }
+            }
+            writeStdout(report.ready ? "READY\n" : "NOT READY\n")
+        }
+        return report.ready ? 0 : 1
     }
 
     // MARK: - engines

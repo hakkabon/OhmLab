@@ -54,6 +54,10 @@ bundle="Examples/07-project-bundle.ohmlabproj"
 section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
+section "Production boundary"
+run "OhmLab 1.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 1.0.0"'
+run "production readiness" "$ohm" doctor --json
+
 section "Example circuits — CLI runs"
 for file in Examples/*.cir; do
     run "ohm $(basename "$file")" "$ohm" "$file" -f json

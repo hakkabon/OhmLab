@@ -176,6 +176,8 @@ public enum SimulationContractError: LocalizedError, Equatable {
     case invalidAxis(String)
     case invalidSeries(String)
     case backendDoesNotAcceptCircuitIR(String)
+    case invalidBackendDeclaration(String, String)
+    case postProcessorViolation(String)
 
     public var errorDescription: String? {
         switch self {
@@ -191,6 +193,10 @@ public enum SimulationContractError: LocalizedError, Equatable {
             return "The backend returned malformed \(series) series."
         case .backendDoesNotAcceptCircuitIR(let identifier):
             return "Backend \(identifier) does not accept OhmLab Circuit IR input."
+        case .invalidBackendDeclaration(let identifier, let reason):
+            return "Backend \(identifier) has an invalid production-boundary declaration: \(reason)."
+        case .postProcessorViolation(let reason):
+            return "A result processor violated the simulation-result contract: \(reason)"
         }
     }
 }

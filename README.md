@@ -26,6 +26,18 @@ OhmLab 0.9 extends the common native/NumericCore/Rust surface from DC and AC to 
 * Rust circuit transport v1 now carries transient settings, `PULSE`/`SIN`/`PWL` source waveforms, and initial conditions, and returns contract-valid transient series.
 * Differential tests cover an initialized RC transient across every linked backend. Capability declarations expose only the features each backend actually implements; nonlinear devices, sweeps, and Fourier remain native-only.
 
+## 1.0 Production Boundary
+
+OhmLab 1.0 freezes the product-facing boundary while allowing the numerical cores to continue evolving independently:
+
+* `OhmLabRelease.version` is the single source of truth for the application and `ohm` CLI version. Circuit IR, backend capabilities, simulation results, and Rust transport retain independently negotiated contract versions.
+* Every backend declares its maturity and implementation version. Declarations are validated before activation or simulation; only `native-mna` is production-qualified, while NumericCore and Rust remain explicitly selectable preview backends.
+* A solve snapshots one backend for execution and result attribution, preventing concurrent backend selection from mislabelling a result.
+* Results are validated both before and after plugin result processors. Extensions may annotate valid output but cannot publish malformed axes, duplicate names, incompatible versions, or non-finite values.
+* `ohm doctor [--json]` emits a machine-readable production-readiness report. [`scripts/release-check.sh`](scripts/release-check.sh) runs the complete release gate.
+
+The frozen contract and compatibility policy are documented in [`docs/contracts/production-boundary-v1.md`](docs/contracts/production-boundary-v1.md).
+
 ## Architecture: The Four-Layer Model
 
 Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.

@@ -38,6 +38,20 @@ public enum EngineBackends {
         return unique.values.sorted { $0.backendIdentifier < $1.backendIdentifier }
     }
 
+    /// Canonical backend declarations, including maturity, implementation
+    /// version, and production-boundary validation findings.
+    public static var descriptorMatrix: [SimulationBackendDescriptor] {
+        lock.lock()
+        let factories = Array(factories.values)
+        lock.unlock()
+        var unique: [String: SimulationBackendDescriptor] = [:]
+        for factory in factories {
+            let descriptor = ProductionBoundary.descriptor(for: factory())
+            unique[descriptor.identifier.lowercased()] = descriptor
+        }
+        return unique.values.sorted { $0.identifier < $1.identifier }
+    }
+
     /// Capabilities for a registered name or alias.
     public static func capabilities(for name: String) -> SimulationBackendCapabilities? {
         lock.lock()
@@ -59,7 +73,7 @@ public enum EngineBackends {
         let factory = factories[name.lowercased()]
         lock.unlock()
         guard let factory else { throw BatchError.unsupportedEngine(name) }
-        SimulationEngine.register(factory(), makeDefault: true)
+        try SimulationEngine.registerValidated(factory(), makeDefault: true)
     }
 
     /// Whether `name` refers to the currently active backend.

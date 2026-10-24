@@ -26,6 +26,8 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
 /// returning a partial simulation.
 public struct NumericCoreEngineBackend: SimulationEngineBackend {
     public let identifier = "numeric-core"
+    public let maturity: SimulationBackendMaturity = .preview
+    public let implementationVersion: String? = "swift-numeric-core-7318e8c"
 
     public let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "numeric-core",

@@ -8,7 +8,7 @@
 import Foundation
 import OhmLabCore
 
-private let toolVersion = "0.8.0"
+private let toolVersion = OhmLabRelease.version
 
 private let usage = """
 ohm \(toolVersion) — OhmLab headless circuit simulator
@@ -46,6 +46,7 @@ ENGINE:
 
 PROJECTS & ANALYSES:
   ohm engines                               Show backend capability matrix.
+  ohm doctor [--json]                       Verify the 1.0 production boundary.
   ohm project info <bundle>                 Show a .ohmlabproj manifest.
   ohm project pack <bundle> -o <zip>        Pack a bundle into .ohmlabzip.
   ohm project unpack <zip> <dir>            Unpack an archive.
