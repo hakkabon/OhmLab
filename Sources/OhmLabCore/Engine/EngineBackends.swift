@@ -52,6 +52,21 @@ public enum EngineBackends {
         return unique.values.sorted { $0.identifier < $1.identifier }
     }
 
+    /// One live instance per canonical backend. Kept internal so conformance
+    /// tooling can exercise every linked implementation without changing the
+    /// process-wide active backend.
+    static var canonicalBackends: [any SimulationEngineBackend] {
+        lock.lock()
+        let factories = Array(factories.values)
+        lock.unlock()
+        var unique: [String: any SimulationEngineBackend] = [:]
+        for factory in factories {
+            let backend = factory()
+            unique[backend.identifier.lowercased()] = backend
+        }
+        return unique.values.sorted { $0.identifier < $1.identifier }
+    }
+
     /// Capabilities for a registered name or alias.
     public static func capabilities(for name: String) -> SimulationBackendCapabilities? {
         lock.lock()

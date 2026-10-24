@@ -1,8 +1,8 @@
 import Foundation
 
-/// Product and public-contract versions shipped by the 1.0 production boundary.
+/// Product version shipped on the stable 1.x production boundary.
 public enum OhmLabRelease {
-    public static let version = "1.0.0"
+    public static let version = "1.1.0"
     public static let productionBoundaryVersion = 1
 }
 
@@ -91,9 +91,10 @@ public struct ProductionContractVersions: Codable, Equatable, Sendable {
     public let circuitIR: Int
     public let simulationResult: Int
     public let rustTransport: Int
+    public let numericalTrust: Int
 }
 
-/// Machine-readable answer to “is this build safe to ship as OhmLab 1.0?”.
+/// Machine-readable answer to “is this build safe to ship on the stable 1.x boundary?”.
 public struct ProductionReadinessReport: Codable, Equatable, Sendable {
     public let productVersion: String
     public let contracts: ProductionContractVersions
@@ -137,7 +138,8 @@ public enum ProductionBoundary {
                 capabilityContract: SimulationBackendCapabilities.currentContractVersion,
                 circuitIR: CircuitIR.currentSchemaVersion,
                 simulationResult: SimulationResultContract.currentVersion,
-                rustTransport: RustCircuitTransport.currentVersion
+                rustTransport: RustCircuitTransport.currentVersion,
+                numericalTrust: NumericalTrust.currentContractVersion
             ),
             defaultBackend: SimulationEngine.defaultBackendIdentifier,
             backends: descriptors,

@@ -15,6 +15,7 @@ struct ReleaseHardeningTests {
         #expect(CircuitIR.currentSchemaVersion == 1)
         #expect(SimulationResultContract.currentVersion == 1)
         #expect(RustCircuitTransport.currentVersion == 1)
+        #expect(NumericalTrust.currentContractVersion == 1)
     }
 
     @Test func genuineVersionOneFixtureMigratesWithoutDataLoss() throws {

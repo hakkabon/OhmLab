@@ -1,7 +1,7 @@
 # OhmLab production boundary v1
 
-OhmLab 1.0 separates the product release from the formats and engines that may
-evolve behind it. The product version is `1.0.0`; the production boundary,
+OhmLab 1.0 introduced separation between the product release and the formats
+and engines that may evolve behind it. The production boundary,
 backend-capability contract, Circuit IR, simulation-result contract, and Rust
 transport each negotiate their own integer version.
 

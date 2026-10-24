@@ -1,9 +1,13 @@
-# Releasing OhmLab 1.0.x
+# Releasing OhmLab 1.x
 
 Every release candidate must pass `scripts/release-check.sh`. The gate tests the
 standard Swift product, exercises application workflows, validates frozen
 contracts, checks Rust with rustfmt and Clippy, and runs Swift again with the
 Rust transport linked.
+
+For OhmLab 1.1 and later, `ohm verify --json` must also report `ready: true`.
+This is the deterministic analytical qualification for every linked numerical
+backend; `ohm doctor` alone is necessary but no longer sufficient.
 
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
@@ -20,11 +24,11 @@ never be committed.
 The archive is architecture-specific. Build and test every intended
 architecture separately until the project adopts a universal-binary build.
 
-Compatibility rules for the 1.0.x line:
+Compatibility rules for the 1.x line:
 
 - Do not change production-boundary, Circuit IR, result, capability, or Rust
   transport versions in a patch release.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
-- Never weaken `ohm doctor`; `ready: false` blocks a release.
+- Never weaken `ohm doctor` or `ohm verify`; `ready: false` blocks a release.
 - Keep `native-mna` the default and sole production-qualified backend.

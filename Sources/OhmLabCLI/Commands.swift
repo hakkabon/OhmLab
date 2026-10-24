@@ -26,7 +26,7 @@ enum CommandError: LocalizedError {
 
 enum Subcommand {
     static let names: Set<String> = [
-        "engines", "doctor", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+        "engines", "doctor", "verify", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
     ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
@@ -47,6 +47,7 @@ enum Subcommand {
         switch arguments[0] {
         case "engines": return try runEngines(Array(arguments.dropFirst()))
         case "doctor": return try runDoctor(Array(arguments.dropFirst()))
+        case "verify": return try runVerify(Array(arguments.dropFirst()))
         case "project": return try runProject(Array(arguments.dropFirst()))
         case "kicad": return try runKicad(Array(arguments.dropFirst()))
         case "sync": return try runSync(Array(arguments.dropFirst()))
@@ -83,6 +84,51 @@ enum Subcommand {
                 for issue in backend.issues { writeStdout("    issue: \(issue)\n") }
             }
             writeStdout(report.ready ? "READY\n" : "NOT READY\n")
+        }
+        return report.ready ? 0 : 1
+    }
+
+    // MARK: - numerical trust
+
+    private static func runVerify(_ arguments: [String]) throws -> Int32 {
+        var json = false
+        var seed = NumericalTrust.defaultSeed
+        var index = 0
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--json":
+                json = true
+            case "--seed":
+                index += 1
+                guard index < arguments.count, let parsed = UInt64(arguments[index]) else {
+                    throw CommandError.usage("usage: ohm verify [--json] [--seed <unsigned-integer>]")
+                }
+                seed = parsed
+            default:
+                throw CommandError.usage("usage: ohm verify [--json] [--seed <unsigned-integer>]")
+            }
+            index += 1
+        }
+
+        let report = NumericalTrust.evaluate(seed: seed)
+        if json {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(report)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CommandError.runtime("could not encode the numerical-trust report")
+            }
+            writeStdout(text + "\n")
+        } else {
+            writeStdout("OhmLab numerical trust v\(report.contractVersion)\n")
+            writeStdout("  seed: \(report.seed), cases: \(report.caseCount)\n")
+            for backend in report.backends {
+                let passed = backend.cases.filter(\.passed).count
+                let role = backend.required ? "required" : "informational"
+                writeStdout("  \(backend.identifier): \(passed)/\(backend.cases.count) (\(role))\n")
+            }
+            for issue in report.issues { writeStdout("  issue: \(issue)\n") }
+            writeStdout(report.ready ? "TRUSTED\n" : "NOT TRUSTED\n")
         }
         return report.ready ? 0 : 1
     }

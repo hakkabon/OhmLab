@@ -46,7 +46,8 @@ ENGINE:
 
 PROJECTS & ANALYSES:
   ohm engines                               Show backend capability matrix.
-  ohm doctor [--json]                       Verify the 1.0 production boundary.
+  ohm doctor [--json]                       Verify the stable 1.x production boundary.
+  ohm verify [--json] [--seed <n>]          Run the 1.1 numerical trust suite.
   ohm project info <bundle>                 Show a .ohmlabproj manifest.
   ohm project pack <bundle> -o <zip>        Pack a bundle into .ohmlabzip.
   ohm project unpack <zip> <dir>            Unpack an archive.

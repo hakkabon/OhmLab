@@ -48,6 +48,16 @@ produces a validated, signed macOS application/CLI archive with a SHA-256
 checksum; Developer ID signing and notarization are enabled only when release
 credentials are supplied. See [`docs/releasing.md`](docs/releasing.md).
 
+## 1.1 Numerical Trust
+
+OhmLab 1.1 turns backend parity into a release qualification rather than an
+informal test claim. `ohm verify [--json] [--seed <n>]` runs 32 deterministic,
+closed-form DC/AC cases against every linked Circuit-IR backend and reports
+expected values, actual values, errors, tolerances, failures, and timing.
+Native MNA and Swift-NumericCore are mandatory; Rust is mandatory whenever it
+is linked. The report is versioned independently and is part of the release
+gate. See [`docs/contracts/numerical-trust-v1.md`](docs/contracts/numerical-trust-v1.md).
+
 ## Architecture: The Four-Layer Model
 
 Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
