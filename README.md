@@ -2,7 +2,7 @@
 
 **OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, MOSFETs, and JFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
-The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while a transitional `NumericCoreEngineBackend` validates linear DC/AC circuits against NumericCore. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
+The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while a transitional `NumericCoreEngineBackend` validates linear DC/AC/transient circuits against NumericCore. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
 ## 0.8 Convergence Contract
 
@@ -16,6 +16,15 @@ OhmLab 0.8 establishes a versioned boundary between circuit frontends and numeri
 * **Native remains the default** while NumericCore parity is expanded.
 
 Run `ohm engines` (or `ohm engines --json`) to inspect the capability matrix for the backends linked into the current build.
+
+## 0.9 Linear Feature Parity
+
+OhmLab 0.9 extends the common native/NumericCore/Rust surface from DC and AC to transient analysis for linear R/C/L/V/I circuits:
+
+* NumericCore transient runs use its independent adaptive DAE integrator, sample onto OhmLab's requested output grid, and preserve `.ic` node voltages and inductor currents.
+* Rust `ohm-core` 0.3 uses an independent fixed-step backward-Euler implementation matching the native engine's R/C/L companion-model and current-sign conventions.
+* Rust circuit transport v1 now carries transient settings, `PULSE`/`SIN`/`PWL` source waveforms, and initial conditions, and returns contract-valid transient series.
+* Differential tests cover an initialized RC transient across every linked backend. Capability declarations expose only the features each backend actually implements; nonlinear devices, sweeps, and Fourier remain native-only.
 
 ## Architecture: The Four-Layer Model
 
@@ -58,9 +67,9 @@ The simulation layer is a **native Swift linear solver**:
 Simulation is reached through `SimulationEngine`, a façade that dispatches to a registered `SimulationEngineBackend`:
 
 *   **`NativeMNAEngine`** (identifier `"native-mna"`) is the built-in Swift engine and the default backend — the full DC/AC/transient/DC-sweep/`.four` feature set described above.
-*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) adapts OhmLab's parsed linear R/C/L/V/I circuits to NumericCore's provisional circuit API. It currently provides DC and AC analysis and fails explicitly for unsupported devices or analyses. The dependency is pinned to an exact reviewed revision until NumericCore publishes the circuit API in a stable release.
+*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) adapts OhmLab's parsed linear R/C/L/V/I circuits to NumericCore's provisional circuit API. It provides DC, AC, and transient analysis with initial conditions. NumericCore currently accepts `PULSE` and undelayed/undamped `SIN` sources; unsupported waveform variants and nonlinear devices fail explicitly. The dependency is pinned to an exact reviewed revision until NumericCore publishes the circuit API in a stable release.
 *   **Backends are swappable at runtime** with `SimulationEngine.register(_:makeDefault:)` and `SimulationEngine.resetToDefaultBackend()`. Because the façade is the single entry point (`EngineClient` and the CLI both call it), no call site changes when a backend changes. The schematic entry point has a default implementation that projects a snapshot to a netlist, so a foreign backend only has to implement the netlist solve.
-*   **`ohm-core`** (Rust) is an optional alternative backend, `rust/ohm-core`, exposed over a small JSON C ABI (`ohm_engine_version`, `ohm_solve_circuit_ir`, the legacy `ohm_solve`, and `ohm_free_string`) — no generated bindings required. Its preferred entry point consumes Circuit IR transport v1 and covers DC operating points and AC sweeps for linear R/C/L/V/I circuits. Unsupported analyses and devices fail closed before partial results can reach the application. `RustEngineBackend.swift` bridges it behind the façade.
+*   **`ohm-core`** (Rust) is an optional alternative backend, `rust/ohm-core`, exposed over a small JSON C ABI (`ohm_engine_version`, `ohm_solve_circuit_ir`, the legacy `ohm_solve`, and `ohm_free_string`) — no generated bindings required. Its preferred entry point consumes Circuit IR transport v1 and covers DC, AC, and backward-Euler transient analysis for linear R/C/L/V/I circuits, including source waveforms and initial conditions. Unsupported analyses and devices fail closed before partial results can reach the application. `RustEngineBackend.swift` bridges it behind the façade.
 *   **Opt-in build.** Nothing Rust-related is compiled unless requested. Run `scripts/build-rust-core.sh`, then build or test with `OHMLAB_RUST_CORE=1`; the package manifest links the staged library and exposes `RustEngineBackend`. Native Swift remains the runtime default.
 
 ## Key Frontend Features

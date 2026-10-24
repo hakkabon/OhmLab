@@ -13,9 +13,6 @@ public enum RustCircuitTransport {
 
         public init(circuit: CircuitIR, settings: AnalysisSettings) throws {
             try circuit.validate()
-            if settings.runTransient {
-                throw RustCircuitTransportError.unsupportedAnalysis("transient analysis")
-            }
             if settings.runDCSweep {
                 throw RustCircuitTransportError.unsupportedAnalysis("DC or parameter sweeps")
             }
@@ -25,7 +22,7 @@ public enum RustCircuitTransport {
             if let device = circuit.devices.first(where: { !supported.contains($0.kind) }) {
                 throw RustCircuitTransportError.unsupportedDevice(device.name)
             }
-            guard settings.runDC || settings.runAC else {
+            guard settings.runDC || settings.runAC || settings.runTransient else {
                 throw CircuitSimulationError.noAnalysisSelected
             }
             let ac: ACSweep?
@@ -50,7 +47,24 @@ public enum RustCircuitTransport {
             }
             transportVersion = RustCircuitTransport.currentVersion
             self.circuit = circuit
-            analysis = Analysis(runDC: settings.runDC, ac: ac)
+            let transient: Transient?
+            if settings.runTransient {
+                guard settings.tranStep.isFinite, settings.tranStep > 0,
+                      settings.tranStart.isFinite, settings.tranStart >= 0,
+                      settings.tranStop.isFinite, settings.tranStop > settings.tranStart else {
+                    throw CircuitSimulationError.invalidTransientSettings
+                }
+                let samples = Int(((settings.tranStop - settings.tranStart) / settings.tranStep).rounded(.up)) + 1
+                guard samples <= FrequencySweep.maxPointCount else {
+                    throw CircuitSimulationError.tooManySamples
+                }
+                transient = Transient(
+                    step: settings.tranStep, stop: settings.tranStop, start: settings.tranStart
+                )
+            } else {
+                transient = nil
+            }
+            analysis = Analysis(runDC: settings.runDC, ac: ac, transient: transient)
         }
 
         public init(from decoder: Decoder) throws {
@@ -72,6 +86,13 @@ public enum RustCircuitTransport {
     public struct Analysis: Codable, Equatable, Sendable {
         public var runDC: Bool
         public var ac: ACSweep?
+        public var transient: Transient?
+    }
+
+    public struct Transient: Codable, Equatable, Sendable {
+        public var step: Double
+        public var stop: Double
+        public var start: Double
     }
 
     public struct ACSweep: Codable, Equatable, Sendable {

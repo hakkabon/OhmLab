@@ -20,17 +20,18 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
 
 /// Transitional backend over NumericCore's provisional circuit-analysis API.
 ///
-/// The native engine remains the product default while device and transient
-/// parity are completed. This adapter deliberately fails closed for unsupported
-/// features instead of silently returning a partial simulation.
+/// The native engine remains the product default while nonlinear-device,
+/// waveform, and advanced-analysis parity are completed. This adapter
+/// deliberately fails closed for unsupported features instead of silently
+/// returning a partial simulation.
 public struct NumericCoreEngineBackend: SimulationEngineBackend {
     public let identifier = "numeric-core"
 
     public let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "numeric-core",
-        analyses: [.dcOperatingPoint, .acSmallSignal],
+        analyses: [.dcOperatingPoint, .acSmallSignal, .transient],
         devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource],
-        features: [.spiceNetlistInput, .circuitIRInput, .modelLibraries]
+        features: [.spiceNetlistInput, .circuitIRInput, .modelLibraries, .initialConditions]
     )
 
     public init() {}
@@ -56,8 +57,14 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
                 effective.acSweepType = parsed.analysis.sweep
             }
         }
-        if effective.runTransient || parsed.analysis.hasTransient {
-            throw NumericCoreAdapterError.unsupportedAnalysis("transient analysis")
+        if parsed.analysis.hasTransient {
+            effective.runTransient = true
+            if settings.tranStep == AnalysisSettings.default.tranStep,
+               settings.tranStop == AnalysisSettings.default.tranStop {
+                effective.tranStep = parsed.analysis.tranStep
+                effective.tranStop = parsed.analysis.tranStop
+                effective.tranStart = parsed.analysis.tranStart
+            }
         }
         if effective.runDCSweep || !parsed.analysis.dcSweep.isEmpty || parsed.analysis.step != nil {
             throw NumericCoreAdapterError.unsupportedAnalysis("DC or parameter sweeps")
@@ -79,13 +86,10 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         circuit ir: CircuitIR,
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
-        if settings.runTransient {
-            throw NumericCoreAdapterError.unsupportedAnalysis("transient analysis")
-        }
         if settings.runDCSweep {
             throw NumericCoreAdapterError.unsupportedAnalysis("DC or parameter sweeps")
         }
-        guard settings.runDC || settings.runAC else {
+        guard settings.runDC || settings.runAC || settings.runTransient else {
             throw CircuitSimulationError.noAnalysisSelected
         }
 
@@ -95,10 +99,13 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         let operating = try bridge.model.dcOperatingPointContinuation()
         let dc = settings.runDC ? try bridge.dcResult(operating) : nil
         let ac = settings.runAC ? try bridge.acResult(operating, settings: settings) : nil
+        let transient = settings.runTransient
+            ? try bridge.transientResult(operating, settings: settings)
+            : nil
         return CircuitSimResult(
             dc: dc,
             ac: ac,
-            transient: nil,
+            transient: transient,
             sweep: nil,
             fourier: [],
             warnings: []
@@ -111,11 +118,25 @@ private extension NumericCoreEngineBackend {
         let circuit: LinearCircuit
         let model: CircuitModel
         let devices: [CircuitDevice]
+        let initialConditions: CircuitIR.Conditions
 
         init(ir: CircuitIR) throws {
             let circuit = try ir.makeLinearCircuit()
             self.circuit = circuit
-            let nodes = circuit.nodeNames.map { CircuitNode(name: $0) }
+            initialConditions = ir.initialConditions
+            let initialVoltages = Dictionary(
+                uniqueKeysWithValues: ir.initialConditions.nodeVoltages.map {
+                    ($0.key.lowercased(), $0.value)
+                }
+            )
+            let nodes = circuit.nodeNames.map {
+                CircuitNode(name: $0, initialVoltage: initialVoltages[$0.lowercased()] ?? 0)
+            }
+            let initialCurrents = Dictionary(
+                uniqueKeysWithValues: ir.initialConditions.elementCurrents.map {
+                    ($0.key.lowercased(), $0.value)
+                }
+            )
             var mapped: [CircuitDevice] = []
             mapped.reserveCapacity(circuit.elements.count)
             for element in circuit.elements {
@@ -134,19 +155,19 @@ private extension NumericCoreEngineBackend {
                     mapped.append(.inductor(
                         name: element.name, positive: element.nodeA,
                         negative: element.nodeB, inductance: element.value,
-                        initialCurrent: 0
+                        initialCurrent: initialCurrents[element.name.lowercased()] ?? 0
                     ))
                 case .currentSource:
                     mapped.append(.currentSource(
                         name: element.name, positive: element.nodeA,
                         negative: element.nodeB,
-                        source: .dc(element.magnitude(isDC: true))
+                        source: try Self.source(element)
                     ))
                 case .voltageSource:
                     mapped.append(.voltageSource(
                         name: element.name, positive: element.nodeA,
                         negative: element.nodeB,
-                        source: .dc(element.magnitude(isDC: true)),
+                        source: try Self.source(element),
                         initialCurrent: 0
                     ))
                 case .diode, .bjt, .mosfet, .jfet:
@@ -155,6 +176,35 @@ private extension NumericCoreEngineBackend {
             }
             devices = mapped
             model = try CircuitModel(nodes: nodes, referenceNode: 0, devices: mapped)
+        }
+
+        private static func source(_ element: LinearCircuit.Element) throws -> CircuitSource {
+            guard let waveform = element.transient else {
+                return .dc(element.magnitude(isDC: true))
+            }
+            let mapped: CircuitWaveform
+            switch waveform {
+            case .pulse(let initial, let pulsed, let delay, let rise, let fall, let width, let period):
+                mapped = .pulse(
+                    low: initial, high: pulsed, delay: delay, rise: rise, fall: fall,
+                    width: width, period: period
+                )
+            case .sine(let offset, let amplitude, let frequency, let delay, let damping, let phase):
+                guard delay == 0, damping == 0 else {
+                    throw NumericCoreAdapterError.unsupportedElement(
+                        "\(element.name) (delayed or damped sine waveform)"
+                    )
+                }
+                mapped = .sinusoidal(
+                    offset: offset, amplitude: amplitude, frequency: frequency,
+                    phase: phase * .pi / 180
+                )
+            case .pwl:
+                throw NumericCoreAdapterError.unsupportedElement(
+                    "\(element.name) (piecewise-linear waveform)"
+                )
+            }
+            return .transient(dc: element.magnitude(isDC: true), waveform: mapped)
         }
 
         func dcResult(_ operating: CircuitOperatingPoint) throws -> CircuitSimResult.DCResult {
@@ -270,6 +320,136 @@ private extension NumericCoreEngineBackend {
                 frequencies: frequencies,
                 nodes: (1..<circuit.nodeCount).map { (circuit.nodeNames[$0], nodeSeries[$0]) },
                 components: circuit.elements.enumerated().map { ($0.element.name, componentSeries[$0.offset]) }
+            )
+        }
+
+        func transientResult(
+            _ operating: CircuitOperatingPoint,
+            settings: AnalysisSettings
+        ) throws -> CircuitSimResult.TransientResult {
+            guard settings.tranStep.isFinite, settings.tranStep > 0,
+                  settings.tranStart.isFinite, settings.tranStart >= 0,
+                  settings.tranStop.isFinite, settings.tranStop > settings.tranStart else {
+                throw CircuitSimulationError.invalidTransientSettings
+            }
+            let stepCount = Int(((settings.tranStop - settings.tranStart) / settings.tranStep).rounded(.up))
+            guard stepCount > 0 else { throw CircuitSimulationError.invalidTransientSettings }
+            guard stepCount <= FrequencySweep.maxPointCount else {
+                throw CircuitSimulationError.tooManySamples
+            }
+
+            var initial = operating.state
+            let nodeOverrides = Dictionary(
+                uniqueKeysWithValues: initialConditions.nodeVoltages.map {
+                    ($0.key.lowercased(), $0.value)
+                }
+            )
+            for node in circuit.nodeNames.indices {
+                if let value = nodeOverrides[circuit.nodeNames[node].lowercased()],
+                   let unknown = try model.nodeUnknownIndex(node) {
+                    initial[unknown] = value
+                }
+            }
+            let currentOverrides = Dictionary(
+                uniqueKeysWithValues: initialConditions.elementCurrents.map {
+                    ($0.key.lowercased(), $0.value)
+                }
+            )
+            for (index, element) in circuit.elements.enumerated() {
+                if let value = currentOverrides[element.name.lowercased()],
+                   let unknown = try model.branchUnknownIndex(index) {
+                    initial[unknown] = value
+                }
+            }
+
+            let zeroDerivative = model.zeroDerivative
+            let evaluation = try model.daeEvaluation(
+                time: settings.tranStart, state: initial, derivative: zeroDerivative
+            )
+            let freeState = initial.indices.map { column in
+                evaluation.jacobianDerivative.allSatisfy {
+                    abs($0[column]) <= Double.ulpOfOne
+                }
+            }
+            let consistent = try TimeIntegrator.consistentDAEInitialConditions(
+                time: settings.tranStart,
+                initialState: initial,
+                initialDerivative: zeroDerivative,
+                freeState: freeState,
+                maxIterations: circuit.solverOptions.maximumIterations,
+                tolerance: circuit.solverOptions.absoluteVoltageTolerance
+            ) { time, state, derivative in
+                try model.daeEvaluation(time: time, state: state, derivative: derivative)
+            }
+            let integrationEnd = settings.tranStart + Double(stepCount) * settings.tranStep
+            let integrated = try model.transient(
+                from: settings.tranStart,
+                to: integrationEnd,
+                initialState: consistent.state,
+                initialDerivative: consistent.derivative,
+                options: TimeIntegrationOptions(
+                    absoluteTolerance: circuit.solverOptions.absoluteVoltageTolerance,
+                    relativeTolerance: circuit.solverOptions.relativeTolerance,
+                    initialStep: settings.tranStep,
+                    minimumStep: max(settings.tranStep * 1e-9, 1e-15),
+                    maximumStep: settings.tranStep,
+                    maxSteps: FrequencySweep.maxPointCount,
+                    maxNewtonIterations: circuit.solverOptions.maximumIterations,
+                    newtonTolerance: circuit.solverOptions.absoluteVoltageTolerance
+                )
+            )
+            guard integrated.termination == .reachedEnd else {
+                throw CircuitSimulationError.invalidTransientSettings
+            }
+
+            let times = (0...stepCount).map {
+                settings.tranStart + Double($0) * settings.tranStep
+            }
+            var states: [[Double]] = []
+            states.reserveCapacity(times.count)
+            for time in times {
+                try Task.checkCancellation()
+                guard let state = integrated.state(at: time) else {
+                    throw CircuitSimulationError.invalidTransientSettings
+                }
+                states.append(state)
+            }
+            var nodeSeries = [[Double]](repeating: [], count: circuit.nodeCount)
+            var componentSeries = [[Double]](repeating: [], count: circuit.elements.count)
+            var previousVoltages = [Double](repeating: 0, count: circuit.elements.count)
+            for (sample, state) in states.enumerated() {
+                let voltages = try model.nodeVoltages(for: state)
+                for node in circuit.nodeNames.indices { nodeSeries[node].append(voltages[node]) }
+                for (index, element) in circuit.elements.enumerated() {
+                    let voltage = voltages[element.nodeA] - voltages[element.nodeB]
+                    let current: Double
+                    switch element.kind {
+                    case .resistor:
+                        current = voltage / element.value
+                    case .capacitor:
+                        current = sample == 0 ? 0 : element.value
+                            * (voltage - previousVoltages[index]) / settings.tranStep
+                    case .inductor, .voltageSource:
+                        guard let unknown = try model.branchUnknownIndex(index) else {
+                            throw NumericCoreAdapterError.missingBranch(element.name)
+                        }
+                        current = state[unknown]
+                    case .currentSource:
+                        current = element.transient?.value(at: times[sample])
+                            ?? element.magnitude(isDC: true)
+                    case .diode, .bjt, .mosfet, .jfet:
+                        throw NumericCoreAdapterError.unsupportedElement(element.name)
+                    }
+                    componentSeries[index].append(current)
+                    previousVoltages[index] = voltage
+                }
+            }
+            return .init(
+                times: times,
+                nodes: (1..<circuit.nodeCount).map { (circuit.nodeNames[$0], nodeSeries[$0]) },
+                components: circuit.elements.enumerated().map {
+                    ($0.element.name, componentSeries[$0.offset])
+                }
             )
         }
 

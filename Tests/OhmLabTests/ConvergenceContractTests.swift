@@ -58,18 +58,21 @@ struct ConvergenceContractTests {
         let numeric = try #require(matrix.first { $0.backendIdentifier == "numeric-core" })
         #expect(native.analyses == SimulationAnalysisKind.allCases.sorted())
         #expect(native.devices == CircuitIR.DeviceKind.allCases.sorted())
-        #expect(numeric.analyses == [.acSmallSignal, .dcOperatingPoint])
+        #expect(numeric.analyses == [.acSmallSignal, .dcOperatingPoint, .transient])
         #expect(numeric.devices == [.capacitor, .currentSource, .inductor, .resistor, .voltageSource])
-        #expect(!numeric.supports(.transient))
+        #expect(numeric.supports(.transient))
         #expect(numeric.supports(.circuitIRInput))
+        #expect(numeric.supports(.initialConditions))
         #expect(!numeric.supports(.temperature))
 
         #if canImport(CCOhmCore)
         let rust = try #require(matrix.first { $0.backendIdentifier == "ohm-core" })
-        #expect(rust.analyses == [.acSmallSignal, .dcOperatingPoint])
+        #expect(rust.analyses == [.acSmallSignal, .dcOperatingPoint, .transient])
         #expect(rust.supports(.circuitIRInput))
         #expect(rust.supports(.modelLibraries))
-        #expect(!rust.supports(.transient))
+        #expect(rust.supports(.transient))
+        #expect(rust.supports(.sourceWaveforms))
+        #expect(rust.supports(.initialConditions))
         #endif
     }
 
@@ -189,9 +192,10 @@ struct ConvergenceContractTests {
 
         var transient = settings
         transient.runTransient = true
-        #expect(throws: RustCircuitTransportError.self) {
-            _ = try RustCircuitTransport.Request(circuit: ir, settings: transient)
-        }
+        transient.tranStep = 1e-4
+        transient.tranStop = 1e-3
+        let transientRequest = try RustCircuitTransport.Request(circuit: ir, settings: transient)
+        #expect(transientRequest.analysis.transient?.step == 1e-4)
 
         let diode = try CircuitIRCompiler.compile(netlist: """
         V1 in 0 1
@@ -202,6 +206,51 @@ struct ConvergenceContractTests {
         #expect(throws: RustCircuitTransportError.self) {
             _ = try RustCircuitTransport.Request(circuit: diode, settings: settings)
         }
+    }
+
+    @Test func linearTransientParityAndInitialConditions() throws {
+        let netlist = """
+        V1 in 0 PULSE(0 1 100u 0 0 10m 20m)
+        R1 in out 1k
+        C1 out 0 1u
+        .ic V(out)=0.25
+        .tran 100u 2m
+        .end
+        """
+        let ir = try CircuitIRCompiler.compile(netlist: netlist)
+        var settings = AnalysisSettings.default
+        settings.runDC = false
+        settings.runAC = false
+        settings.runTransient = true
+        settings.tranStep = 100e-6
+        settings.tranStop = 2e-3
+
+        let native = try NativeMNAEngine().solve(circuit: ir, settings: settings)
+        let numeric = try NumericCoreEngineBackend().solve(circuit: ir, settings: settings)
+        let nativeTransient = try #require(native.transient)
+        let numericTransient = try #require(numeric.transient)
+        #expect(nativeTransient.times == numericTransient.times)
+        let nativeOutput = try #require(nativeTransient.nodes.first { $0.name == "out" }?.values)
+        let numericOutput = try #require(numericTransient.nodes.first { $0.name == "out" }?.values)
+        #expect(abs(nativeOutput[0] - 0.25) < 1e-12)
+        #expect(abs(numericOutput[0] - 0.25) < 1e-12)
+        #expect(nativeOutput.count == numericOutput.count)
+        for (lhs, rhs) in zip(nativeOutput, numericOutput) {
+            // NumericCore uses adaptive DAE integration while the native
+            // reference intentionally uses a fixed backward-Euler grid.
+            #expect(abs(lhs - rhs) < 1e-1)
+        }
+
+        #if canImport(CCOhmCore)
+        let rust = try RustEngineBackend().solve(circuit: ir, settings: settings)
+        let rustTransient = try #require(rust.transient)
+        #expect(rustTransient.times == nativeTransient.times)
+        let rustOutput = try #require(rustTransient.nodes.first { $0.name == "out" }?.values)
+        #expect(rustOutput.count == nativeOutput.count)
+        for (lhs, rhs) in zip(nativeOutput, rustOutput) {
+            #expect(abs(lhs - rhs) < 1e-10)
+        }
+        #endif
     }
 
     private func compare(

@@ -1,8 +1,8 @@
 //! # ohm-core — OhmLab's optional Rust simulation core
 //!
 //! A compact modified-nodal-analysis (MNA) engine for linear circuits
-//! (R, C, L, and independent V/I sources) with DC operating-point and AC
-//! frequency-sweep analyses. It is the Rust half of OhmLab's pluggable engine
+//! (R, C, L, and independent V/I sources) with DC operating-point, AC
+//! frequency-sweep, and backward-Euler transient analyses. It is the Rust half of OhmLab's pluggable engine
 //! façade: the Swift app ships with its native Swift MNA engine by default and
 //! can link this crate behind the same `SimulationEngineBackend` interface.
 //!
@@ -14,7 +14,7 @@
 //!   • `value`   — SPICE numeric parsing (suffixes and unit letters)
 //!   • `netlist` — parsing into a flat element list plus directives
 //!   • `linalg`  — field-generic Gaussian elimination (real and complex)
-//!   • `dc`/`ac` — the two analyses
+//!   • `dc`/`ac`/`transient` — numerical analyses
 //!   • `json`    — result serialization plus serde-based Circuit IR transport
 //!   • `ffi`     — the exported C functions
 
@@ -116,7 +116,10 @@ impl Field for Cplx {
         Cplx::new(self.re - o.re, self.im - o.im)
     }
     fn mul(self, o: Self) -> Self {
-        Cplx::new(self.re * o.re - self.im * o.im, self.re * o.im + self.im * o.re)
+        Cplx::new(
+            self.re * o.re - self.im * o.im,
+            self.re * o.im + self.im * o.re,
+        )
     }
     fn div(self, o: Self) -> Self {
         let d = o.re * o.re + o.im * o.im;
@@ -269,11 +272,142 @@ fn suffix_multiplier(suffix: &str) -> f64 {
 
 #[derive(Clone, Debug)]
 enum Element {
-    Resistor { name: String, a: String, b: String, value: f64 },
-    Capacitor { name: String, a: String, b: String, value: f64 },
-    Inductor { name: String, a: String, b: String, value: f64 },
-    VoltageSource { name: String, a: String, b: String, dc: f64, ac: Cplx },
-    CurrentSource { name: String, a: String, b: String, dc: f64, ac: Cplx },
+    Resistor {
+        name: String,
+        a: String,
+        b: String,
+        value: f64,
+    },
+    Capacitor {
+        name: String,
+        a: String,
+        b: String,
+        value: f64,
+    },
+    Inductor {
+        name: String,
+        a: String,
+        b: String,
+        value: f64,
+    },
+    VoltageSource {
+        name: String,
+        a: String,
+        b: String,
+        dc: f64,
+        ac: Cplx,
+        transient: Option<Waveform>,
+    },
+    CurrentSource {
+        name: String,
+        a: String,
+        b: String,
+        dc: f64,
+        ac: Cplx,
+        transient: Option<Waveform>,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum Waveform {
+    Pulse {
+        initial: f64,
+        pulsed: f64,
+        delay: f64,
+        rise: f64,
+        fall: f64,
+        width: f64,
+        period: f64,
+    },
+    Sine {
+        offset: f64,
+        amplitude: f64,
+        frequency: f64,
+        delay: f64,
+        damping: f64,
+        phase_degrees: f64,
+    },
+    PiecewiseLinear(Vec<(f64, f64)>),
+}
+
+impl Waveform {
+    fn value(&self, time: f64) -> f64 {
+        match self {
+            Self::Pulse {
+                initial,
+                pulsed,
+                delay,
+                rise,
+                fall,
+                width,
+                period,
+            } => {
+                let shifted = time - delay;
+                if shifted < 0.0 {
+                    return *initial;
+                }
+                let cycle = if *period > 0.0 {
+                    shifted % period
+                } else {
+                    shifted
+                };
+                let rise = rise.max(0.0);
+                if rise > 0.0 && cycle < rise {
+                    return initial + (pulsed - initial) * cycle / rise;
+                }
+                let after_rise = cycle - rise;
+                if after_rise < *width {
+                    return *pulsed;
+                }
+                let fall = fall.max(0.0);
+                let after_high = after_rise - width;
+                if fall > 0.0 && after_high < fall {
+                    return pulsed + (initial - pulsed) * after_high / fall;
+                }
+                *initial
+            }
+            Self::Sine {
+                offset,
+                amplitude,
+                frequency,
+                delay,
+                damping,
+                phase_degrees,
+            } => {
+                let shifted = time - delay;
+                if shifted < 0.0 {
+                    return *offset;
+                }
+                let angle =
+                    2.0 * std::f64::consts::PI * frequency * shifted + phase_degrees.to_radians();
+                let envelope = if *damping != 0.0 {
+                    (-damping * shifted).exp()
+                } else {
+                    1.0
+                };
+                offset + amplitude * envelope * angle.sin()
+            }
+            Self::PiecewiseLinear(points) => {
+                let Some(first) = points.first() else {
+                    return 0.0;
+                };
+                let last = points.last().expect("non-empty waveform");
+                if time <= first.0 {
+                    return first.1;
+                }
+                if time >= last.0 {
+                    return last.1;
+                }
+                for pair in points.windows(2) {
+                    if time <= pair[1].0 {
+                        let fraction = (time - pair[0].0) / (pair[1].0 - pair[0].0);
+                        return pair[0].1 + (pair[1].1 - pair[0].1) * fraction;
+                    }
+                }
+                last.1
+            }
+        }
+    }
 }
 
 impl Element {
@@ -300,7 +434,10 @@ impl Element {
     }
     /// Elements that get a branch-current unknown in DC (V and L).
     fn has_branch(&self) -> bool {
-        matches!(self, Element::VoltageSource { .. } | Element::Inductor { .. })
+        matches!(
+            self,
+            Element::VoltageSource { .. } | Element::Inductor { .. }
+        )
     }
 }
 
@@ -320,9 +457,19 @@ struct AcDirective {
 }
 
 #[derive(Clone, Debug)]
+struct TransientDirective {
+    step: f64,
+    stop: f64,
+    start: f64,
+}
+
+#[derive(Clone, Debug)]
 struct Circuit {
     elements: Vec<Element>,
     ac: Option<AcDirective>,
+    transient: Option<TransientDirective>,
+    initial_node_voltages: std::collections::BTreeMap<String, f64>,
+    initial_element_currents: std::collections::BTreeMap<String, f64>,
     warnings: Vec<String>,
     /// Explicit Circuit IR order, including reference node. Netlist input keeps
     /// deriving its order from first use for backward compatibility.
@@ -420,9 +567,23 @@ fn parse_netlist(text: &str) -> Result<Circuit, String> {
                 let a = tokens[1].to_string();
                 let b = tokens[2].to_string();
                 elements.push(if kind == 'V' {
-                    Element::VoltageSource { name, a, b, dc, ac: ac_phasor }
+                    Element::VoltageSource {
+                        name,
+                        a,
+                        b,
+                        dc,
+                        ac: ac_phasor,
+                        transient: None,
+                    }
                 } else {
-                    Element::CurrentSource { name, a, b, dc, ac: ac_phasor }
+                    Element::CurrentSource {
+                        name,
+                        a,
+                        b,
+                        dc,
+                        ac: ac_phasor,
+                        transient: None,
+                    }
                 });
             }
             _ => warnings.push(format!(
@@ -435,6 +596,9 @@ fn parse_netlist(text: &str) -> Result<Circuit, String> {
     Ok(Circuit {
         elements,
         ac,
+        transient: None,
+        initial_node_voltages: Default::default(),
+        initial_element_currents: Default::default(),
         warnings,
         node_order: None,
     })
@@ -466,7 +630,12 @@ fn parse_ac_directive(tokens: &[&str]) -> Option<AcDirective> {
     let points: usize = tokens[2].parse().ok()?;
     let start = parse_value(tokens[3])?;
     let stop = parse_value(tokens[4])?;
-    Some(AcDirective { sweep, points, start, stop })
+    Some(AcDirective {
+        sweep,
+        points,
+        start,
+        stop,
+    })
 }
 
 /// Parses the value portion of a V/I source: `DC <v>` and/or `AC <mag> [phase]`.
@@ -488,10 +657,20 @@ fn parse_source(tokens: &[&str]) -> (f64, Cplx) {
                 i += 2;
             }
             "ac" => {
-                let mag = tokens.get(i + 1).and_then(|t| parse_value(t)).unwrap_or(1.0);
-                let phase = tokens.get(i + 2).and_then(|t| parse_value(t)).unwrap_or(0.0);
+                let mag = tokens
+                    .get(i + 1)
+                    .and_then(|t| parse_value(t))
+                    .unwrap_or(1.0);
+                let phase = tokens
+                    .get(i + 2)
+                    .and_then(|t| parse_value(t))
+                    .unwrap_or(0.0);
                 ac = Cplx::from_polar(mag, phase);
-                i += if tokens.get(i + 2).and_then(|t| parse_value(t)).is_some() { 3 } else { 2 };
+                i += if tokens.get(i + 2).and_then(|t| parse_value(t)).is_some() {
+                    3
+                } else {
+                    2
+                };
             }
             _ => i += 1,
         }
@@ -500,7 +679,10 @@ fn parse_source(tokens: &[&str]) -> (f64, Cplx) {
 }
 
 fn is_keyword(token: &str) -> bool {
-    matches!(token.to_ascii_lowercase().as_str(), "dc" | "ac" | "sin" | "pulse" | "pwl")
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "dc" | "ac" | "sin" | "pulse" | "pwl"
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -574,7 +756,11 @@ fn solve_dc(circuit: &Circuit) -> Result<DcSolution, String> {
         let vb = value_at(bn, &names, &voltages);
         let current = match e {
             Element::Resistor { value, .. } => {
-                if *value != 0.0 { (va - vb) / *value } else { 0.0 }
+                if *value != 0.0 {
+                    (va - vb) / *value
+                } else {
+                    0.0
+                }
             }
             Element::Capacitor { .. } => 0.0,
             Element::Inductor { .. } | Element::VoltageSource { .. } => {
@@ -594,7 +780,11 @@ fn value_at(name: &str, names: &[String], voltages: &[f64]) -> f64 {
     if is_ground(name) {
         0.0
     } else {
-        names.iter().position(|n| n == name).map(|i| voltages[i]).unwrap_or(0.0)
+        names
+            .iter()
+            .position(|n| n == name)
+            .map(|i| voltages[i])
+            .unwrap_or(0.0)
     }
 }
 
@@ -738,9 +928,8 @@ fn solve_ac(circuit: &Circuit, directive: &AcDirective) -> Result<AcSolution, St
             }
         }
 
-        let x = solve_linear(a, b, n).ok_or_else(|| {
-            format!("The AC system is singular at {} Hz.", freq)
-        })?;
+        let x = solve_linear(a, b, n)
+            .ok_or_else(|| format!("The AC system is singular at {} Hz.", freq))?;
 
         for (i, v) in x[..names.len()].iter().enumerate() {
             node_voltages[i][fi] = *v;
@@ -756,9 +945,7 @@ fn solve_ac(circuit: &Circuit, directive: &AcDirective) -> Result<AcSolution, St
                     let g = if *value != 0.0 { 1.0 / *value } else { 0.0 };
                     va.sub(vb).mul(Cplx::new(g, 0.0))
                 }
-                Element::Capacitor { value, .. } => {
-                    va.sub(vb).mul(Cplx::new(0.0, omega * *value))
-                }
+                Element::Capacitor { value, .. } => va.sub(vb).mul(Cplx::new(0.0, omega * *value)),
                 Element::Inductor { value, .. } => {
                     let y = if omega * *value != 0.0 {
                         Cplx::new(0.0, -1.0 / (omega * *value))
@@ -778,14 +965,22 @@ fn solve_ac(circuit: &Circuit, directive: &AcDirective) -> Result<AcSolution, St
         }
     }
 
-    Ok(AcSolution { frequencies, node_voltages, element_currents })
+    Ok(AcSolution {
+        frequencies,
+        node_voltages,
+        element_currents,
+    })
 }
 
 fn value_at_c(name: &str, names: &[String], x: &[Cplx]) -> Cplx {
     if is_ground(name) {
         Cplx::zero()
     } else {
-        names.iter().position(|n| n == name).map(|i| x[i]).unwrap_or(Cplx::zero())
+        names
+            .iter()
+            .position(|n| n == name)
+            .map(|i| x[i])
+            .unwrap_or(Cplx::zero())
     }
 }
 
@@ -821,6 +1016,207 @@ fn stamp_vsource_c(
         a[k * n + y] = a[k * n + y].sub(one);
     }
     b[k] = value;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Linear transient analysis (backward Euler)
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct TransientSolution {
+    times: Vec<f64>,
+    node_voltages: Vec<Vec<f64>>,
+    element_currents: Vec<Vec<f64>>,
+}
+
+fn source_value(dc: f64, transient: &Option<Waveform>, time: f64) -> f64 {
+    transient
+        .as_ref()
+        .map(|waveform| waveform.value(time))
+        .unwrap_or(dc)
+}
+
+fn solve_transient(
+    circuit: &Circuit,
+    directive: &TransientDirective,
+) -> Result<TransientSolution, String> {
+    if !circuit.has_ground() {
+        return Err("The circuit has no ground (node 0).".to_string());
+    }
+    let names = circuit.node_names();
+    let step_count = ((directive.stop - directive.start) / directive.step).ceil() as usize;
+    if step_count == 0 || step_count + 1 > 200_000 {
+        return Err("Invalid transient sample count.".to_string());
+    }
+
+    // The initial point is a DC operating point with transient source values at
+    // t=start, followed by explicit .ic node/inductor overrides.
+    let mut initial_circuit = circuit.clone();
+    for element in &mut initial_circuit.elements {
+        match element {
+            Element::VoltageSource { dc, transient, .. }
+            | Element::CurrentSource { dc, transient, .. } => {
+                *dc = source_value(*dc, transient, directive.start);
+            }
+            _ => {}
+        }
+    }
+    let mut operating = solve_dc(&initial_circuit)?;
+    for (name, value) in &circuit.initial_node_voltages {
+        if let Some(index) = names
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(name))
+        {
+            operating.voltages[index] = *value;
+        }
+    }
+    for (index, element) in circuit.elements.iter().enumerate() {
+        if let Some(value) = circuit
+            .initial_element_currents
+            .iter()
+            .find(|(name, _)| element.name().eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+        {
+            operating.currents[index] = *value;
+        }
+    }
+
+    let mut capacitor_voltage = vec![0.0; circuit.elements.len()];
+    let mut inductor_current = vec![0.0; circuit.elements.len()];
+    for (index, element) in circuit.elements.iter().enumerate() {
+        let (a, b) = element.nodes();
+        match element {
+            Element::Capacitor { .. } => {
+                capacitor_voltage[index] = value_at(a, &names, &operating.voltages)
+                    - value_at(b, &names, &operating.voltages);
+            }
+            Element::Inductor { .. } => inductor_current[index] = operating.currents[index],
+            _ => {}
+        }
+    }
+
+    let mut times = vec![directive.start];
+    let mut node_voltages = vec![vec![]; names.len()];
+    let mut element_currents = vec![vec![]; circuit.elements.len()];
+    for (index, value) in operating.voltages.iter().enumerate() {
+        node_voltages[index].push(*value);
+    }
+    for (index, value) in operating.currents.iter().enumerate() {
+        element_currents[index].push(*value);
+    }
+
+    let branch_count = circuit
+        .elements
+        .iter()
+        .filter(|element| element.is_vsource())
+        .count();
+    let dimension = names.len() + branch_count;
+    for step in 1..=step_count {
+        let time = directive.start + step as f64 * directive.step;
+        let mut matrix = vec![0.0; dimension * dimension];
+        let mut rhs = vec![0.0; dimension];
+        let mut branch_row = names.len();
+        for (index, element) in circuit.elements.iter().enumerate() {
+            let (a, b) = element.nodes();
+            let ra = names.iter().position(|name| name == a);
+            let rb = names.iter().position(|name| name == b);
+            match element {
+                Element::Resistor { value, .. } => {
+                    stamp_conductance(&mut matrix, dimension, ra, rb, 1.0 / value);
+                }
+                Element::Capacitor { value, .. } => {
+                    let conductance = value / directive.step;
+                    stamp_conductance(&mut matrix, dimension, ra, rb, conductance);
+                    let history = -conductance * capacitor_voltage[index];
+                    if let Some(row) = ra {
+                        rhs[row] -= history;
+                    }
+                    if let Some(row) = rb {
+                        rhs[row] += history;
+                    }
+                }
+                Element::Inductor { value, .. } => {
+                    let conductance = directive.step / value;
+                    stamp_conductance(&mut matrix, dimension, ra, rb, conductance);
+                    let history = inductor_current[index];
+                    if let Some(row) = ra {
+                        rhs[row] -= history;
+                    }
+                    if let Some(row) = rb {
+                        rhs[row] += history;
+                    }
+                }
+                Element::VoltageSource { dc, transient, .. } => {
+                    stamp_vsource(
+                        &mut matrix,
+                        &mut rhs,
+                        dimension,
+                        ra,
+                        rb,
+                        branch_row,
+                        source_value(*dc, transient, time),
+                    );
+                    branch_row += 1;
+                }
+                Element::CurrentSource { dc, transient, .. } => {
+                    let current = source_value(*dc, transient, time);
+                    if let Some(row) = ra {
+                        rhs[row] -= current;
+                    }
+                    if let Some(row) = rb {
+                        rhs[row] += current;
+                    }
+                }
+            }
+        }
+        let solved = solve_linear(matrix, rhs, dimension)
+            .ok_or_else(|| format!("The transient system is singular at {time} s."))?;
+        let voltages = solved[..names.len()].to_vec();
+        let mut currents = Vec::with_capacity(circuit.elements.len());
+        let mut branch_cursor = names.len();
+        for (index, element) in circuit.elements.iter().enumerate() {
+            let (a, b) = element.nodes();
+            let voltage = value_at(a, &names, &voltages) - value_at(b, &names, &voltages);
+            let current = match element {
+                Element::Resistor { value, .. } => voltage / value,
+                Element::Capacitor { value, .. } => {
+                    value / directive.step * (voltage - capacitor_voltage[index])
+                }
+                Element::Inductor { value, .. } => {
+                    directive.step / value * voltage + inductor_current[index]
+                }
+                Element::VoltageSource { .. } => {
+                    let value = solved[branch_cursor];
+                    branch_cursor += 1;
+                    value
+                }
+                Element::CurrentSource { dc, transient, .. } => source_value(*dc, transient, time),
+            };
+            currents.push(current);
+        }
+        for (index, element) in circuit.elements.iter().enumerate() {
+            let (a, b) = element.nodes();
+            match element {
+                Element::Capacitor { .. } => {
+                    capacitor_voltage[index] =
+                        value_at(a, &names, &voltages) - value_at(b, &names, &voltages);
+                }
+                Element::Inductor { .. } => inductor_current[index] = currents[index],
+                _ => {}
+            }
+        }
+        times.push(time);
+        for (index, value) in voltages.iter().enumerate() {
+            node_voltages[index].push(*value);
+        }
+        for (index, value) in currents.iter().enumerate() {
+            element_currents[index].push(*value);
+        }
+    }
+    Ok(TransientSolution {
+        times,
+        node_voltages,
+        element_currents,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -860,13 +1256,20 @@ fn json_string_array(items: &[String]) -> String {
 }
 
 fn solve_to_json(circuit: &Circuit) -> (String, Vec<String>) {
-    solve_to_json_selected(circuit, true, circuit.ac.is_some(), None)
+    solve_to_json_selected(
+        circuit,
+        true,
+        circuit.ac.is_some(),
+        circuit.transient.is_some(),
+        None,
+    )
 }
 
 fn solve_to_json_selected(
     circuit: &Circuit,
     run_dc: bool,
     run_ac: bool,
+    run_transient: bool,
     transport_version: Option<u32>,
 ) -> (String, Vec<String>) {
     let mut warnings = circuit.warnings.clone();
@@ -878,59 +1281,58 @@ fn solve_to_json_selected(
     if run_dc {
         match solve_dc(circuit) {
             Ok(sol) => {
-            for v in &sol.voltages {
-                if !v.is_finite() {
-                    warnings.push("ohm-core: non-finite DC node voltage.".to_string());
+                for v in &sol.voltages {
+                    if !v.is_finite() {
+                        warnings.push("ohm-core: non-finite DC node voltage.".to_string());
+                    }
                 }
-            }
-            let nodes: Vec<String> = names
-                .iter()
-                .enumerate()
-                .map(|(i, name)| {
-                    format!(
-                        "{{\"name\":{},\"voltage\":{}}}",
-                        json_string(name),
-                        json_number(sol.voltages[i])
-                    )
-                })
-                .collect();
-            let components: Vec<String> = circuit
-                .elements
-                .iter()
-                .enumerate()
-                .map(|(i, e)| {
-                    let (an, bn) = e.nodes();
-                    let va = value_at(an, &names, &sol.voltages);
-                    let vb = value_at(bn, &names, &sol.voltages);
-                    format!(
-                        "{{\"name\":{},\"voltage\":{},\"current\":{}}}",
-                        json_string(e.name()),
-                        json_number(va - vb),
-                        json_number(sol.currents[i])
-                    )
-                })
-                .collect();
-            let sources: Vec<String> = circuit
-                .elements
-                .iter()
-                .enumerate()
-                .filter_map(|(i, e)| match e {
-                    Element::VoltageSource { name, .. } | Element::CurrentSource { name, .. } => {
-                        Some(format!(
+                let nodes: Vec<String> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        format!(
+                            "{{\"name\":{},\"voltage\":{}}}",
+                            json_string(name),
+                            json_number(sol.voltages[i])
+                        )
+                    })
+                    .collect();
+                let components: Vec<String> = circuit
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        let (an, bn) = e.nodes();
+                        let va = value_at(an, &names, &sol.voltages);
+                        let vb = value_at(bn, &names, &sol.voltages);
+                        format!(
+                            "{{\"name\":{},\"voltage\":{},\"current\":{}}}",
+                            json_string(e.name()),
+                            json_number(va - vb),
+                            json_number(sol.currents[i])
+                        )
+                    })
+                    .collect();
+                let sources: Vec<String> = circuit
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| match e {
+                        Element::VoltageSource { name, .. }
+                        | Element::CurrentSource { name, .. } => Some(format!(
                             "{{\"name\":{},\"current\":{}}}",
                             json_string(name),
                             json_number(sol.currents[i])
-                        ))
-                    }
-                    _ => None,
-                })
-                .collect();
-            dc_json = format!(
-                "{{\"converged\":true,\"nodes\":[{}],\"components\":[{}],\"sources\":[{}]}}",
-                nodes.join(","),
-                components.join(","),
-                sources.join(",")
-            );
+                        )),
+                        _ => None,
+                    })
+                    .collect();
+                dc_json = format!(
+                    "{{\"converged\":true,\"nodes\":[{}],\"components\":[{}],\"sources\":[{}]}}",
+                    nodes.join(","),
+                    components.join(","),
+                    sources.join(",")
+                );
             }
             Err(message) => {
                 if strict {
@@ -947,63 +1349,124 @@ fn solve_to_json_selected(
         if let Some(directive) = &circuit.ac {
             match solve_ac(circuit, directive) {
                 Ok(sol) => {
-                let freqs: Vec<String> =
-                    sol.frequencies.iter().map(|f| json_number(*f)).collect();
-                let nodes: Vec<String> = names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, name)| {
-                        let response: Vec<String> = sol.frequencies
-                            .iter()
-                            .enumerate()
-                            .map(|(fi, f)| {
-                                let v = sol.node_voltages[i][fi];
-                                format!(
-                                    "{{\"freqHz\":{},\"magnitudeDb\":{},\"phaseDeg\":{}}}",
-                                    json_number(*f),
-                                    json_number(v.magnitude_db()),
-                                    json_number(v.phase_deg())
-                                )
-                            })
-                            .collect();
-                        format!(
-                            "{{\"name\":{},\"response\":[{}]}}",
-                            json_string(name),
-                            response.join(",")
-                        )
-                    })
-                    .collect();
-                let components: Vec<String> = circuit
-                    .elements
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| {
-                        let response: Vec<String> = sol.frequencies
-                            .iter()
-                            .enumerate()
-                            .map(|(fi, f)| {
-                                let c = sol.element_currents[i][fi];
-                                format!(
-                                    "{{\"freqHz\":{},\"magnitudeDb\":{},\"phaseDeg\":{}}}",
-                                    json_number(*f),
-                                    json_number(c.magnitude_db()),
-                                    json_number(c.phase_deg())
-                                )
-                            })
-                            .collect();
-                        format!(
-                            "{{\"name\":{},\"response\":[{}]}}",
-                            json_string(e.name()),
-                            response.join(",")
-                        )
-                    })
-                    .collect();
-                ac_json = format!(
-                    "{{\"frequencies\":[{}],\"nodes\":[{}],\"components\":[{}]}}",
-                    freqs.join(","),
-                    nodes.join(","),
-                    components.join(",")
-                );
+                    let freqs: Vec<String> =
+                        sol.frequencies.iter().map(|f| json_number(*f)).collect();
+                    let nodes: Vec<String> = names
+                        .iter()
+                        .enumerate()
+                        .map(|(i, name)| {
+                            let response: Vec<String> = sol
+                                .frequencies
+                                .iter()
+                                .enumerate()
+                                .map(|(fi, f)| {
+                                    let v = sol.node_voltages[i][fi];
+                                    format!(
+                                        "{{\"freqHz\":{},\"magnitudeDb\":{},\"phaseDeg\":{}}}",
+                                        json_number(*f),
+                                        json_number(v.magnitude_db()),
+                                        json_number(v.phase_deg())
+                                    )
+                                })
+                                .collect();
+                            format!(
+                                "{{\"name\":{},\"response\":[{}]}}",
+                                json_string(name),
+                                response.join(",")
+                            )
+                        })
+                        .collect();
+                    let components: Vec<String> = circuit
+                        .elements
+                        .iter()
+                        .enumerate()
+                        .map(|(i, e)| {
+                            let response: Vec<String> = sol
+                                .frequencies
+                                .iter()
+                                .enumerate()
+                                .map(|(fi, f)| {
+                                    let c = sol.element_currents[i][fi];
+                                    format!(
+                                        "{{\"freqHz\":{},\"magnitudeDb\":{},\"phaseDeg\":{}}}",
+                                        json_number(*f),
+                                        json_number(c.magnitude_db()),
+                                        json_number(c.phase_deg())
+                                    )
+                                })
+                                .collect();
+                            format!(
+                                "{{\"name\":{},\"response\":[{}]}}",
+                                json_string(e.name()),
+                                response.join(",")
+                            )
+                        })
+                        .collect();
+                    ac_json = format!(
+                        "{{\"frequencies\":[{}],\"nodes\":[{}],\"components\":[{}]}}",
+                        freqs.join(","),
+                        nodes.join(","),
+                        components.join(",")
+                    );
+                }
+                Err(message) => {
+                    if strict {
+                        errors.push(message)
+                    } else {
+                        warnings.push(format!("ohm-core: {message}"))
+                    }
+                }
+            }
+        }
+    }
+
+    let mut transient_json = "null".to_string();
+    if run_transient {
+        if let Some(directive) = &circuit.transient {
+            match solve_transient(circuit, directive) {
+                Ok(solution) => {
+                    let times = solution
+                        .times
+                        .iter()
+                        .map(|value| json_number(*value))
+                        .collect::<Vec<_>>();
+                    let nodes = names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            let values = solution.node_voltages[index]
+                                .iter()
+                                .map(|value| json_number(*value))
+                                .collect::<Vec<_>>();
+                            format!(
+                                "{{\"name\":{},\"values\":[{}]}}",
+                                json_string(name),
+                                values.join(",")
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let components = circuit
+                        .elements
+                        .iter()
+                        .enumerate()
+                        .map(|(index, element)| {
+                            let values = solution.element_currents[index]
+                                .iter()
+                                .map(|value| json_number(*value))
+                                .collect::<Vec<_>>();
+                            format!(
+                                "{{\"name\":{},\"values\":[{}]}}",
+                                json_string(element.name()),
+                                values.join(",")
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    transient_json = format!(
+                        "{{\"times\":[{}],\"nodes\":[{}],\"components\":[{}]}}",
+                        times.join(","),
+                        nodes.join(","),
+                        components.join(",")
+                    );
                 }
                 Err(message) => {
                     if strict {
@@ -1020,14 +1483,15 @@ fn solve_to_json_selected(
         .map(|version| format!(",\"transportVersion\":{version}"))
         .unwrap_or_default();
     let json = format!(
-        "{{\"engine\":{},\"contractVersion\":{}{},\"errors\":{},\"warnings\":{},\"dc\":{},\"ac\":{}}}",
+        "{{\"engine\":{},\"contractVersion\":{}{},\"errors\":{},\"warnings\":{},\"dc\":{},\"ac\":{},\"transient\":{}}}",
         json_string(ENGINE_ID),
         transport::RESULT_CONTRACT_VERSION,
         transport,
         json_string_array(&errors),
         json_string_array(&warnings),
         dc_json,
-        ac_json
+        ac_json,
+        transient_json
     );
     (json, warnings)
 }
@@ -1039,7 +1503,7 @@ static VERSION_C: &[u8] = concat!("ohm-core ", env!("CARGO_PKG_VERSION"), "\0").
 // C ABI
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Returns a `'\0'`-terminated static version string, e.g. `"ohm-core 0.2.0"`.
+/// Returns a `'\0'`-terminated static version string, e.g. `"ohm-core 0.3.0"`.
 ///
 /// # Safety
 /// The returned pointer is static and must not be freed.
@@ -1071,9 +1535,11 @@ pub unsafe extern "C" fn ohm_solve(netlist: *const c_char, out_json: *mut *mut c
 
     let json = match parse_netlist(text) {
         Ok(circuit) => solve_to_json(&circuit).0,
-        Err(message) => format!("{{\"engine\":{},\"warnings\":[{}],\"dc\":null,\"ac\":null}}",
+        Err(message) => format!(
+            "{{\"engine\":{},\"warnings\":[{}],\"dc\":null,\"ac\":null}}",
             json_string(ENGINE_ID),
-            json_string(&message)),
+            json_string(&message)
+        ),
     };
 
     match CString::new(json) {
@@ -1107,13 +1573,18 @@ pub unsafe extern "C" fn ohm_solve_circuit_ir(
     let json = match transport::Request::decode(text) {
         Ok(request) => {
             let run_dc = request.run_dc();
+            let run_transient = request.run_transient();
             match request.into_circuit() {
-                Ok(circuit) => solve_to_json_selected(
-                    &circuit,
-                    run_dc,
-                    circuit.ac.is_some(),
-                    Some(transport::TRANSPORT_VERSION),
-                ).0,
+                Ok(circuit) => {
+                    solve_to_json_selected(
+                        &circuit,
+                        run_dc,
+                        circuit.ac.is_some(),
+                        run_transient,
+                        Some(transport::TRANSPORT_VERSION),
+                    )
+                    .0
+                }
                 Err(error) => transport_error_json(&error),
             }
         }
@@ -1130,7 +1601,7 @@ pub unsafe extern "C" fn ohm_solve_circuit_ir(
 
 fn transport_error_json(message: &str) -> String {
     format!(
-        "{{\"engine\":{},\"contractVersion\":{},\"transportVersion\":{},\"errors\":[{}],\"warnings\":[],\"dc\":null,\"ac\":null}}",
+        "{{\"engine\":{},\"contractVersion\":{},\"transportVersion\":{},\"errors\":[{}],\"warnings\":[],\"dc\":null,\"ac\":null,\"transient\":null}}",
         json_string(ENGINE_ID),
         transport::RESULT_CONTRACT_VERSION,
         transport::TRANSPORT_VERSION,
@@ -1189,7 +1660,11 @@ mod tests {
     #[test]
     fn current_source_pulls_node_negative() {
         let sol = dc_of("I1 1 0 1m\nR1 1 0 1k\n");
-        assert!((sol.voltages[0] + 1.0).abs() < 1e-9, "v(1) = {}", sol.voltages[0]);
+        assert!(
+            (sol.voltages[0] + 1.0).abs() < 1e-9,
+            "v(1) = {}",
+            sol.voltages[0]
+        );
     }
 
     #[test]
@@ -1210,9 +1685,8 @@ mod tests {
     #[test]
     fn rc_lowpass_ac_rolls_off() {
         // fc = 1/(2πRC) ≈ 1591.5 Hz for R=1k, C=100n.
-        let circuit =
-            parse_netlist("V1 1 0 AC 1 0\nR1 1 2 1k\nC1 2 0 100n\n.ac dec 10 10 100k\n")
-                .expect("parse");
+        let circuit = parse_netlist("V1 1 0 AC 1 0\nR1 1 2 1k\nC1 2 0 100n\n.ac dec 10 10 100k\n")
+            .expect("parse");
         let ac = solve_ac(&circuit, circuit.ac.as_ref().unwrap()).expect("ac");
         // Find the magnitude at ~fc; it should be about -3 dB.
         let fc = 1.0 / (2.0 * std::f64::consts::PI * 1000.0 * 100e-9);
@@ -1220,9 +1694,7 @@ mod tests {
             .frequencies
             .iter()
             .enumerate()
-            .min_by(|a, b| {
-                (a.1 - fc).abs().partial_cmp(&(b.1 - fc).abs()).unwrap()
-            })
+            .min_by(|a, b| (a.1 - fc).abs().partial_cmp(&(b.1 - fc).abs()).unwrap())
             .unwrap();
         let mag_db = ac.node_voltages[1][fi].magnitude_db();
         assert!((mag_db + 3.0).abs() < 0.5, "mag at fc = {} dB", mag_db);
@@ -1231,10 +1703,8 @@ mod tests {
     #[test]
     fn solves_matching_the_swift_reference_netlist() {
         // The exact shape the app emits for a divider, checking the wire format.
-        let circuit = parse_netlist(
-            "* divider\nV1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n.op\n",
-        )
-        .expect("parse");
+        let circuit =
+            parse_netlist("* divider\nV1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n.op\n").expect("parse");
         let (json, warnings) = solve_to_json(&circuit);
         assert!(warnings.is_empty(), "warnings: {:?}", warnings);
         assert!(json.contains("\"converged\":true"));

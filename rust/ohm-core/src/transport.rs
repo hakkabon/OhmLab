@@ -1,6 +1,6 @@
 //! Versioned Circuit IR transport shared with OhmLab's Swift engine facade.
 
-use super::{AcDirective, Circuit, Cplx, Element, SweepType};
+use super::{AcDirective, Circuit, Cplx, Element, SweepType, TransientDirective, Waveform};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,6 +25,14 @@ struct Analysis {
     #[serde(rename = "runDC")]
     run_dc: bool,
     ac: Option<AcSweep>,
+    transient: Option<Transient>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Transient {
+    step: f64,
+    stop: f64,
+    start: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +76,22 @@ struct Source {
     dc_value: f64,
     ac_magnitude: f64,
     ac_phase_degrees: f64,
+    transient: Option<TransientWaveform>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransientWaveform {
+    kind: String,
+    #[serde(default)]
+    parameters: BTreeMap<String, f64>,
+    #[serde(default)]
+    points: Vec<WaveformPoint>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaveformPoint {
+    time: f64,
+    value: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +128,10 @@ impl Request {
         self.analysis.run_dc
     }
 
+    pub fn run_transient(&self) -> bool {
+        self.analysis.transient.is_some()
+    }
+
     pub fn into_circuit(self) -> Result<Circuit, String> {
         let node_names = self
             .circuit
@@ -137,6 +165,35 @@ impl Request {
                 "voltage-source" | "current-source" => {
                     let source = device.source.expect("validated source");
                     let ac = Cplx::from_polar(source.ac_magnitude, source.ac_phase_degrees);
+                    let transient = source
+                        .transient
+                        .map(|waveform| match waveform.kind.as_str() {
+                            "pulse" => Waveform::Pulse {
+                                initial: waveform.parameters["initial"],
+                                pulsed: waveform.parameters["pulsed"],
+                                delay: waveform.parameters["delay"],
+                                rise: waveform.parameters["riseTime"],
+                                fall: waveform.parameters["fallTime"],
+                                width: waveform.parameters["pulseWidth"],
+                                period: waveform.parameters["period"],
+                            },
+                            "sine" => Waveform::Sine {
+                                offset: waveform.parameters["offset"],
+                                amplitude: waveform.parameters["amplitude"],
+                                frequency: waveform.parameters["frequency"],
+                                delay: waveform.parameters["delay"],
+                                damping: waveform.parameters["damping"],
+                                phase_degrees: waveform.parameters["phaseDegrees"],
+                            },
+                            "pwl" => Waveform::PiecewiseLinear(
+                                waveform
+                                    .points
+                                    .into_iter()
+                                    .map(|point| (point.time, point.value))
+                                    .collect(),
+                            ),
+                            _ => unreachable!("validated waveform kind"),
+                        });
                     if device.kind == "voltage-source" {
                         Element::VoltageSource {
                             name: device.name,
@@ -144,6 +201,7 @@ impl Request {
                             b,
                             dc: source.dc_value,
                             ac,
+                            transient,
                         }
                     } else {
                         Element::CurrentSource {
@@ -152,6 +210,7 @@ impl Request {
                             b,
                             dc: source.dc_value,
                             ac,
+                            transient,
                         }
                     }
                 }
@@ -170,9 +229,17 @@ impl Request {
             start: sweep.start_frequency,
             stop: sweep.stop_frequency,
         });
+        let transient = self.analysis.transient.map(|analysis| TransientDirective {
+            step: analysis.step,
+            stop: analysis.stop,
+            start: analysis.start,
+        });
         Ok(Circuit {
             elements,
             ac,
+            transient,
+            initial_node_voltages: self.circuit.initial_conditions.node_voltages,
+            initial_element_currents: self.circuit.initial_conditions.element_currents,
             warnings: Vec::new(),
             node_order: Some(node_names),
         })
@@ -282,6 +349,9 @@ impl Request {
                     {
                         return Err(format!("device {} has non-finite source data", device.name));
                     }
+                    if let Some(waveform) = &source.transient {
+                        validate_waveform(waveform, &device.name)?;
+                    }
                 }
                 _ => {
                     return Err(format!(
@@ -311,7 +381,8 @@ impl Request {
                     .into(),
             );
         }
-        if !self.analysis.run_dc && self.analysis.ac.is_none() {
+        if !self.analysis.run_dc && self.analysis.ac.is_none() && self.analysis.transient.is_none()
+        {
             return Err("the transport request selects no analysis".into());
         }
         if let Some(ac) = &self.analysis.ac {
@@ -341,8 +412,74 @@ impl Request {
                 return Err("AC sweep exceeds the 200,000-point limit".into());
             }
         }
+        if let Some(transient) = &self.analysis.transient {
+            if !transient.step.is_finite()
+                || transient.step <= 0.0
+                || !transient.start.is_finite()
+                || transient.start < 0.0
+                || !transient.stop.is_finite()
+                || transient.stop <= transient.start
+            {
+                return Err("invalid transient configuration".into());
+            }
+            let samples = ((transient.stop - transient.start) / transient.step).ceil() as usize + 1;
+            if samples > MAX_AC_POINTS {
+                return Err("transient analysis exceeds the 200,000-point limit".into());
+            }
+        }
         Ok(())
     }
+}
+
+fn validate_waveform(waveform: &TransientWaveform, device: &str) -> Result<(), String> {
+    let required: &[&str] = match waveform.kind.as_str() {
+        "pulse" => &[
+            "initial",
+            "pulsed",
+            "delay",
+            "riseTime",
+            "fallTime",
+            "pulseWidth",
+            "period",
+        ],
+        "sine" => &[
+            "offset",
+            "amplitude",
+            "frequency",
+            "delay",
+            "damping",
+            "phaseDegrees",
+        ],
+        "pwl" => &[],
+        _ => {
+            return Err(format!(
+                "device {device} has unsupported waveform {}",
+                waveform.kind
+            ))
+        }
+    };
+    if required.iter().any(|key| {
+        !waveform
+            .parameters
+            .get(*key)
+            .is_some_and(|value| value.is_finite())
+    }) || waveform
+        .points
+        .iter()
+        .any(|point| !point.time.is_finite() || !point.value.is_finite())
+    {
+        return Err(format!("device {device} has invalid waveform data"));
+    }
+    if waveform.kind == "pwl"
+        && (waveform.points.is_empty()
+            || waveform
+                .points
+                .windows(2)
+                .any(|pair| pair[0].time >= pair[1].time))
+    {
+        return Err(format!("device {device} has invalid PWL points"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -379,9 +516,14 @@ mod tests {
         let request = Request::decode(DIVIDER).expect("transport request");
         let run_dc = request.run_dc();
         let circuit = request.into_circuit().expect("circuit");
-        let json =
-            super::super::solve_to_json_selected(&circuit, run_dc, false, Some(TRANSPORT_VERSION))
-                .0;
+        let json = super::super::solve_to_json_selected(
+            &circuit,
+            run_dc,
+            false,
+            false,
+            Some(TRANSPORT_VERSION),
+        )
+        .0;
         assert!(json.contains("\"transportVersion\":1"));
         assert!(json.contains("\"contractVersion\":1"));
         assert!(json.contains("\"name\":\"out\",\"voltage\":2.5"));
@@ -414,5 +556,32 @@ mod tests {
         unsafe { super::super::ohm_free_string(output) };
         assert!(result.contains("\"transportVersion\":1"));
         assert!(result.contains("\"name\":\"out\",\"voltage\":2.5"));
+    }
+
+    #[test]
+    fn transports_and_solves_linear_transient_with_initial_conditions() {
+        let request = DIVIDER
+            .replace(
+                "\"analysis\": {\"runDC\": true, \"ac\": null}",
+                "\"analysis\": {\"runDC\": false, \"ac\": null, \"transient\": {\"step\":0.0001,\"stop\":0.001,\"start\":0.0}}",
+            )
+            .replace(
+                "\"initialConditions\":{\"nodeVoltages\":{},\"elementCurrents\":{}}",
+                "\"initialConditions\":{\"nodeVoltages\":{\"out\":1.25},\"elementCurrents\":{}}",
+            );
+        let decoded = Request::decode(&request).expect("transient request");
+        assert!(decoded.run_transient());
+        let circuit = decoded.into_circuit().expect("transient circuit");
+        let json = super::super::solve_to_json_selected(
+            &circuit,
+            false,
+            false,
+            true,
+            Some(TRANSPORT_VERSION),
+        )
+        .0;
+        assert!(json.contains("\"transient\":{\"times\":[0,0.0001"));
+        assert!(json.contains("\"name\":\"out\",\"values\":[1.25"));
+        assert!(json.contains("\"errors\":[]"));
     }
 }

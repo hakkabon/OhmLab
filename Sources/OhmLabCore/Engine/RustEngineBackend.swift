@@ -16,7 +16,7 @@ import Foundation
 
 /// A `SimulationEngineBackend` backed by the Rust `ohm-core` MNA engine.
 ///
-/// Scope note: the Rust core implements DC operating points and AC sweeps for
+/// Scope note: the Rust core implements DC, AC, and transient analysis for
 /// linear R/C/L/V/I circuits. Unsupported analyses and devices fail before the
 /// FFI call; use the native engine for the full feature set.
 struct RustEngineBackend: SimulationEngineBackend {
@@ -24,12 +24,15 @@ struct RustEngineBackend: SimulationEngineBackend {
 
     let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "ohm-core",
-        analyses: [.dcOperatingPoint, .acSmallSignal],
+        analyses: [.dcOperatingPoint, .acSmallSignal, .transient],
         devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource],
-        features: [.spiceNetlistInput, .circuitIRInput, .modelLibraries]
+        features: [
+            .spiceNetlistInput, .circuitIRInput, .modelLibraries,
+            .sourceWaveforms, .initialConditions,
+        ]
     )
 
-    /// The Rust core version reported by the library, e.g. `"ohm-core 0.2.0"`.
+    /// The Rust core version reported by the library, e.g. `"ohm-core 0.3.0"`.
     var engineVersion: String {
         guard let ptr = ohm_engine_version() else { return "ohm-core" }
         return String(cString: ptr)
@@ -59,8 +62,14 @@ struct RustEngineBackend: SimulationEngineBackend {
                 effective.acPointsPerDecade = parsed.analysis.points
             }
         }
-        if effective.runTransient || parsed.analysis.hasTransient {
-            throw RustCircuitTransportError.unsupportedAnalysis("transient analysis")
+        if parsed.analysis.hasTransient {
+            effective.runTransient = true
+            if settings.tranStep == AnalysisSettings.default.tranStep,
+               settings.tranStop == AnalysisSettings.default.tranStop {
+                effective.tranStep = parsed.analysis.tranStep
+                effective.tranStop = parsed.analysis.tranStop
+                effective.tranStart = parsed.analysis.tranStart
+            }
         }
         if effective.runDCSweep || !parsed.analysis.dcSweep.isEmpty || parsed.analysis.step != nil {
             throw RustCircuitTransportError.unsupportedAnalysis("DC or parameter sweeps")
@@ -99,6 +108,7 @@ struct RustEngineBackend: SimulationEngineBackend {
         let result = payload.makeResult(
             runDC: settings.runDC,
             runAC: settings.runAC,
+            runTransient: settings.runTransient,
             extraWarnings: payload.warnings
         )
         try SimulationResultContract.validate(result)
@@ -134,8 +144,14 @@ struct RustEngineBackend: SimulationEngineBackend {
         let warnings: [String]
         let dc: DCDTO?
         let ac: ACDTO?
+        let transient: TransientDTO?
 
-        func makeResult(runDC: Bool, runAC: Bool, extraWarnings: [String]) -> CircuitSimResult {
+        func makeResult(
+            runDC: Bool,
+            runAC: Bool,
+            runTransient: Bool,
+            extraWarnings: [String]
+        ) -> CircuitSimResult {
             let dcResult = (runDC ? dc : nil).map { dto in
                 CircuitSimResult.DCResult(
                     nodes: dto.nodes.map { ($0.name, $0.voltage) },
@@ -151,11 +167,18 @@ struct RustEngineBackend: SimulationEngineBackend {
                     components: dto.components.map { ($0.name, $0.response.map(\.freqPoint)) }
                 )
             }
+            let transientResult = (runTransient ? transient : nil).map { dto in
+                CircuitSimResult.TransientResult(
+                    times: dto.times,
+                    nodes: dto.nodes.map { ($0.name, $0.values) },
+                    components: dto.components.map { ($0.name, $0.values) }
+                )
+            }
             return CircuitSimResult(
                 contractVersion: contractVersion,
                 dc: dcResult,
                 ac: acResult,
-                transient: nil,
+                transient: transientResult,
                 sweep: nil,
                 fourier: [],
                 warnings: extraWarnings
@@ -204,6 +227,17 @@ struct RustEngineBackend: SimulationEngineBackend {
         let frequencies: [Double]
         let nodes: [ResponseDTO]
         let components: [ResponseDTO]
+    }
+
+    private struct TimeSeriesDTO: Decodable {
+        let name: String
+        let values: [Double]
+    }
+
+    private struct TransientDTO: Decodable {
+        let times: [Double]
+        let nodes: [TimeSeriesDTO]
+        let components: [TimeSeriesDTO]
     }
 
     private enum RustEngineError: LocalizedError {

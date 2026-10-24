@@ -1,8 +1,8 @@
 [package]
 name = "ohm-core"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "OhmLab's optional Rust MNA DC/AC engine with a versioned Circuit IR JSON C ABI."
+description = "OhmLab's optional Rust MNA DC/AC/transient engine with a versioned Circuit IR JSON C ABI."
 license = "MIT"
 
 [lib]

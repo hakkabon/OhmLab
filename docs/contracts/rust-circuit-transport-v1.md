@@ -11,9 +11,11 @@ The JSON request contains three independently versioned pieces:
 - `circuit.schemaVersion: 1` identifies Circuit IR.
 - the response `contractVersion: 1` identifies the simulation-result contract.
 
-The `analysis` object contains `runDC` and an optional AC sweep. Its sweep type
-is `dec`, `oct`, or `lin`; frequencies are in hertz. Circuit values and source
-data use the units and terminal ordering defined by Circuit IR v1.
+The `analysis` object contains `runDC`, an optional AC sweep, and an optional
+transient request (`step`, `stop`, and `start`, all in seconds). The AC sweep
+type is `dec`, `oct`, or `lin`; frequencies are in hertz. Circuit values,
+source waveforms, and initial conditions use the units and terminal ordering
+defined by Circuit IR v1.
 
 The Rust decoder validates the envelope, Circuit IR topology, solver controls,
 initial-condition references, device values, and analysis settings before it
@@ -21,8 +23,8 @@ constructs a solver model. Version 1 accepts only linear R/C/L/V/I devices.
 Unsupported or malformed input produces a result envelope with a non-empty
 `errors` array and no caller-visible partial result.
 
-The response also contains the Rust engine identifier, warnings, and the DC/AC
-sections from simulation-result contract v1. Swift checks all three version
+The response also contains the Rust engine identifier, warnings, and the
+DC/AC/transient sections from simulation-result contract v1. Swift checks all three version
 numbers and validates the result before plugins or UI code can observe it.
 
 ## ABI

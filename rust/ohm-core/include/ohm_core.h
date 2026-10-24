@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-/// Returns a NUL-terminated static version string, e.g. "ohm-core 0.2.0".
+/// Returns a NUL-terminated static version string, e.g. "ohm-core 0.3.0".
 /// The pointer is owned by the library; do not free it.
 const char *ohm_engine_version(void);
 
