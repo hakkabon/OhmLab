@@ -17,23 +17,35 @@
 import PackageDescription
 let packageTargets: [Target] = [
     .target(
+        name: "OhmLabSimulationProtocol",
+        path: "Sources/OhmLabSimulationProtocol"
+    ),
+    .target(
         name: "OhmLabCore",
-        dependencies: [.product(name: "NumericCoreOptimization", package: "Swift-NumericCore")],
+        dependencies: [
+            "OhmLabSimulationProtocol",
+            .product(name: "NumericCoreOptimization", package: "Swift-NumericCore"),
+        ],
         path: "Sources/OhmLabCore"
+    ),
+    .target(
+        name: "OhmLabSimulationHost",
+        dependencies: ["OhmLabSimulationProtocol", "OhmLabCore"],
+        path: "Sources/OhmLabSimulationHost"
     ),
     .executableTarget(
         name: "OhmLab",
-        dependencies: ["OhmLabCore"],
+        dependencies: ["OhmLabCore", "OhmLabSimulationHost"],
         path: "Sources/OhmLab"
     ),
     .executableTarget(
         name: "OhmLabCLI",
-        dependencies: ["OhmLabCore"],
+        dependencies: ["OhmLabCore", "OhmLabSimulationHost"],
         path: "Sources/OhmLabCLI"
     ),
     .testTarget(
         name: "OhmLabTests",
-        dependencies: ["OhmLabCore"],
+        dependencies: ["OhmLabCore", "OhmLabSimulationHost", "OhmLabSimulationProtocol"],
         path: "Tests/OhmLabTests",
         resources: [.copy("Fixtures")]
     ),
@@ -51,6 +63,10 @@ let package = Package(
     // ── Products ─────────────────────────────────────────────────────────────
     products: [
         .library(name: "OhmLabCore", targets: ["OhmLabCore"]),
+        .library(name: "OhmLabSimulationProtocol", targets: ["OhmLabSimulationProtocol"]),
+        .library(name: "OhmLabSimulationHost", targets: ["OhmLabSimulationHost"]),
+        // Compatibility product retained for 2.x embedders that imported the
+        // original core-backed platform product.
         .library(name: "OhmLabSimulationPlatform", targets: ["OhmLabCore"]),
         .executable(name: "OhmLab", targets: ["OhmLab"]),
         .executable(name: "ohm", targets: ["OhmLabCLI"]),
@@ -58,12 +74,11 @@ let package = Package(
 
     // ── Dependencies ─────────────────────────────────────────────────────────
     dependencies: [
-        // NumericCore's circuit-analysis API is currently provisional and has
-        // not reached a tagged release. Pin the reviewed revision exactly until
-        // the API ships in a stable release, then move this to a semantic range.
+        // NumericCore 1.x is the stable Swift circuit/transport contract. Its
+        // package supplies the reviewed Rust-NumericCore binary transport.
         .package(
             url: "https://github.com/hakkabon/Swift-NumericCore.git",
-            revision: "7318e8c470079b5255142d223750c251e9b2cfe7"
+            .upToNextMajor(from: "1.0.0")
         ),
     ],
 

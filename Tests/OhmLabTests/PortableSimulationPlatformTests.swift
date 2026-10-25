@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OhmLabCore
+import OhmLabSimulationProtocol
 
 @Suite("OhmLab 2.0 portable simulation platform")
 struct PortableSimulationPlatformTests {
@@ -31,13 +32,16 @@ struct PortableSimulationPlatformTests {
 
     @Test func manifestPublishesStableBoundaryAndQualifiedBackends() {
         let manifest = PortableSimulationPlatform.manifest
-        #expect(manifest.productVersion == "2.0.1")
+        #expect(manifest.productVersion == "2.1.0")
         #expect(manifest.protocolVersion == 1)
         #expect(manifest.circuitIRVersion == 1)
         #expect(manifest.simulationResultVersion == 1)
         #expect(manifest.mediaType.contains("version=1"))
         #expect(manifest.requestSchemaID == PortableSimulationPlatform.requestSchemaID)
         #expect(manifest.responseSchemaID == PortableSimulationPlatform.responseSchemaID)
+        #expect(manifest.batchSchemaID == SimulationHostContract.batchSchemaID)
+        #expect(manifest.batchResponseSchemaID == SimulationHostContract.batchResponseSchemaID)
+        #expect(manifest.hostContractVersion == 1)
         #expect(manifest.canonicalEncoding == "json-sorted-keys-utf8")
         #expect(manifest.provenanceDigest == "sha-256")
         #expect(manifest.backends.map(\.identifier) == ["native-mna", "numeric-core"])
@@ -64,7 +68,7 @@ struct PortableSimulationPlatformTests {
         #expect(response.backend == "numeric-core")
         #expect(response.result?.dc?.nodes.first { $0.name == "out" }?.value == 2.5)
         #expect(response.result?.ac?.frequencies.count == 2)
-        #expect(response.provenance?.productVersion == "2.0.1")
+        #expect(response.provenance?.productVersion == "2.1.0")
         #expect(response.provenance?.modelSource == "embedded-circuit-ir")
         #expect(response.provenance?.requestSHA256.count == 64)
         #expect(try PortableSimulationPlatform.encode(response) == PortableSimulationPlatform.encode(response))
@@ -222,7 +226,7 @@ struct PortableSimulationPlatformTests {
     @Test func executableQualificationPasses() {
         let report = PortablePlatformQualification.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "2.0.1")
+        #expect(report.productVersion == "2.1.0")
         #expect(report.cases.count == 8)
         #expect(report.cases.allSatisfy { $0.passed })
         #expect(report.issues.isEmpty)

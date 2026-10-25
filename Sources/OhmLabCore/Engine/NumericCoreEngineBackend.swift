@@ -27,7 +27,7 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
 public struct NumericCoreEngineBackend: SimulationEngineBackend {
     public let identifier = "numeric-core"
     public let maturity: SimulationBackendMaturity = .nonlinearProduction
-    public let implementationVersion: String? = "swift-numeric-core-7318e8c+rust-numeric-core-0.34.0"
+    public let implementationVersion: String? = "swift-numeric-core-1.1.0+rust-numeric-core-0.34.0"
 
     public let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "numeric-core",

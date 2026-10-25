@@ -7,6 +7,7 @@
 
 import Foundation
 import OhmLabCore
+import OhmLabSimulationHost
 
 enum CommandError: LocalizedError {
     case usage(String)
@@ -26,14 +27,14 @@ enum CommandError: LocalizedError {
 
 enum Subcommand {
     static let names: Set<String> = [
-        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "qualify-platform", "platform", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "qualify-platform", "qualify-host", "platform", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
     ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
 
-    static func run(_ arguments: [String]) -> Int32 {
+    static func run(_ arguments: [String]) async -> Int32 {
         do {
-            return try dispatch(arguments)
+            return try await dispatch(arguments)
         } catch let error as CommandError {
             writeStderr("ohm: \(error.localizedDescription)\n")
             return error.exitCode
@@ -43,7 +44,7 @@ enum Subcommand {
         }
     }
 
-    private static func dispatch(_ arguments: [String]) throws -> Int32 {
+    private static func dispatch(_ arguments: [String]) async throws -> Int32 {
         switch arguments[0] {
         case "engines": return try runEngines(Array(arguments.dropFirst()))
         case "doctor": return try runDoctor(Array(arguments.dropFirst()))
@@ -51,7 +52,8 @@ enum Subcommand {
         case "qualify-linear": return try runLinearQualification(Array(arguments.dropFirst()))
         case "qualify-nonlinear": return try runNonlinearQualification(Array(arguments.dropFirst()))
         case "qualify-platform": return try runPlatformQualification(Array(arguments.dropFirst()))
-        case "platform": return try runPlatform(Array(arguments.dropFirst()))
+        case "qualify-host": return try await runHostQualification(Array(arguments.dropFirst()))
+        case "platform": return try await runPlatform(Array(arguments.dropFirst()))
         case "project": return try runProject(Array(arguments.dropFirst()))
         case "kicad": return try runKicad(Array(arguments.dropFirst()))
         case "sync": return try runSync(Array(arguments.dropFirst()))
@@ -213,28 +215,83 @@ enum Subcommand {
         return report.ready ? 0 : 1
     }
 
-    private static func runPlatform(_ arguments: [String]) throws -> Int32 {
+    private static func runHostQualification(_ arguments: [String]) async throws -> Int32 {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandError.usage("usage: ohm qualify-host [--json]")
+        }
+        let report = await PlatformExtractionQualification.evaluate()
+        if arguments == ["--json"] {
+            let data = try SimulationHostContract.encode(report, pretty: true)
+            writeStdout(String(decoding: data, as: UTF8.self) + "\n")
+        } else {
+            let passed = report.cases.filter(\.passed).count
+            writeStdout("OhmLab platform extraction v\(report.contractVersion)\n")
+            writeStdout("  \(passed)/\(report.cases.count) cases\n")
+            for issue in report.issues { writeStdout("  issue: \(issue)\n") }
+            writeStdout(report.ready ? "HOST READY\n" : "HOST NOT READY\n")
+        }
+        return report.ready ? 0 : 1
+    }
+
+    private static func runPlatform(_ arguments: [String]) async throws -> Int32 {
         guard let action = arguments.first else {
-            throw CommandError.usage("usage: ohm platform <manifest|run> [--pretty]")
+            throw CommandError.usage("usage: ohm platform <manifest|run|batch> [options]")
         }
         let options = Array(arguments.dropFirst())
-        guard options.isEmpty || options == ["--pretty"] else {
-            throw CommandError.usage("usage: ohm platform <manifest|run> [--pretty]")
+        var pretty = false
+        var timeoutMilliseconds: Int?
+        var maximumParallelism = 1
+        var index = 0
+        while index < options.count {
+            switch options[index] {
+            case "--pretty": pretty = true
+            case "--timeout-ms":
+                index += 1
+                guard index < options.count, let value = Int(options[index]), value > 0 else {
+                    throw CommandError.usage("--timeout-ms requires a positive integer")
+                }
+                timeoutMilliseconds = value
+            case "--max-parallel":
+                index += 1
+                guard index < options.count, let value = Int(options[index]), (1...32).contains(value) else {
+                    throw CommandError.usage("--max-parallel requires an integer from 1 through 32")
+                }
+                maximumParallelism = value
+            default:
+                throw CommandError.usage("usage: ohm platform <manifest|run|batch> [options]")
+            }
+            index += 1
         }
-        let pretty = options == ["--pretty"]
+        let policy = SimulationExecutionPolicy(
+            timeoutMilliseconds: timeoutMilliseconds,
+            maximumParallelism: maximumParallelism
+        )
         switch action {
         case "manifest":
-            let data = try PortableSimulationPlatform.encode(PortableSimulationPlatform.manifest, pretty: pretty)
+            guard timeoutMilliseconds == nil, maximumParallelism == 1 else {
+                throw CommandError.usage("platform manifest accepts only --pretty")
+            }
+            let data = try PortableSimulationPlatform.encode(OhmLabSimulationHost.manifest, pretty: pretty)
             writeStdout(String(decoding: data, as: UTF8.self) + "\n")
             return 0
         case "run":
             let input = try readPortableRequest()
-            let response = PortableSimulationPlatform.execute(input)
+            let response = await OhmLabSimulationHost.execute(input, policy: policy)
             let data = try PortableSimulationPlatform.encode(response, pretty: pretty)
             writeStdout(String(decoding: data, as: UTF8.self) + "\n")
             return response.succeeded ? 0 : 1
+        case "batch":
+            let input = try readPortableRequest()
+            let batch = try SimulationHostContract.decode(PortableSimulationBatchRequest.self, from: input)
+            let response = await OhmLabSimulationHost.executeBatch(batch, policy: policy)
+            let data = try SimulationHostContract.encode(response, pretty: pretty)
+            writeStdout(String(decoding: data, as: UTF8.self) + "\n")
+            let allSucceeded = response.error == nil && response.items.allSatisfy {
+                $0.state == .executed && $0.response?.succeeded == true
+            }
+            return allSucceeded ? 0 : 1
         default:
-            throw CommandError.usage("usage: ohm platform <manifest|run> [--pretty]")
+            throw CommandError.usage("usage: ohm platform <manifest|run|batch> [options]")
         }
     }
 

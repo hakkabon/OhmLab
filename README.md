@@ -107,6 +107,22 @@ and prebuilt Swift-NumericCore dependency still target Apple platforms; the
 protocol deliberately makes future Linux, server, or other-language hosts
 possible without changing clients.
 
+## 2.1 Platform Extraction
+
+The portable surface is now split into `OhmLabSimulationProtocol`, a
+Foundation-only package product, and `OhmLabSimulationHost`, the executable
+runtime that links the simulator. The host adds elapsed-time deadlines,
+external cancellation tokens, narrower deployment resource budgets, and
+ordered batches of up to 256 requests. Use `ohm platform batch` for batch JSON
+and `ohm qualify-host --json` for executable qualification. The original
+`OhmLabSimulationPlatform` product remains available as a 2.x compatibility
+surface. See
+[`docs/contracts/platform-extraction-v1.md`](docs/contracts/platform-extraction-v1.md).
+
+Swift-NumericCore is now consumed through its stable 1.x semantic range rather
+than a provisional source revision. The currently resolved 1.1.0 release
+continues to package the Rust-NumericCore transport.
+
 ## Architecture: The Four-Layer Model
 
 Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.

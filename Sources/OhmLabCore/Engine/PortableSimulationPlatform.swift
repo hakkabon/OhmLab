@@ -1,13 +1,14 @@
 import Foundation
+import OhmLabSimulationProtocol
 
 /// Versioned, language-neutral execution boundary for headless simulation.
 /// The JSON protocol contains only Circuit IR, an analysis plan, and result
 /// values; no Swift, UI, plugin, or process-global engine state crosses it.
 public enum PortableSimulationPlatform {
     public static let currentContractVersion = 1
-    public static let mediaType = "application/vnd.ohmlab.simulation+json;version=1"
-    public static let requestSchemaID = "urn:ohmlab:schema:portable-simulation-request:1"
-    public static let responseSchemaID = "urn:ohmlab:schema:portable-simulation-response:1"
+    public static let mediaType = SimulationHostContract.mediaType
+    public static let requestSchemaID = SimulationHostContract.requestSchemaID
+    public static let responseSchemaID = SimulationHostContract.responseSchemaID
 
     public struct Limits: Codable, Equatable, Sendable {
         public let maximumRequestBytes: Int
@@ -196,6 +197,11 @@ public enum PortableSimulationPlatform {
     public struct Failure: Codable, Equatable, Sendable {
         public let code: ErrorCode
         public let message: String
+
+        public init(code: ErrorCode, message: String) {
+            self.code = code
+            self.message = message
+        }
     }
 
     /// Stable, deterministic evidence needed to reproduce a successful run.
@@ -222,6 +228,26 @@ public enum PortableSimulationPlatform {
         public let result: Result?
         public let error: Failure?
 
+        public init(
+            protocolVersion: Int,
+            requestID: String,
+            status: Status,
+            backend: String?,
+            implementationVersion: String?,
+            provenance: Provenance?,
+            result: Result?,
+            error: Failure?
+        ) {
+            self.protocolVersion = protocolVersion
+            self.requestID = requestID
+            self.status = status
+            self.backend = backend
+            self.implementationVersion = implementationVersion
+            self.provenance = provenance
+            self.result = result
+            self.error = error
+        }
+
         public var succeeded: Bool { status == .success && result != nil && error == nil }
     }
 
@@ -231,8 +257,11 @@ public enum PortableSimulationPlatform {
         public let mediaType: String
         public let requestSchemaID: String
         public let responseSchemaID: String
+        public let batchSchemaID: String
+        public let batchResponseSchemaID: String
         public let canonicalEncoding: String
         public let provenanceDigest: String
+        public let hostContractVersion: Int
         public let circuitIRVersion: Int
         public let simulationResultVersion: Int
         public let supportedAnalyses: [SimulationAnalysisKind]
@@ -389,8 +418,11 @@ public enum PortableSimulationPlatform {
             mediaType: mediaType,
             requestSchemaID: requestSchemaID,
             responseSchemaID: responseSchemaID,
-            canonicalEncoding: "json-sorted-keys-utf8",
+            batchSchemaID: SimulationHostContract.batchSchemaID,
+            batchResponseSchemaID: SimulationHostContract.batchResponseSchemaID,
+            canonicalEncoding: SimulationHostContract.canonicalEncoding,
             provenanceDigest: "sha-256",
+            hostContractVersion: SimulationHostContract.currentVersion,
             circuitIRVersion: CircuitIR.currentSchemaVersion,
             simulationResultVersion: SimulationResultContract.currentVersion,
             supportedAnalyses: [.dcOperatingPoint, .acSmallSignal, .transient, .dcSweep],

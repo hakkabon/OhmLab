@@ -1,0 +1,43 @@
+{
+  "contractVersion": 1,
+  "batchID": "example-divider-batch",
+  "failFast": false,
+  "requests": [
+    {
+      "protocolVersion": 1,
+      "requestID": "example-divider-native",
+      "backend": "native-mna",
+      "circuit": {
+        "schemaVersion": 1,
+        "referenceNode": 0,
+        "nodes": [{"name":"0"},{"name":"in"},{"name":"out"}],
+        "devices": [
+          {"name":"V1","kind":"voltage-source","terminals":[1,0],"source":{"dcValue":5,"acMagnitude":1,"acPhaseDegrees":0}},
+          {"name":"R1","kind":"resistor","terminals":[1,2],"value":1000},
+          {"name":"R2","kind":"resistor","terminals":[2,0],"value":1000}
+        ],
+        "solver":{"relativeTolerance":0.001,"absoluteCurrentTolerance":1e-12,"absoluteVoltageTolerance":1e-6,"minimumConductance":1e-12,"maximumIterations":100,"temperatureCelsius":27,"nominalTemperatureCelsius":27},
+        "initialConditions":{"nodeVoltages":{},"elementCurrents":{}}
+      },
+      "analysis":{"dcOperatingPoint":true}
+    },
+    {
+      "protocolVersion": 1,
+      "requestID": "example-divider-numeric",
+      "backend": "numeric-core",
+      "circuit": {
+        "schemaVersion": 1,
+        "referenceNode": 0,
+        "nodes": [{"name":"0"},{"name":"in"},{"name":"out"}],
+        "devices": [
+          {"name":"V1","kind":"voltage-source","terminals":[1,0],"source":{"dcValue":5,"acMagnitude":1,"acPhaseDegrees":0}},
+          {"name":"R1","kind":"resistor","terminals":[1,2],"value":1000},
+          {"name":"R2","kind":"resistor","terminals":[2,0],"value":1000}
+        ],
+        "solver":{"relativeTolerance":0.001,"absoluteCurrentTolerance":1e-12,"absoluteVoltageTolerance":1e-6,"minimumConductance":1e-12,"maximumIterations":100,"temperatureCelsius":27,"nominalTemperatureCelsius":27},
+        "initialConditions":{"nodeVoltages":{},"elementCurrents":{}}
+      },
+      "analysis":{"dcOperatingPoint":true}
+    }
+  ]
+}

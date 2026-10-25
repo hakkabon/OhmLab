@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import OhmLabCore
+import OhmLabSimulationProtocol
 
 @Suite("OhmLab 1.0 production boundary")
 struct ProductionBoundaryTests {
@@ -42,9 +43,9 @@ struct ProductionBoundaryTests {
         }
     }
 
-    @Test func releaseAndContractsRemainCompatibleAtTwoDotZero() {
-        #expect(OhmLabRelease.version == "2.0.1")
-        #expect(OhmLabRelease.productionBoundaryVersion == 4)
+    @Test func releaseAndContractsRemainCompatibleAtTwoDotOne() {
+        #expect(OhmLabRelease.version == "2.1.0")
+        #expect(OhmLabRelease.productionBoundaryVersion == 5)
         #expect(CircuitIR.currentSchemaVersion == 1)
         #expect(SimulationResultContract.currentVersion == 1)
         #expect(SimulationBackendCapabilities.currentContractVersion == 1)
@@ -52,13 +53,15 @@ struct ProductionBoundaryTests {
         #expect(LinearBackendGraduation.currentContractVersion == 1)
         #expect(NonlinearConvergence.currentContractVersion == 1)
         #expect(PortableSimulationPlatform.currentContractVersion == 1)
+        #expect(SimulationHostContract.currentVersion == 1)
     }
 
     @Test func readinessReportQualifiesOnlyTheNativeReference() {
         SimulationEngine.resetToDefaultBackend()
         let report = ProductionBoundary.report()
         #expect(report.ready)
-        #expect(report.productVersion == "2.0.1")
+        #expect(report.productVersion == "2.1.0")
+        #expect(report.contracts.simulationHost == 1)
         #expect(report.defaultBackend == "native-mna")
         #expect(report.backends.filter(\.isProductionReady).map(\.identifier) == ["native-mna"])
         #expect(report.backends.filter(\.isLinearProductionReady).map(\.identifier) == ["numeric-core"])

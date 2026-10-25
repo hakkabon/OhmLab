@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 2.0.1" ]]; then
+if [[ "$version" != "ohm 2.1.0" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
@@ -18,9 +18,10 @@ trust_report="$(mktemp)"
 graduation_report="$(mktemp)"
 nonlinear_report="$(mktemp)"
 platform_report="$(mktemp)"
+host_report="$(mktemp)"
 report="$(mktemp)"
 artifacts="$(mktemp -d)"
-trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report" "$platform_report"; rm -rf "$artifacts"' EXIT
+trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report" "$platform_report" "$host_report"; rm -rf "$artifacts"' EXIT
 .build/debug/ohm verify --json >"$trust_report"
 if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$trust_report"; then
     printf 'numerical trust report is not ready\n' >&2
@@ -33,6 +34,13 @@ if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$platform_report" \
     || ! rg -q '"protocolVersion"[[:space:]]*:[[:space:]]*1' "$platform_report"; then
     printf 'portable platform qualification is not ready\n' >&2
     cat "$platform_report" >&2
+    exit 1
+fi
+
+.build/debug/ohm qualify-host --json >"$host_report"
+if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$host_report"; then
+    printf 'extracted simulation host is not ready\n' >&2
+    cat "$host_report" >&2
     exit 1
 fi
 

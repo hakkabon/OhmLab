@@ -66,6 +66,11 @@ versions, supported protocol analyses, and qualified backends.
 writes exactly one response to standard output. It exits zero for a successful
 simulation and nonzero for a protocol or simulation failure.
 
+OhmLab 2.1 also provides the Foundation-only `OhmLabSimulationProtocol`
+product and the embeddable `OhmLabSimulationHost` product. Its execution
+budgets, cancellation and deadline behavior, and ordered batch contract are
+defined by [the platform extraction contract](platform-extraction-v1.md).
+
 `ohm qualify-platform --json` is the executable release contract. It verifies
 deterministic request/response round trips for native MNA and NumericCore,
 nonlinear NumericCore transport, and fail-closed behavior for future protocol

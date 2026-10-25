@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ohmlab:schema:portable-simulation-batch:1",
+  "title": "OhmLab portable simulation batch v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "batchID", "failFast", "requests"],
+  "properties": {
+    "contractVersion": {"const": 1},
+    "batchID": {"type": "string", "minLength": 1, "maxLength": 256},
+    "failFast": {"type": "boolean"},
+    "requests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {"$ref": "urn:ohmlab:schema:portable-simulation-request:1"}
+    }
+  }
+}

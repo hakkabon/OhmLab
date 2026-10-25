@@ -51,8 +51,10 @@ PROJECTS & ANALYSES:
   ohm qualify-linear [--json]               Verify the linear-production backend.
   ohm qualify-nonlinear [--json]            Verify the nonlinear-production backend.
   ohm qualify-platform [--json]             Verify the 2.0 portable protocol.
+  ohm qualify-host [--json]                 Verify the 2.1 extracted host.
   ohm platform manifest [--pretty]          Describe the portable host.
-  ohm platform run [--pretty]               Read one JSON request from stdin.
+  ohm platform run [--pretty] [--timeout-ms n]  Run one JSON request.
+  ohm platform batch [--max-parallel n]     Run a bounded JSON request batch.
   ohm project info <bundle>                 Show a .ohmlabproj manifest.
   ohm project pack <bundle> -o <zip>        Pack a bundle into .ohmlabzip.
   ohm project unpack <zip> <dir>            Unpack an archive.
@@ -355,7 +357,7 @@ private func execute(_ arguments: [String]) throws -> Int {
 
 let cliArguments = Array(CommandLine.arguments.dropFirst())
 if let command = cliArguments.first, Subcommand.isCommand(command) {
-    exit(Subcommand.run(cliArguments))
+    exit(await Subcommand.run(cliArguments))
 }
 
 do {

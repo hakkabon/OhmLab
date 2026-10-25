@@ -22,6 +22,11 @@ fail-closed protocol negotiation. Patch releases must also keep the canonical
 portable request/response fixtures byte-stable, validate the malformed-input
 corpus, and ship the request JSON Schema in the release archive.
 
+For OhmLab 2.1 and later, `ohm qualify-host --json` must report `ready: true`.
+The package manifest must publish the separate `OhmLabSimulationProtocol` and
+`OhmLabSimulationHost` products, and the release archive must include the batch
+v1 schema and platform-extraction contract.
+
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
 documents, release metadata, and a SHA-256 checksum. Without credentials it
@@ -43,6 +48,8 @@ Compatibility rules for the 2.x line:
   nonlinear-convergence, or portable-simulation versions in a patch release.
 - Production boundary v4 is required for 2.0 because the portable process
   contract is a new public compatibility boundary.
+- Production boundary v5 is required for 2.1 because execution policy and
+  batching are a separately versioned public host boundary.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
 - Never weaken `ohm doctor`, `ohm verify`, `ohm qualify-linear`,
