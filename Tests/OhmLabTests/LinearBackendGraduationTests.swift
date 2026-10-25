@@ -7,7 +7,7 @@ struct LinearBackendGraduationTests {
     @Test func numericCorePassesTheExecutableGraduationContract() throws {
         let report = LinearBackendGraduation.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "2.3.0")
+        #expect(report.productVersion == "2.4.0")
         #expect(report.requiredBackends == ["numeric-core"])
         #expect(report.ready)
         #expect(report.issues.isEmpty)

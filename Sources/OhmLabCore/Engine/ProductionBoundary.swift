@@ -3,8 +3,8 @@ import OhmLabSimulationProtocol
 
 /// Product version shipped on the stable production boundary.
 public enum OhmLabRelease {
-    public static let version = "2.3.0"
-    public static let productionBoundaryVersion = 7
+    public static let version = "2.4.0"
+    public static let productionBoundaryVersion = 8
 }
 
 /// Whether a backend is covered by OhmLab's production compatibility promise.
@@ -194,6 +194,7 @@ public struct ProductionContractVersions: Codable, Equatable, Sendable {
     public let simulationHost: Int
     public let nativeRustPortability: Int
     public let numericCoreFeatureCompletion: Int
+    public let scaleAndNumericalRobustness: Int
 }
 
 /// Machine-readable answer to “is this build safe to ship on the stable boundary?”.
@@ -245,6 +246,14 @@ public enum ProductionBoundary {
         if SimulationEngine.defaultBackendIdentifier != "native-mna" {
             issues.append("the default backend must be native-mna")
         }
+        if ScaleAndNumericalRobustness.maximumDenseUnknowns
+            != ScaleAndNumericalRobustnessContract.maximumDenseUnknowns {
+            issues.append("the Swift dense-solver budget must match the portable robustness contract")
+        }
+        if NativeRustPortabilityContract.maximumDenseUnknowns
+            != ScaleAndNumericalRobustnessContract.maximumDenseUnknowns {
+            issues.append("the Rust dense-solver budget must match the portable robustness contract")
+        }
         return ProductionReadinessReport(
             productVersion: OhmLabRelease.version,
             contracts: ProductionContractVersions(
@@ -258,7 +267,8 @@ public enum ProductionBoundary {
                 portableSimulation: PortableSimulationPlatform.currentContractVersion,
                 simulationHost: SimulationHostContract.currentVersion,
                 nativeRustPortability: NativeRustPortabilityContract.currentVersion,
-                numericCoreFeatureCompletion: NumericCoreFeatureCompletionContract.currentVersion
+                numericCoreFeatureCompletion: NumericCoreFeatureCompletionContract.currentVersion,
+                scaleAndNumericalRobustness: ScaleAndNumericalRobustnessContract.currentVersion
             ),
             defaultBackend: SimulationEngine.defaultBackendIdentifier,
             backends: descriptors,

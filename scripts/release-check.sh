@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 2.3.0" ]]; then
+if [[ "$version" != "ohm 2.4.0" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
@@ -17,11 +17,12 @@ fi
 trust_report="$(mktemp)"
 graduation_report="$(mktemp)"
 nonlinear_report="$(mktemp)"
+scale_report="$(mktemp)"
 platform_report="$(mktemp)"
 host_report="$(mktemp)"
 report="$(mktemp)"
 artifacts="$(mktemp -d)"
-trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report" "$platform_report" "$host_report"; rm -rf "$artifacts"' EXIT
+trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report" "$scale_report" "$platform_report" "$host_report"; rm -rf "$artifacts"' EXIT
 .build/debug/ohm verify --json >"$trust_report"
 if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$trust_report"; then
     printf 'numerical trust report is not ready\n' >&2
@@ -60,6 +61,14 @@ if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$nonlinear_report" \
     || ! rg -q '"shockley-diode"' "$nonlinear_report"; then
     printf 'nonlinear convergence report is not ready\n' >&2
     cat "$nonlinear_report" >&2
+    exit 1
+fi
+
+.build/debug/ohm qualify-scale --json >"$scale_report"
+if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$scale_report" \
+    || ! rg -q '"maximumDenseUnknowns"[[:space:]]*:[[:space:]]*512' "$scale_report"; then
+    printf 'scale and numerical robustness report is not ready\n' >&2
+    cat "$scale_report" >&2
     exit 1
 fi
 

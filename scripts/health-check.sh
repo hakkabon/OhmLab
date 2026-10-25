@@ -47,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 2.3.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 2.3.0"'
+run "OhmLab 2.4.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 2.4.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
@@ -58,6 +58,9 @@ run "linear-production qualification" "$ohm" qualify-linear --json
 
 section "Nonlinear convergence"
 run "nonlinear-production qualification" "$ohm" qualify-nonlinear --json
+
+section "Scale and numerical robustness"
+run "scaled dense-solver qualification" "$ohm" qualify-scale --json
 
 section "Portable simulation platform"
 run "portable host manifest" "$ohm" platform manifest

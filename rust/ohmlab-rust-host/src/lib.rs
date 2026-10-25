@@ -8,17 +8,18 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const PRODUCT_VERSION: &str = "2.3.0";
-pub const IMPLEMENTATION_VERSION: &str = "rust-numeric-core-0.34.0-native.2";
+pub const PRODUCT_VERSION: &str = "2.4.0";
+pub const IMPLEMENTATION_VERSION: &str = "rust-numeric-core-0.34.0-native.3";
 pub const BACKEND: &str = "rust-numeric-core";
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const HOST_CONTRACT_VERSION: u32 = 2;
+pub const HOST_CONTRACT_VERSION: u32 = 3;
 pub const MEDIA_TYPE: &str = "application/vnd.ohmlab.simulation+json;version=1";
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_NODES: usize = 100_000;
 const MAX_DEVICES: usize = 200_000;
 const MAX_SAMPLES: usize = 100_000;
 const MAX_PROJECTED_VALUES: usize = 2_000_000;
+const MAX_DENSE_UNKNOWNS: usize = 512;
 
 pub struct Execution {
     pub json: String,
@@ -34,6 +35,7 @@ pub fn manifest_json() -> String {
         "hostContractVersion": HOST_CONTRACT_VERSION,
         "implementationVersion": IMPLEMENTATION_VERSION,
         "mediaType": MEDIA_TYPE,
+        "maximumDenseUnknowns": MAX_DENSE_UNKNOWNS,
         "nativeRust": true,
         "productVersion": PRODUCT_VERSION,
         "protocolVersion": PROTOCOL_VERSION,
@@ -51,6 +53,8 @@ pub fn qualification_json() -> Execution {
     let nmos = execute(&nonlinear_request(false));
     let transient = execute(&transient_request());
     let sweep = execute(&sweep_request());
+    let scaled = execute(&scaled_request());
+    let over_budget = execute(&over_budget_request());
     let malformed = execute(br#"{"protocolVersion":1,"unexpected":true}"#);
     let manifest: Value = serde_json::from_str(&manifest_json()).expect("manifest is JSON");
     let dc_json: Value = serde_json::from_str(&dc.json).expect("response is JSON");
@@ -59,6 +63,7 @@ pub fn qualification_json() -> Execution {
     let nmos_json: Value = serde_json::from_str(&nmos.json).expect("response is JSON");
     let transient_json: Value = serde_json::from_str(&transient.json).expect("response is JSON");
     let sweep_json: Value = serde_json::from_str(&sweep.json).expect("response is JSON");
+    let scaled_json: Value = serde_json::from_str(&scaled.json).expect("response is JSON");
     let cases = vec![
         qualification_case(
             "native-rust-runtime",
@@ -121,6 +126,18 @@ pub fn qualification_json() -> Execution {
                 .is_some_and(|value| (value - 2.5).abs() <= 1e-12),
             "native source sweep returns one operating point per coordinate",
         ),
+        qualification_case(
+            "scaled-mixed-impedance",
+            scaled.succeeded
+                && numeric(&scaled_json, &["result", "dc", "nodes", "1", "value"])
+                    .is_some_and(|value| (value - 1e-6).abs() <= 1e-12),
+            "variable and equation scaling preserve a 1e12 impedance ratio",
+        ),
+        qualification_case(
+            "dense-budget-fails-before-solve",
+            !over_budget.succeeded && over_budget.json.contains("dense unknowns"),
+            "requests above 512 dense unknowns fail before numerical work",
+        ),
     ];
     let ready = cases.iter().all(|case| case["passed"] == true);
     Execution {
@@ -160,6 +177,29 @@ fn sweep_request() -> Vec<u8> {
         "dcOperatingPoint": false,
         "dcSweep": {"source": "V1", "start": 0.0, "stop": 5.0, "step": 2.5}
     });
+    serde_json::to_vec(&request).unwrap()
+}
+
+fn scaled_request() -> Vec<u8> {
+    let mut request: Value = serde_json::from_slice(&divider_request(false)).unwrap();
+    request["requestID"] = json!("rust-scaled");
+    request["circuit"]["devices"][0]["source"]["dcValue"] = json!(1e6);
+    request["circuit"]["devices"][1]["value"] = json!(1e9);
+    request["circuit"]["devices"][2]["value"] = json!(1e-3);
+    serde_json::to_vec(&request).unwrap()
+}
+
+fn over_budget_request() -> Vec<u8> {
+    let mut request: Value = serde_json::from_slice(&divider_request(false)).unwrap();
+    request["requestID"] = json!("rust-over-budget");
+    request["circuit"]["nodes"] = Value::Array(
+        (0..=MAX_DENSE_UNKNOWNS)
+            .map(|index| json!({"name": if index == 0 { "0".to_string() } else { format!("n{index}") }}))
+            .collect(),
+    );
+    request["circuit"]["devices"] = json!([
+        {"kind":"voltage-source","name":"V1","source":{"acMagnitude":0,"acPhaseDegrees":0,"dcValue":1},"terminals":[1,0]}
+    ]);
     serde_json::to_vec(&request).unwrap()
 }
 
@@ -318,12 +358,9 @@ fn solve(request: Request, digest: String) -> Result<SuccessResponse, HostError>
     let bridge = Bridge::new(&request.circuit)?;
     let operating = bridge
         .model
-        .dc_operating_point_continuation(
-            None,
-            nonlinear_options(&request.circuit.solver),
-            Default::default(),
-        )
+        .dc_operating_point_continuation(None, bridge.nonlinear_options(), Default::default())
         .map_err(simulation)?;
+    bridge.certify(&operating)?;
     let dc = request
         .analysis
         .dc_operating_point
@@ -375,19 +412,12 @@ fn solve(request: Request, digest: String) -> Result<SuccessResponse, HostError>
     })
 }
 
-fn nonlinear_options(solver: &SolverConfiguration) -> NonlinearSystemOptions {
-    NonlinearSystemOptions {
-        max_iterations: solver.maximum_iterations,
-        residual_tolerance: solver.absolute_current_tolerance.max(1e-15),
-        step_tolerance: solver.absolute_voltage_tolerance.max(1e-15),
-        ..Default::default()
-    }
-}
-
 struct Bridge<'a> {
     circuit: &'a Circuit,
     model: CircuitModel,
     source_override: Option<(usize, f64)>,
+    voltage_scale: f64,
+    current_scale: f64,
 }
 
 impl<'a> Bridge<'a> {
@@ -494,11 +524,115 @@ impl<'a> Bridge<'a> {
         }
         let model =
             CircuitModel::new(nodes, circuit.reference_node, devices).map_err(simulation)?;
+        if model.unknown_count() > MAX_DENSE_UNKNOWNS {
+            return Err(invalid(format!(
+                "circuit has {} dense unknowns; host limit is {MAX_DENSE_UNKNOWNS}",
+                model.unknown_count()
+            )));
+        }
+        let relative = circuit.solver.relative_tolerance.max(1e-15);
+        let voltage_scale = circuit
+            .devices
+            .iter()
+            .filter(|device| device.kind == DeviceKind::VoltageSource)
+            .filter_map(|device| device.source.as_ref().map(|source| source.dc_value.abs()))
+            .chain(
+                circuit
+                    .initial_conditions
+                    .node_voltages
+                    .values()
+                    .map(|value| value.abs()),
+            )
+            .fold(
+                (circuit.solver.absolute_voltage_tolerance / relative).max(1e-12),
+                f64::max,
+            );
+        let resistance_logs = circuit
+            .devices
+            .iter()
+            .filter(|device| device.kind == DeviceKind::Resistor)
+            .filter_map(|device| device.value.filter(|value| *value > 0.0).map(f64::ln))
+            .collect::<Vec<_>>();
+        let resistance_scale = if resistance_logs.is_empty() {
+            1_000.0
+        } else {
+            (resistance_logs.iter().sum::<f64>() / resistance_logs.len() as f64).exp()
+        };
+        let current_scale = circuit
+            .devices
+            .iter()
+            .filter(|device| device.kind == DeviceKind::CurrentSource)
+            .filter_map(|device| device.source.as_ref().map(|source| source.dc_value.abs()))
+            .chain(std::iter::once(voltage_scale / resistance_scale))
+            .chain(
+                circuit
+                    .initial_conditions
+                    .element_currents
+                    .values()
+                    .map(|value| value.abs()),
+            )
+            .fold(
+                (circuit.solver.absolute_current_tolerance / relative).max(1e-18),
+                f64::max,
+            );
         Ok(Self {
             circuit,
             model,
             source_override: None,
+            voltage_scale,
+            current_scale,
         })
+    }
+
+    fn nonlinear_options(&self) -> NonlinearSystemOptions {
+        let node_unknowns = self.circuit.nodes.len() - 1;
+        let branch_unknowns = self.model.unknown_count() - node_unknowns;
+        NonlinearSystemOptions {
+            max_iterations: self.circuit.solver.maximum_iterations,
+            residual_tolerance: (self.circuit.solver.absolute_current_tolerance
+                / self.current_scale)
+                .max(self.circuit.solver.absolute_voltage_tolerance / self.voltage_scale)
+                .max(1e-15),
+            step_tolerance: self.circuit.solver.absolute_voltage_tolerance.max(1e-15),
+            variable_scale: [
+                vec![self.voltage_scale; node_unknowns],
+                vec![self.current_scale; branch_unknowns],
+            ]
+            .concat(),
+            residual_scale: [
+                vec![1.0 / self.current_scale; node_unknowns],
+                vec![1.0 / self.voltage_scale; branch_unknowns],
+            ]
+            .concat(),
+            ..Default::default()
+        }
+    }
+
+    fn certify(&self, operating: &CircuitOperatingPoint) -> Result<(), HostError> {
+        let converged = matches!(
+            operating.termination,
+            NonlinearSystemTermination::ConvergedResidual
+                | NonlinearSystemTermination::ConvergedStep
+        );
+        let kcl_limit = self.circuit.solver.absolute_current_tolerance
+            + self.circuit.solver.relative_tolerance * self.current_scale;
+        let branch_limit = self.circuit.solver.absolute_voltage_tolerance
+            + self.circuit.solver.relative_tolerance * self.voltage_scale;
+        if converged
+            && operating.diagnostics.finite
+            && operating.state.iter().all(|value| value.is_finite())
+            && operating.diagnostics.maximum_kcl_residual <= kcl_limit
+            && operating.diagnostics.maximum_branch_residual <= branch_limit
+        {
+            Ok(())
+        } else {
+            Err(simulation(format!(
+                "operating point failed numerical certification: {:?}, KCL {}, branch {}",
+                operating.termination,
+                operating.diagnostics.maximum_kcl_residual,
+                operating.diagnostics.maximum_branch_residual
+            )))
+        }
     }
 
     fn dc_result(&self, operating: &CircuitOperatingPoint) -> Result<DcResult, HostError> {
@@ -888,10 +1022,11 @@ impl<'a> Bridge<'a> {
                 .model
                 .dc_operating_point_continuation(
                     previous.as_deref(),
-                    nonlinear_options(&circuit.solver),
+                    bridge.nonlinear_options(),
                     Default::default(),
                 )
                 .map_err(simulation)?;
+            bridge.certify(&operating)?;
             let dc = bridge.dc_result(&operating)?;
             previous = Some(operating.state);
             points.push(SweepPoint {
@@ -1737,6 +1872,6 @@ mod tests {
         let qualification = qualification_json();
         assert!(qualification.succeeded, "{}", qualification.json);
         let report: Value = serde_json::from_str(&qualification.json).unwrap();
-        assert_eq!(report["cases"].as_array().unwrap().len(), 8);
+        assert_eq!(report["cases"].as_array().unwrap().len(), 10);
     }
 }

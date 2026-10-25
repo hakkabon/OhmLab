@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "ohmlab-rust-host"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "approx",
  "nc-optimize",

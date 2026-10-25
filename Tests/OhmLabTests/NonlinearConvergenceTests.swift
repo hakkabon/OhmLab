@@ -7,7 +7,7 @@ struct NonlinearConvergenceTests {
     @Test func numericCorePassesTheExecutableNonlinearContract() throws {
         let report = NonlinearConvergence.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "2.3.0")
+        #expect(report.productVersion == "2.4.0")
         #expect(report.referenceBackend == "native-mna")
         #expect(report.backend == "numeric-core")
         #expect(report.cases.count == 7)

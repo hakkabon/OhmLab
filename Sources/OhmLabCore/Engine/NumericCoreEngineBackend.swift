@@ -5,6 +5,7 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
     case unsupportedAnalysis(String)
     case unsupportedElement(String)
     case missingBranch(String)
+    case resourceLimit(String)
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
             return "The NumericCore adapter does not support element \(element) yet."
         case .missingBranch(let element):
             return "NumericCore returned no branch current for \(element)."
+        case .resourceLimit(let detail):
+            return "The NumericCore request exceeds its dense-solver budget: \(detail)."
         }
     }
 }
@@ -89,7 +92,7 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         if !parsed.analysis.fourier.isEmpty {
             throw NumericCoreAdapterError.unsupportedAnalysis("Fourier analysis")
         }
-        guard effective.runDC || effective.runAC || effective.runTransient else {
+        guard effective.runDC || effective.runAC || effective.runTransient || effective.runDCSweep else {
             throw CircuitSimulationError.noAnalysisSelected
         }
 
@@ -110,7 +113,7 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         let unsupported = ir.devices.first { !capabilities.supports($0.kind) }
         if let unsupported { throw NumericCoreAdapterError.unsupportedElement(unsupported.name) }
         let bridge = try Bridge(ir: ir)
-        let operating = try bridge.model.dcOperatingPointContinuation()
+        let operating = try bridge.operatingPoint()
         let dc = settings.runDC ? try bridge.dcResult(operating) : nil
         let ac = settings.runAC ? try bridge.acResult(operating, settings: settings) : nil
         let transient = settings.runTransient
@@ -152,12 +155,15 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         }
         var points: [CircuitSimResult.SweepPoint] = []
         points.reserveCapacity(values.count)
+        var previousState: [Double]?
         for value in values {
             try Task.checkCancellation()
             var swept = ir
             swept.devices[sourceIndex].source?.dcValue = value
             let pointBridge = try Bridge(ir: swept)
-            let point = try pointBridge.dcResult(pointBridge.model.dcOperatingPointContinuation())
+            let operating = try pointBridge.operatingPoint(initial: previousState)
+            previousState = operating.state
+            let point = try pointBridge.dcResult(operating)
             points.append(.init(
                 coordinates: [(settings.dcSweepSource, value)],
                 nodes: point.nodes,
@@ -173,10 +179,13 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
 
 private extension NumericCoreEngineBackend {
     struct Bridge {
+        static let maximumDenseUnknowns = 512
         let circuit: LinearCircuit
         let model: CircuitModel
         let devices: [CircuitDevice]
         let initialConditions: CircuitIR.Conditions
+        let voltageScale: Double
+        let currentScale: Double
 
         init(ir: CircuitIR) throws {
             let circuit = try ir.makeLinearCircuit()
@@ -264,7 +273,79 @@ private extension NumericCoreEngineBackend {
                 }
             }
             devices = mapped
-            model = try CircuitModel(nodes: nodes, referenceNode: 0, devices: mapped)
+            let builtModel = try CircuitModel(nodes: nodes, referenceNode: 0, devices: mapped)
+            guard builtModel.unknownCount <= Self.maximumDenseUnknowns else {
+                throw NumericCoreAdapterError.resourceLimit(
+                    "\(builtModel.unknownCount) unknowns exceeds \(Self.maximumDenseUnknowns)"
+                )
+            }
+            model = builtModel
+            let relative = max(circuit.solverOptions.relativeTolerance, 1e-15)
+            let voltageCandidates = circuit.elements.compactMap { element -> Double? in
+                guard element.kind == .voltageSource else { return nil }
+                return abs(element.magnitude(isDC: true))
+            } + ir.initialConditions.nodeVoltages.values.map(abs)
+            voltageScale = max(
+                voltageCandidates.max() ?? 0,
+                circuit.solverOptions.absoluteVoltageTolerance / relative,
+                1e-12
+            )
+            let sourceCurrents = circuit.elements.compactMap { element -> Double? in
+                guard element.kind == .currentSource else { return nil }
+                return abs(element.magnitude(isDC: true))
+            }
+            let resistances = circuit.elements.compactMap { element -> Double? in
+                guard element.kind == .resistor, element.value > 0 else { return nil }
+                return element.value
+            }
+            let resistanceScale = resistances.isEmpty ? 1_000 : exp(
+                resistances.map { log($0) }.reduce(0, +) / Double(resistances.count)
+            )
+            currentScale = max(
+                (sourceCurrents + [voltageScale / resistanceScale]
+                    + ir.initialConditions.elementCurrents.values.map(abs)).max() ?? 0,
+                circuit.solverOptions.absoluteCurrentTolerance / relative,
+                1e-18
+            )
+        }
+
+        func operatingPoint(initial: [Double]? = nil) throws -> CircuitOperatingPoint {
+            let nodeUnknowns = circuit.nodeCount - 1
+            let branchUnknowns = model.unknownCount - nodeUnknowns
+            let options = NonlinearSystemOptions(
+                maxIterations: circuit.solverOptions.maximumIterations,
+                residualTolerance: max(
+                    circuit.solverOptions.absoluteCurrentTolerance / currentScale,
+                    circuit.solverOptions.absoluteVoltageTolerance / voltageScale,
+                    1e-15
+                ),
+                stepTolerance: max(circuit.solverOptions.absoluteVoltageTolerance, 1e-15),
+                variableScale: Array(repeating: voltageScale, count: nodeUnknowns)
+                    + Array(repeating: currentScale, count: branchUnknowns),
+                residualScale: Array(repeating: 1 / currentScale, count: nodeUnknowns)
+                    + Array(repeating: 1 / voltageScale, count: branchUnknowns)
+            )
+            let operating = try model.dcOperatingPointContinuation(
+                initial: initial,
+                options: options
+            )
+            try certify(operating)
+            return operating
+        }
+
+        private func certify(_ operating: CircuitOperatingPoint) throws {
+            let converged = operating.termination == .convergedResidual
+                || operating.termination == .convergedStep
+            let kclLimit = circuit.solverOptions.absoluteCurrentTolerance
+                + circuit.solverOptions.relativeTolerance * currentScale
+            let branchLimit = circuit.solverOptions.absoluteVoltageTolerance
+                + circuit.solverOptions.relativeTolerance * voltageScale
+            guard converged, operating.diagnostics.finite,
+                  operating.state.allSatisfy(\.isFinite),
+                  operating.diagnostics.maximumKCLResidual <= kclLimit,
+                  operating.diagnostics.maximumBranchResidual <= branchLimit else {
+                throw CircuitSimulationError.unstableResult
+            }
         }
 
         private static func requireNominalTemperature(

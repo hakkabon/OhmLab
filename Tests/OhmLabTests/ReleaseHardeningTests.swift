@@ -11,7 +11,7 @@ struct ReleaseHardeningTests {
         #expect(CircuitFile.currentSchemaVersion == 3)
         #expect(SchematicSnapshot.currentSchemaVersion == 2)
         #expect(ProjectManifest.currentSchemaVersion == 1)
-        #expect(OhmLabRelease.productionBoundaryVersion == 7)
+        #expect(OhmLabRelease.productionBoundaryVersion == 8)
         #expect(CircuitIR.currentSchemaVersion == 1)
         #expect(SimulationResultContract.currentVersion == 1)
         #expect(NumericalTrust.currentContractVersion == 1)

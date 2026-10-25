@@ -40,6 +40,7 @@ printf '{\n  "product": "OhmLab",\n  "version": "%s",\n  "platform": "macOS",\n 
 "$stage/bin/ohm" doctor --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 "$stage/bin/ohm" qualify-linear --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 "$stage/bin/ohm" qualify-nonlinear --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
+"$stage/bin/ohm" qualify-scale --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 "$stage/bin/ohm" qualify-platform --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 "$stage/bin/ohm" platform manifest | grep -Eq '"protocolVersion"[[:space:]]*:[[:space:]]*1'
 "$stage/bin/ohmlab-rust-host" qualify | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'

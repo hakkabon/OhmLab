@@ -50,6 +50,7 @@ PROJECTS & ANALYSES:
   ohm verify [--json] [--seed <n>]          Run the numerical trust suite.
   ohm qualify-linear [--json]               Verify the linear-production backend.
   ohm qualify-nonlinear [--json]            Verify the nonlinear-production backend.
+  ohm qualify-scale [--json]                Verify scaling, residuals, and dense limits.
   ohm qualify-platform [--json]             Verify the 2.0 portable protocol.
   ohm qualify-host [--json]                 Verify the 2.1 extracted host.
   ohm platform manifest [--pretty]          Describe the portable host.

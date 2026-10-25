@@ -28,10 +28,11 @@ public enum SimulationHostContract {
 /// Compatibility vocabulary for the process-native Rust host introduced in
 /// OhmLab 2.2. The executable is independently built and does not link Swift.
 public enum NativeRustPortabilityContract {
-    public static let currentVersion = 2
+    public static let currentVersion = 3
     public static let backendIdentifier = "rust-numeric-core"
-    public static let implementationVersion = "rust-numeric-core-0.34.0-native.2"
+    public static let implementationVersion = "rust-numeric-core-0.34.0-native.3"
     public static let rustNumericCoreVersion = "0.34.0"
+    public static let maximumDenseUnknowns = 512
     public static let supportedAnalyses = [
         "dc-operating-point", "ac-small-signal", "transient", "dc-sweep",
     ]
@@ -49,6 +50,16 @@ public enum NumericCoreFeatureCompletionContract {
     public static let analyses = [
         "dc-operating-point", "ac-small-signal", "transient", "dc-sweep",
     ]
+}
+
+/// The 2.4 solver-boundary contract: scale Newton systems, certify physical
+/// residuals, and reject circuits beyond the qualified dense-solver envelope.
+public enum ScaleAndNumericalRobustnessContract {
+    public static let currentVersion = 1
+    public static let maximumDenseUnknowns = 512
+    public static let requiresResidualCertification = true
+    public static let swiftNumericCoreVersion = "1.1.0"
+    public static let rustNumericCoreVersion = "0.34.0"
 }
 
 /// Per-host limits may narrow, but never expand, the protocol's global safety

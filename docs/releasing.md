@@ -33,6 +33,12 @@ Cargo graph must build `ohmlab-rust-host`, its native qualification must report
 Swift-NumericCore. The
 release archive must contain `bin/ohmlab-rust-host`.
 
+For OhmLab 2.4 and later, `ohm qualify-scale --json` must report `ready: true`
+and publish `maximumDenseUnknowns: 512`. The native Rust manifest and
+qualification must publish and exercise the same limit. Mixed-scale solves,
+physical residual certification, singular failure, and pre-solve budget
+rejection are release-blocking evidence.
+
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
 documents, release metadata, and a SHA-256 checksum. Without credentials it
@@ -60,11 +66,14 @@ Compatibility rules for the 2.x line:
   host is a new independently built deployment boundary.
 - Production boundary v7 is required for 2.3 because NumericCore transient and
   DC-sweep execution complete the portable analysis surface.
+- Production boundary v8 is required for 2.4 because solver scaling, physical
+  residual certification, and the dense-solver resource envelope are public
+  execution guarantees.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
 - Never weaken `ohm doctor`, `ohm verify`, `ohm qualify-linear`,
-  `ohm qualify-nonlinear`, or `ohm qualify-platform`; `ready: false` blocks a
-  release.
+  `ohm qualify-nonlinear`, `ohm qualify-scale`, or `ohm qualify-platform`;
+  `ready: false` blocks a release.
 - Keep `native-mna` the default and sole full-production backend.
 - Keep `numeric-core` as the sole linear/nonlinear-production backend until a
   later contract explicitly graduates another implementation.

@@ -89,3 +89,7 @@ OhmLab 2.3 advances that host to
 [native Rust portability v2](native-rust-portability-v2.md), completing the
 protocol's DC, AC, transient, and single-source DC-sweep analysis plan through
 the [NumericCore feature-completion contract](numeric-core-feature-completion-v1.md).
+OhmLab 2.4 advances the host to
+[native Rust portability v3](native-rust-portability-v3.md) and applies the
+[scale and numerical robustness contract](scale-and-numerical-robustness-v1.md)
+without changing the protocol-v1 wire schema.

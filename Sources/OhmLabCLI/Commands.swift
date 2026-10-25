@@ -27,7 +27,7 @@ enum CommandError: LocalizedError {
 
 enum Subcommand {
     static let names: Set<String> = [
-        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "qualify-platform", "qualify-host", "platform", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "qualify-scale", "qualify-platform", "qualify-host", "platform", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
     ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
@@ -51,6 +51,7 @@ enum Subcommand {
         case "verify": return try runVerify(Array(arguments.dropFirst()))
         case "qualify-linear": return try runLinearQualification(Array(arguments.dropFirst()))
         case "qualify-nonlinear": return try runNonlinearQualification(Array(arguments.dropFirst()))
+        case "qualify-scale": return try runScaleQualification(Array(arguments.dropFirst()))
         case "qualify-platform": return try runPlatformQualification(Array(arguments.dropFirst()))
         case "qualify-host": return try await runHostQualification(Array(arguments.dropFirst()))
         case "platform": return try await runPlatform(Array(arguments.dropFirst()))
@@ -191,6 +192,31 @@ enum Subcommand {
             writeStdout("  \(report.backend): \(passed)/\(report.cases.count) cases\n")
             for issue in report.issues { writeStdout("  issue: \(issue)\n") }
             writeStdout(report.ready ? "CONVERGED\n" : "NOT CONVERGED\n")
+        }
+        return report.ready ? 0 : 1
+    }
+
+    // MARK: - scale and numerical robustness
+
+    private static func runScaleQualification(_ arguments: [String]) throws -> Int32 {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandError.usage("usage: ohm qualify-scale [--json]")
+        }
+        let report = ScaleAndNumericalRobustness.evaluate()
+        if arguments == ["--json"] {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(report)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CommandError.runtime("could not encode the scale qualification report")
+            }
+            writeStdout(text + "\n")
+        } else {
+            let passed = report.cases.filter(\.passed).count
+            writeStdout("OhmLab scale and numerical robustness v\(report.contractVersion)\n")
+            writeStdout("  \(report.backend): \(passed)/\(report.cases.count), dense limit \(report.maximumDenseUnknowns)\n")
+            for issue in report.issues { writeStdout("  issue: \(issue)\n") }
+            writeStdout(report.ready ? "ROBUST\n" : "NOT ROBUST\n")
         }
         return report.ready ? 0 : 1
     }

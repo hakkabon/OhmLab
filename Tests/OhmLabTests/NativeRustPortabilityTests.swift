@@ -2,17 +2,18 @@ import Testing
 @testable import OhmLabCore
 import OhmLabSimulationProtocol
 
-@Suite("OhmLab 2.3 NumericCore feature completion")
+@Suite("OhmLab native Rust portability v3")
 struct NativeRustPortabilityTests {
     @Test func frozenContractPublishesTheDirectRustScope() {
-        #expect(NativeRustPortabilityContract.currentVersion == 2)
+        #expect(NativeRustPortabilityContract.currentVersion == 3)
         #expect(NativeRustPortabilityContract.backendIdentifier == "rust-numeric-core")
         #expect(NativeRustPortabilityContract.implementationVersion ==
-                "rust-numeric-core-0.34.0-native.2")
+                "rust-numeric-core-0.34.0-native.3")
         #expect(NativeRustPortabilityContract.rustNumericCoreVersion == "0.34.0")
         #expect(NativeRustPortabilityContract.supportedAnalyses ==
                 ["dc-operating-point", "ac-small-signal", "transient", "dc-sweep"])
         #expect(NumericCoreFeatureCompletionContract.currentVersion == 1)
+        #expect(NativeRustPortabilityContract.maximumDenseUnknowns == 512)
     }
 
     @Test func numericCoreCompletesThePortableAnalysisPlan() throws {

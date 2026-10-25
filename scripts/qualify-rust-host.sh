@@ -14,18 +14,21 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 "$rust_host" manifest >"$work/manifest.json"
-jq -e '.nativeRust == true and .protocolVersion == 1 and .hostContractVersion == 2 and
+jq -e '.nativeRust == true and .protocolVersion == 1 and .hostContractVersion == 3 and
     .rustNumericCoreVersion == "0.34.0" and
+    .maximumDenseUnknowns == 512 and
     (.supportedAnalyses | index("transient") != null) and
     (.supportedAnalyses | index("dc-sweep") != null)' \
     "$work/manifest.json" >/dev/null
 
 "$rust_host" qualify >"$work/qualification.json"
-jq -e '.ready == true and (.cases | length) >= 8 and
+jq -e '.ready == true and (.cases | length) >= 10 and
     ([.cases[].identifier] | index("shockley-diode") != null) and
     ([.cases[].identifier] | index("level1-nmos-body-tied") != null) and
     ([.cases[].identifier] | index("transient-initial-conditions") != null) and
-    ([.cases[].identifier] | index("dc-source-sweep") != null)' \
+    ([.cases[].identifier] | index("dc-source-sweep") != null) and
+    ([.cases[].identifier] | index("scaled-mixed-impedance") != null) and
+    ([.cases[].identifier] | index("dense-budget-fails-before-solve") != null)' \
     "$work/qualification.json" >/dev/null
 
 jq '.backend = "numeric-core"' Examples/portable-divider-request.json \
@@ -79,5 +82,21 @@ jq -s -e '
   (.[0].result.sweep.points | length) == 3 and (.[1].result.sweep.points | length) == 3 and
   ((.[0].result.sweep.points[-1].nodes[1].value - .[1].result.sweep.points[-1].nodes[1].value) | fabs) <= 1e-12
 ' "$work/swift-sweep.json" "$work/rust-sweep.json" >/dev/null
+
+jq '.backend="numeric-core" |
+    .circuit.devices[0].source.dcValue=1000000 |
+    .circuit.devices[1].value=1000000000 |
+    .circuit.devices[2].value=0.001' Examples/portable-divider-request.json \
+    | "$swift_host" platform run >"$work/swift-scaled.json"
+jq '.backend="rust-numeric-core" |
+    .circuit.devices[0].source.dcValue=1000000 |
+    .circuit.devices[1].value=1000000000 |
+    .circuit.devices[2].value=0.001' Examples/portable-divider-request.json \
+    | "$rust_host" run >"$work/rust-scaled.json"
+jq -s -e '
+  .[0].status == "success" and .[1].status == "success" and
+  (([.[0].result.dc.nodes[], .[1].result.dc.nodes[]]
+    | map(select(.name == "out") | .value) | .[0] - .[1]) | fabs) <= 1e-12
+' "$work/swift-scaled.json" "$work/rust-scaled.json" >/dev/null
 
 printf 'OhmLab native Rust host qualification passed\n'
