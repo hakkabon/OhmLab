@@ -7,13 +7,13 @@ struct LinearBackendGraduationTests {
     @Test func numericCorePassesTheExecutableGraduationContract() throws {
         let report = LinearBackendGraduation.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "1.2.0")
+        #expect(report.productVersion == "1.5.0")
         #expect(report.requiredBackends == ["numeric-core"])
         #expect(report.ready)
         #expect(report.issues.isEmpty)
 
         let numeric = try #require(report.backends.first { $0.identifier == "numeric-core" })
-        #expect(numeric.maturity == .linearProduction)
+        #expect(numeric.maturity == .nonlinearProduction)
         #expect(numeric.declarationPassed)
         #expect(numeric.numericalTrustPassed)
         #expect(numeric.transientCases.count == 6)
@@ -32,14 +32,4 @@ struct LinearBackendGraduationTests {
         #expect(cases.allSatisfy { $0["absoluteError"] != nil })
     }
 
-    @Test func standaloneRustBackendHasOneReleaseDeprecationWindow() throws {
-        #if canImport(CCOhmCore)
-        let descriptor = try #require(
-            ProductionBoundary.report().backends.first { $0.identifier == "ohm-core" }
-        )
-        #expect(descriptor.lifecycle == .deprecated)
-        #expect(descriptor.removalVersion == "1.3.0")
-        #expect(descriptor.deprecationMessage?.contains("numeric-core") == true)
-        #endif
-    }
 }

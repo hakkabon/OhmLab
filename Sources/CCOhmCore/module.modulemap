@@ -1,4 +1,0 @@
-module CCOhmCore {
-    header "ohm_core.h"
-    export *
-}

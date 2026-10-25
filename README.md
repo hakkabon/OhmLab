@@ -2,7 +2,7 @@
 
 **OhmLab** is an electronic circuit design and simulation application targeting macOS 14+ and iPadOS 17+. The first release focuses on a dependable **workflow spanning passives, a Shockley diode, bipolar transistors, MOSFETs, and JFETs**: draw a schematic, enter values, get feedback, run real DC, AC, and transient analyses, and trust that the plots came from the circuit you drew.
 
-The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while a transitional `NumericCoreEngineBackend` validates linear DC/AC/transient circuits against NumericCore. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
+The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
 ## 0.8 Convergence Contract
 
@@ -12,26 +12,24 @@ OhmLab 0.8 establishes a versioned boundary between circuit frontends and numeri
 * **Backend capabilities** declare supported analyses, devices, and input/execution features in a deterministic machine-readable matrix. Undeclared capabilities fail closed.
 * **Simulation result contract v1** fixes SI units, current/voltage signs, AC representation, naming, axis, and finite-value requirements. Results are validated at the engine façade before reaching plugins or UI code. See [`docs/contracts/simulation-result-v1.md`](docs/contracts/simulation-result-v1.md).
 * **Differential fixtures** under `Tests/OhmLabTests/Fixtures/Convergence` run through Circuit IR against the native and NumericCore engines.
-* **Rust circuit transport v1** carries Circuit IR and analysis settings through a versioned JSON C ABI. The Rust backend no longer reparses SPICE internally, and incompatible versions or unsupported devices fail atomically. See [`docs/contracts/rust-circuit-transport-v1.md`](docs/contracts/rust-circuit-transport-v1.md).
+* **Rust circuit transport v1** documented the retired standalone compatibility backend. Its historical contract remains available at [`docs/contracts/rust-circuit-transport-v1.md`](docs/contracts/rust-circuit-transport-v1.md).
 * **Native remains the default** while NumericCore parity is expanded.
 
 Run `ohm engines` (or `ohm engines --json`) to inspect the capability matrix for the backends linked into the current build.
 
 ## 0.9 Linear Feature Parity
 
-OhmLab 0.9 extends the common native/NumericCore/Rust surface from DC and AC to transient analysis for linear R/C/L/V/I circuits:
+OhmLab 0.9 extended the common native/NumericCore surface from DC and AC to transient analysis for linear R/C/L/V/I circuits:
 
 * NumericCore transient runs use its independent adaptive DAE integrator, sample onto OhmLab's requested output grid, and preserve `.ic` node voltages and inductor currents.
-* Rust `ohm-core` 0.3 uses an independent fixed-step backward-Euler implementation matching the native engine's R/C/L companion-model and current-sign conventions.
-* Rust circuit transport v1 now carries transient settings, `PULSE`/`SIN`/`PWL` source waveforms, and initial conditions, and returns contract-valid transient series.
-* Differential tests cover an initialized RC transient across every linked backend. Capability declarations expose only the features each backend actually implements; nonlinear devices, sweeps, and Fourier remain native-only.
+* Differential tests cover an initialized RC transient across both production backends. Capability declarations expose only the features each backend actually implements.
 
 ## 1.0 Production Boundary
 
 OhmLab 1.0 freezes the product-facing boundary while allowing the numerical cores to continue evolving independently:
 
 * `OhmLabRelease.version` is the single source of truth for the application and `ohm` CLI version. Circuit IR, backend capabilities, simulation results, and Rust transport retain independently negotiated contract versions.
-* Every backend declares its maturity, lifecycle, and implementation version. Declarations are validated before activation or simulation; `native-mna` is full-production, `numeric-core` is linear-production, and standalone Rust is a deprecated compatibility backend.
+* Every backend declares its maturity, lifecycle, and implementation version. Declarations are validated before activation or simulation; `native-mna` is full-production and `numeric-core` has a scoped production tier.
 * A solve snapshots one backend for execution and result attribution, preventing concurrent backend selection from mislabelling a result.
 * Results are validated both before and after plugin result processors. Extensions may annotate valid output but cannot publish malformed axes, duplicate names, incompatible versions, or non-finite values.
 * `ohm doctor [--json]` emits a machine-readable production-readiness report. [`scripts/release-check.sh`](scripts/release-check.sh) runs the complete release gate.
@@ -43,7 +41,7 @@ The original compatibility policy is documented in [`production-boundary-v1.md`]
 Patch releases are protected by immutable legacy-document fixtures, nested
 schema validation, crash-recovery isolation tests, large-document round trips,
 and ZIP payload checksum validation. CI exercises both the standard Swift build
-and the optional Rust transport. [`scripts/package-release.sh`](scripts/package-release.sh)
+and both production engines. [`scripts/package-release.sh`](scripts/package-release.sh)
 produces a validated, signed macOS application/CLI archive with a SHA-256
 checksum; Developer ID signing and notarization are enabled only when release
 credentials are supplied. See [`docs/releasing.md`](docs/releasing.md).
@@ -54,8 +52,7 @@ OhmLab 1.1 turns backend parity into a release qualification rather than an
 informal test claim. `ohm verify [--json] [--seed <n>]` runs 32 deterministic,
 closed-form DC/AC cases against every linked Circuit-IR backend and reports
 expected values, actual values, errors, tolerances, failures, and timing.
-Native MNA and Swift-NumericCore are mandatory; Rust is mandatory whenever it
-is linked. The report is versioned independently and is part of the release
+Native MNA and Swift-NumericCore are mandatory. The report is versioned independently and is part of the release
 gate. See [`docs/contracts/numerical-trust-v1.md`](docs/contracts/numerical-trust-v1.md).
 
 ## 1.2 Linear Backend Graduation
@@ -68,10 +65,23 @@ identity records the pinned Swift-NumericCore revision and its bundled
 Rust-NumericCore 0.34.0 binary. Native MNA remains the default and only
 full-production backend.
 
-The standalone `rust/ohm-core` backend is deprecated for this compatibility
-release. Use `numeric-core`; standalone removal is scheduled for OhmLab 1.3.0.
+In the 1.2 compatibility release, standalone `rust/ohm-core` was deprecated in
+favour of `numeric-core`; its scheduled removal was completed in OhmLab 1.3.0.
 Run `ohm qualify-linear [--json]` for the machine-readable evidence. See
 [`docs/contracts/linear-backend-graduation-v1.md`](docs/contracts/linear-backend-graduation-v1.md).
+
+## 1.3–1.5 Nonlinear Convergence
+
+OhmLab 1.3 removes the standalone `rust/ohm-core` compatibility backend on its
+announced schedule; Rust-NumericCore remains in use behind Swift-NumericCore.
+OhmLab 1.4 adds Shockley-diode and body-tied N-channel Level-1 MOSFET support to
+the NumericCore adapter for DC, AC linearization, and transient analysis.
+OhmLab 1.5 promotes that exact surface to `nonlinear-production` after a
+seven-case differential qualification against native MNA. BJT, JFET, PMOS,
+MOSFET body-effect, and non-nominal-temperature operation remain native-only
+and fail closed in the adapter. Run `ohm qualify-nonlinear [--json]`; see
+[`docs/contracts/nonlinear-convergence-v1.md`](docs/contracts/nonlinear-convergence-v1.md)
+and [`docs/contracts/production-boundary-v3.md`](docs/contracts/production-boundary-v3.md).
 
 ## Architecture: The Four-Layer Model
 
@@ -109,15 +119,13 @@ The simulation layer is a **native Swift linear solver**:
 *   **Solver Options & Temperature:** `.options reltol⏐abstol⏐vntol⏐gmin⏐itl1⏐temp⏐tnom` are honoured: the tolerances drive the Newton convergence test, `itl1` caps the iteration count, `gmin` is the junction/channel leakage conductance that keeps cutoff non-singular, and the operating temperature (`temp`, from a `.temp` card or `.options`) scales each device model. Temperature dependence follows SPICE: diode/BJT saturation current and thermal voltage (`IS(T)` from `IS`, `XTI`, `EG`), BJT betas (`XTB`), and MOSFET level-1 `KP(T)` (`BEX`) and `VTO(T)` (`TCV`). Non-physical values fall back to their defaults.
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
-## Engine Façade & the Optional Rust Core
+## Engine Façade & NumericCore
 
 Simulation is reached through `SimulationEngine`, a façade that dispatches to a registered `SimulationEngineBackend`:
 
 *   **`NativeMNAEngine`** (identifier `"native-mna"`) is the built-in Swift engine and the default backend — the full DC/AC/transient/DC-sweep/`.four` feature set described above.
-*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) is the linear-production adapter for parsed linear R/C/L/V/I circuits. It provides DC, AC, and transient analysis with initial conditions. NumericCore currently accepts `PULSE` and undelayed/undamped `SIN` sources; unsupported waveform variants and nonlinear devices fail explicitly. The dependency is pinned to an exact reviewed revision and qualified together with its Rust-NumericCore binary.
+*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) is the nonlinear-production adapter for parsed R/C/L/V/I circuits, Shockley diodes, and body-tied Level-1 NMOS devices. It provides DC, AC, and transient analysis with initial conditions. NumericCore currently accepts `PULSE` and undelayed/undamped `SIN` sources; unsupported variants fail explicitly. The dependency is pinned to an exact reviewed revision and qualified together with its Rust-NumericCore binary.
 *   **Backends are swappable at runtime** with `SimulationEngine.register(_:makeDefault:)` and `SimulationEngine.resetToDefaultBackend()`. Because the façade is the single entry point (`EngineClient` and the CLI both call it), no call site changes when a backend changes. The schematic entry point has a default implementation that projects a snapshot to a netlist, so a foreign backend only has to implement the netlist solve.
-*   **`ohm-core`** (Rust) is the deprecated standalone compatibility backend in `rust/ohm-core`, exposed over a small JSON C ABI. It remains available and tested in 1.2, but new integrations must use `numeric-core`; removal is scheduled for 1.3.0.
-*   **Opt-in build.** Nothing Rust-related is compiled unless requested. Run `scripts/build-rust-core.sh`, then build or test with `OHMLAB_RUST_CORE=1`; the package manifest links the staged library and exposes `RustEngineBackend`. Native Swift remains the runtime default.
 
 ## Key Frontend Features
 
@@ -134,7 +142,7 @@ Simulation is reached through `SimulationEngine`, a façade that dispatches to a
 *   **Hierarchical Sheets:** A document holds named sheets (the root plus any number of subcircuits). A subcircuit-instance symbol references a sheet, exposes its ports as pins, and can be double-clicked to descend into it; a breadcrumb walks back up. Simulation and export flatten the tree.
 *   **Buses:** `DATA[7:0]` declares a bus, a thick blue bus wire carries its labels, and member labels (`DATA[3]`) tap individual bits. Members merge by name and expand to ordinary nets at simulation/export; bus-declaration labels are names only and carry no conduction.
 *   **Netlist → Schematic:** **Draw Schematic** on the netlist editor auto-lays out any supported SPICE netlist as an editable schematic — components on a grid, orthogonal wires routed from connectivity, nets labelled, and `.subckt` blocks reconstructed as subcircuit-instance symbols referencing generated sheets.
-*   **Pluggable Engine:** Simulation goes through a façade (`SimulationEngine`) over a registered backend; the native Swift MNA engine is the default and an optional Rust `ohm-core` can be swapped in at runtime (see **Engine Façade & the Optional Rust Core**).
+*   **Pluggable Engine:** Simulation goes through a façade (`SimulationEngine`) over a registered backend; native Swift MNA is the default and the Swift-NumericCore adapter is independently qualified (see **Engine Façade & NumericCore**).
 *   **Headless / Batch:** `ohm` runs a `.ohmlab` document or a netlist file (or stdin) without the UI and writes CSV or JSON — see **Headless / Batch Mode**.
 *   **Plugin API:** Extension points for custom components, netlist processors, result post-processors, and output exporters — see **Plugin API**.
 *   **Projects & Collaboration:** Multi-sheet work lives in a `.ohmlabproj` folder bundle; projects import from/export to KiCad, and a provider-agnostic sync engine keeps a working copy in step with a remote folder (including iCloud) — see **Projects & Collaboration**.
@@ -247,7 +255,7 @@ Sources/
 │   │   ├── CircuitCompiler.swift     # Schematic -> LinearCircuit
 │   │   ├── ModelLibrary.swift        # Vendor `.model`/`.subckt` import + registry
 │   │   ├── SpiceNetlistParser.swift  # Netlist -> LinearCircuit
-│   │   └── RustEngineBackend.swift   # Optional ohm-core bridge (CCOhmCore-gated)
+│   │   └── NumericCoreEngineBackend.swift # Swift/Rust NumericCore adapter
 │   ├── Diagnostics/              # Pre-simulation validation
 │   ├── Persistence/              # Versioned .ohmlab file format + lifecycle
 │   │   ├── CircuitFile.swift         # File format, migration, crash-recovery slots
@@ -263,10 +271,7 @@ Sources/
 │   └── Circuit/                  # Simulator UI and document model
 ├── OhmLab/                       # SwiftUI app shell (OhmLabApp.swift — the @main scene)
 ├── OhmLabCLI/                    # `ohm` headless/batch command-line front end
-├── CCOhmCore/                    # systemLibrary module map + header for the Rust core
 Examples/                         # Self-checking example circuits (@check directives) + a bundle
-rust/ohm-core/                    # Optional Rust engine crate (C ABI + cargo tests)
-scripts/build-rust-core.sh        # Builds/stages libohm_core.a for the optional core
 scripts/health-check.sh           # One-command health check (build, tests, examples, CLI)
 ```
 
@@ -331,7 +336,7 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 *   **Input** — a `.ohmlab` document (its saved settings, schematic or netlist, and embedded model libraries are used), a SPICE netlist file, inline `--netlist <text>`, or `-` for standard input. The input kind is detected by file extension.
 *   **Analysis** — with no flags, a document uses its saved settings and a bare netlist uses its own `.ac`/`.tran`/`.dc` cards plus a DC operating point. Flags override: `--analysis dc,ac,tran`, `--ac <dec|oct|lin> <pts> <f1> <f2>`, `--tran <step> <stop> [start]`, `--dc <src> <start> <stop> <step>`. Numeric arguments accept SPICE suffixes (`1k`, `10m`, `1meg`).
 *   **Output** — `-f csv` (the long-format table used by the app's export) or `-f json` (the structured `CircuitResultJSON` projection: `dc`/`ac`/`transient`/`sweep`/`fourier` plus `warnings`), to stdout or `-o <file>`.
-*   **Engine** — `-e native` (default) or `-e rust` when the optional Rust core is linked; unknown names error out and list what is available.
+*   **Engine** — `-e native` (default) or `-e numeric-core`; unknown names error out and list what is available.
 *   **Exit status** — `0` success, `1` simulation/parse error, `2` usage error; non-fatal notes go to stderr (suppress with `-q`).
 
 `BatchRunner` (in `OhmLabCore`) is the testable core of this: it is pure (no file I/O beyond what it is handed), and the CLI adds argument parsing, file reading, and output writing on top.
@@ -398,6 +403,5 @@ Documents are managed by a SwiftUI `DocumentGroup` (`CircuitFileDocument` + `Doc
 - iPadOS 17+
 - Xcode 15+ / Swift 6
 - KiCad 9+ (optional) — enables importing `.kicad_sch` schematics via its `kicad-cli`
-- Rust toolchain (optional) — only needed to build and link the optional `ohm-core` engine (`scripts/build-rust-core.sh`)
 
 The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses a SwiftUI `DocumentGroup`, so circuits are real documents that open in place and autosave (including to iCloud Drive when the host app is entitled).

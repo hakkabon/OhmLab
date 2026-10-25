@@ -9,8 +9,8 @@ import Foundation
 
 /// Names and activates the simulation backends available to the process.
 ///
-/// Built-ins: `native` (the Swift MNA engine, also `native-mna`) and — when the
-/// optional Rust core has been linked — `rust` (also `ohm-core`).
+/// Built-ins: `native` (the Swift MNA engine, also `native-mna`) and
+/// `numeric-core` (the Swift-NumericCore adapter, also `numericcore`).
 public enum EngineBackends {
     public typealias Factory = @Sendable () -> any SimulationEngineBackend
 
@@ -96,7 +96,6 @@ public enum EngineBackends {
         let canonical: String
         switch name.lowercased() {
         case "native", "native-mna": canonical = "native-mna"
-        case "rust", "ohm-core": canonical = "ohm-core"
         case "numericcore", "numeric-core": canonical = "numeric-core"
         default: canonical = name.lowercased()
         }
@@ -104,16 +103,11 @@ public enum EngineBackends {
     }
 
     private static func builtins() -> [String: Factory] {
-        var map: [String: Factory] = [
+        [
             "native": { NativeMNAEngine() },
             "native-mna": { NativeMNAEngine() },
             "numeric-core": { NumericCoreEngineBackend() },
             "numericcore": { NumericCoreEngineBackend() },
         ]
-        #if canImport(CCOhmCore)
-        map["rust"] = { RustEngineBackend() }
-        map["ohm-core"] = { RustEngineBackend() }
-        #endif
-        return map
     }
 }

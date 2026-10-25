@@ -39,7 +39,7 @@ ANALYSIS:
                            Values accept SPICE suffixes (e.g. 1k, 10m, 1meg).
 
 ENGINE:
-  -e, --engine <name>      native (default), numeric-core, or deprecated rust (if linked).
+  -e, --engine <name>      native (default) or numeric-core.
   -q, --quiet              Suppress warnings on stderr.
   -h, --help               Show this help.
   -V, --version            Show the version.
@@ -48,7 +48,8 @@ PROJECTS & ANALYSES:
   ohm engines                               Show backend capability matrix.
   ohm doctor [--json]                       Verify the stable 1.x production boundary.
   ohm verify [--json] [--seed <n>]          Run the numerical trust suite.
-  ohm qualify-linear [--json]               Verify the 1.2 linear-production backend.
+  ohm qualify-linear [--json]               Verify the linear-production backend.
+  ohm qualify-nonlinear [--json]            Verify the 1.5 nonlinear-production backend.
   ohm project info <bundle>                 Show a .ohmlabproj manifest.
   ohm project pack <bundle> -o <zip>        Pack a bundle into .ohmlabzip.
   ohm project unpack <zip> <dir>            Unpack an archive.
@@ -64,7 +65,7 @@ EXAMPLES:
   ohm divider.cir --analysis dc --format json
   ohm amp.ohmlab -f csv -o amp.csv
   cat filter.cir | ohm - --ac dec 20 1 1meg
-  ohm --netlist "V1 1 0 5\\nR1 1 0 1k" --engine rust
+  ohm --netlist "V1 1 0 5\\nR1 1 0 1k" --engine numeric-core
   ohm monte-carlo amp.cir --default-tol 5% --samples 500 --probe v(out)
   ohm optimize amp.cir --var R2=100:10k --probe v(out) --goal target=2.5
 """

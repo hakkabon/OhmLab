@@ -18,25 +18,28 @@ public enum NumericCoreAdapterError: LocalizedError, Equatable {
     }
 }
 
-/// Linear-production backend over NumericCore's circuit-analysis API.
+/// Linear/nonlinear-production backend over NumericCore's circuit-analysis API.
 ///
-/// The native engine remains the full-feature product default while nonlinear
-/// and advanced-analysis parity are completed. This adapter
+/// The native engine remains the full-feature product default while broader
+/// nonlinear and advanced-analysis parity are completed. This adapter
 /// deliberately fails closed for unsupported features instead of silently
 /// returning a partial simulation.
 public struct NumericCoreEngineBackend: SimulationEngineBackend {
     public let identifier = "numeric-core"
-    public let maturity: SimulationBackendMaturity = .linearProduction
+    public let maturity: SimulationBackendMaturity = .nonlinearProduction
     public let implementationVersion: String? = "swift-numeric-core-7318e8c+rust-numeric-core-0.34.0"
 
     public let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "numeric-core",
         analyses: [.dcOperatingPoint, .acSmallSignal, .transient],
-        devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource],
+        devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource, .diode, .mosfet],
         features: [
             .spiceNetlistInput, .circuitIRInput, .modelLibraries,
             .sourceWaveforms, .initialConditions,
         ]
+    )
+    public let nonlinearScope: NonlinearBackendScope? = NonlinearBackendScope(
+        devices: [.shockleyDiode, .level1NmosBodyTied]
     )
 
     public init() {}
@@ -77,7 +80,7 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         if !parsed.analysis.fourier.isEmpty {
             throw NumericCoreAdapterError.unsupportedAnalysis("Fourier analysis")
         }
-        guard effective.runDC || effective.runAC else {
+        guard effective.runDC || effective.runAC || effective.runTransient else {
             throw CircuitSimulationError.noAnalysisSelected
         }
 
@@ -175,12 +178,55 @@ private extension NumericCoreEngineBackend {
                         source: try Self.source(element),
                         initialCurrent: 0
                     ))
-                case .diode, .bjt, .mosfet, .jfet:
+                case .diode:
+                    guard let diode = element.diode else {
+                        throw NumericCoreAdapterError.unsupportedElement(element.name)
+                    }
+                    try Self.requireNominalTemperature(element, in: circuit)
+                    mapped.append(.diode(
+                        name: element.name,
+                        anode: element.nodeA,
+                        cathode: element.nodeB,
+                        saturationCurrent: diode.saturationCurrent * diode.area,
+                        thermalVoltage: diode.emissionCoefficient * diode.thermalVoltage
+                    ))
+                case .mosfet:
+                    guard let mosfet = element.mosfet,
+                          mosfet.polarity == .nmos,
+                          (element.nodeD ?? element.nodeB) == element.nodeB,
+                          mosfet.bodyEffect == 0 else {
+                        throw NumericCoreAdapterError.unsupportedElement(
+                            "\(element.name) (only body-tied Level-1 NMOS is qualified)"
+                        )
+                    }
+                    try Self.requireNominalTemperature(element, in: circuit)
+                    mapped.append(.nmosLevel1(
+                        name: element.name,
+                        drain: element.nodeA,
+                        gate: element.nodeC ?? element.nodeB,
+                        source: element.nodeB,
+                        transconductance: mosfet.transconductanceParameter,
+                        threshold: mosfet.thresholdVoltage,
+                        channelLengthModulation: mosfet.channelLengthModulation
+                    ))
+                case .bjt, .jfet:
                     throw NumericCoreAdapterError.unsupportedElement(element.name)
                 }
             }
             devices = mapped
             model = try CircuitModel(nodes: nodes, referenceNode: 0, devices: mapped)
+        }
+
+        private static func requireNominalTemperature(
+            _ element: LinearCircuit.Element,
+            in circuit: LinearCircuit
+        ) throws {
+            let options = circuit.solverOptions
+            guard abs(options.temperatureCelsius - options.nominalTemperatureCelsius) <= 1e-12 else {
+                throw NumericCoreAdapterError.unsupportedElement(
+                    "\(element.name) (non-nominal temperature)"
+                )
+            }
         }
 
         private static func source(_ element: LinearCircuit.Element) throws -> CircuitSource {
@@ -228,7 +274,9 @@ private extension NumericCoreEngineBackend {
                     current = branch
                 case .currentSource:
                     current = element.magnitude(isDC: true)
-                case .diode, .bjt, .mosfet, .jfet:
+                case .diode, .mosfet:
+                    current = try nonlinearCurrent(element, voltages: operating.nodeVoltages)
+                case .bjt, .jfet:
                     throw NumericCoreAdapterError.unsupportedElement(element.name)
                 }
                 return (element.name, voltage, current)
@@ -245,6 +293,8 @@ private extension NumericCoreEngineBackend {
                 components: components,
                 sources: sources,
                 converged: operating.diagnostics.finite
+                    && (operating.termination == .convergedResidual
+                        || operating.termination == .convergedStep)
             )
         }
 
@@ -315,7 +365,13 @@ private extension NumericCoreEngineBackend {
                             magnitude: element.magnitude(isDC: false),
                             phaseDegrees: element.phaseDegrees
                         )
-                    case .diode, .bjt, .mosfet, .jfet:
+                    case .diode, .mosfet:
+                        current = try nonlinearACCurrent(
+                            element,
+                            operatingVoltages: operating.nodeVoltages,
+                            phasorVoltages: voltages
+                        )
+                    case .bjt, .jfet:
                         throw NumericCoreAdapterError.unsupportedElement(element.name)
                     }
                     componentSeries[index].append(freqPoint(point.frequency, current))
@@ -442,7 +498,9 @@ private extension NumericCoreEngineBackend {
                     case .currentSource:
                         current = element.transient?.value(at: times[sample])
                             ?? element.magnitude(isDC: true)
-                    case .diode, .bjt, .mosfet, .jfet:
+                    case .diode, .mosfet:
+                        current = try nonlinearCurrent(element, voltages: voltages)
+                    case .bjt, .jfet:
                         throw NumericCoreAdapterError.unsupportedElement(element.name)
                     }
                     componentSeries[index].append(current)
@@ -463,6 +521,86 @@ private extension NumericCoreEngineBackend {
                 guard let unknown = try model.nodeUnknownIndex(node) else { return .zero }
                 return complex(point.unknowns[unknown])
             }
+        }
+
+        private func nonlinearCurrent(
+            _ element: LinearCircuit.Element,
+            voltages: [Double]
+        ) throws -> Double {
+            switch element.kind {
+            case .diode:
+                guard let diode = element.diode else {
+                    throw NumericCoreAdapterError.unsupportedElement(element.name)
+                }
+                let voltage = voltages[element.nodeA] - voltages[element.nodeB]
+                let thermal = diode.emissionCoefficient * diode.thermalVoltage
+                return diode.saturationCurrent * diode.area
+                    * (exp(min(voltage / thermal, 80)) - 1)
+            case .mosfet:
+                let parameters = try nmosParameters(element, voltages: voltages)
+                return parameters.current
+            default:
+                throw NumericCoreAdapterError.unsupportedElement(element.name)
+            }
+        }
+
+        private func nonlinearACCurrent(
+            _ element: LinearCircuit.Element,
+            operatingVoltages: [Double],
+            phasorVoltages: [Complex]
+        ) throws -> Complex {
+            switch element.kind {
+            case .diode:
+                guard let diode = element.diode else {
+                    throw NumericCoreAdapterError.unsupportedElement(element.name)
+                }
+                let bias = operatingVoltages[element.nodeA] - operatingVoltages[element.nodeB]
+                let thermal = diode.emissionCoefficient * diode.thermalVoltage
+                let conductance = diode.saturationCurrent * diode.area
+                    * exp(min(bias / thermal, 80)) / thermal
+                return (phasorVoltages[element.nodeA] - phasorVoltages[element.nodeB])
+                    * Complex(conductance, 0)
+            case .mosfet:
+                let parameters = try nmosParameters(element, voltages: operatingVoltages)
+                let drainSource = phasorVoltages[element.nodeA] - phasorVoltages[element.nodeB]
+                let gate = element.nodeC ?? element.nodeB
+                let gateSource = phasorVoltages[gate] - phasorVoltages[element.nodeB]
+                return drainSource * Complex(parameters.gds, 0)
+                    + gateSource * Complex(parameters.gm, 0)
+            default:
+                throw NumericCoreAdapterError.unsupportedElement(element.name)
+            }
+        }
+
+        private func nmosParameters(
+            _ element: LinearCircuit.Element,
+            voltages: [Double]
+        ) throws -> (current: Double, gm: Double, gds: Double) {
+            guard let model = element.mosfet, model.polarity == .nmos else {
+                throw NumericCoreAdapterError.unsupportedElement(element.name)
+            }
+            let gate = element.nodeC ?? element.nodeB
+            let vgs = voltages[gate] - voltages[element.nodeB]
+            let vds = voltages[element.nodeA] - voltages[element.nodeB]
+            let overdrive = vgs - model.thresholdVoltage
+            guard overdrive > 0 else { return (0, 0, 0) }
+            let beta = model.transconductanceParameter
+            let lambda = model.channelLengthModulation
+            if vds < overdrive {
+                let base = beta * (overdrive * vds - 0.5 * vds * vds)
+                let modulation = 1 + lambda * vds
+                return (
+                    base * modulation,
+                    beta * vds * modulation,
+                    beta * (overdrive - vds) * modulation + lambda * base
+                )
+            }
+            let base = 0.5 * beta * overdrive * overdrive
+            return (
+                base * (1 + lambda * vds),
+                beta * overdrive * (1 + lambda * vds),
+                lambda * base
+            )
         }
 
         private func complex(_ value: CircuitComplex) -> Complex {

@@ -42,32 +42,28 @@ struct ProductionBoundaryTests {
         }
     }
 
-    @Test func releaseAndContractsRemainCompatibleAtOneDotTwo() {
-        #expect(OhmLabRelease.version == "1.2.0")
-        #expect(OhmLabRelease.productionBoundaryVersion == 2)
+    @Test func releaseAndContractsRemainCompatibleAtOneDotFive() {
+        #expect(OhmLabRelease.version == "1.5.0")
+        #expect(OhmLabRelease.productionBoundaryVersion == 3)
         #expect(CircuitIR.currentSchemaVersion == 1)
         #expect(SimulationResultContract.currentVersion == 1)
         #expect(SimulationBackendCapabilities.currentContractVersion == 1)
-        #expect(RustCircuitTransport.currentVersion == 1)
         #expect(NumericalTrust.currentContractVersion == 1)
         #expect(LinearBackendGraduation.currentContractVersion == 1)
+        #expect(NonlinearConvergence.currentContractVersion == 1)
     }
 
     @Test func readinessReportQualifiesOnlyTheNativeReference() {
         SimulationEngine.resetToDefaultBackend()
         let report = ProductionBoundary.report()
         #expect(report.ready)
-        #expect(report.productVersion == "1.2.0")
+        #expect(report.productVersion == "1.5.0")
         #expect(report.defaultBackend == "native-mna")
         #expect(report.backends.filter(\.isProductionReady).map(\.identifier) == ["native-mna"])
         #expect(report.backends.filter(\.isLinearProductionReady).map(\.identifier) == ["numeric-core"])
         #expect(report.backends.allSatisfy { $0.isValid })
-        #expect(report.backends.first { $0.identifier == "numeric-core" }?.maturity == .linearProduction)
-        #if canImport(CCOhmCore)
-        #expect(report.backends.first { $0.identifier == "ohm-core" }?.maturity == .preview)
-        #expect(report.backends.first { $0.identifier == "ohm-core" }?.lifecycle == .deprecated)
-        #expect(report.backends.first { $0.identifier == "ohm-core" }?.removalVersion == "1.3.0")
-        #endif
+        #expect(report.backends.filter(\.isNonlinearProductionReady).map(\.identifier) == ["numeric-core"])
+        #expect(report.backends.first { $0.identifier == "numeric-core" }?.maturity == .nonlinearProduction)
     }
 
     @Test func readinessReportSerializesItsVerdict() throws {

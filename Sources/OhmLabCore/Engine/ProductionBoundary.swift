@@ -2,18 +2,40 @@ import Foundation
 
 /// Product version shipped on the stable 1.x production boundary.
 public enum OhmLabRelease {
-    public static let version = "1.2.0"
-    public static let productionBoundaryVersion = 2
+    public static let version = "1.5.0"
+    public static let productionBoundaryVersion = 3
 }
 
 /// Whether a backend is covered by OhmLab's production compatibility promise.
 public enum SimulationBackendMaturity: String, Codable, Sendable, Comparable {
     case production
     case linearProduction = "linear-production"
+    case nonlinearProduction = "nonlinear-production"
     case preview
     case external
 
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+public enum NonlinearBackendDevice: String, Codable, Sendable, CaseIterable, Comparable {
+    case shockleyDiode = "shockley-diode"
+    case level1NmosBodyTied = "level1-nmos-body-tied"
+
+    public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+public struct NonlinearBackendScope: Codable, Equatable, Sendable {
+    public static let currentContractVersion = 1
+    public let contractVersion: Int
+    public let devices: [NonlinearBackendDevice]
+
+    public init(
+        devices: [NonlinearBackendDevice],
+        contractVersion: Int = currentContractVersion
+    ) {
+        self.contractVersion = contractVersion
+        self.devices = Array(Set(devices)).sorted()
+    }
 }
 
 /// Lifecycle information is separate from numerical maturity so a backend can
@@ -31,13 +53,19 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
     public let lifecycle: SimulationBackendLifecycle
     public let deprecationMessage: String?
     public let removalVersion: String?
+    public let nonlinearScope: NonlinearBackendScope?
     public let capabilities: SimulationBackendCapabilities
     public let issues: [String]
 
     public var isValid: Bool { issues.isEmpty }
     public var isProductionReady: Bool { maturity == .production && isValid }
-    public var isLinearProductionReady: Bool { maturity == .linearProduction && isValid }
-    public var isProductionQualified: Bool { isProductionReady || isLinearProductionReady }
+    public var isLinearProductionReady: Bool {
+        (maturity == .linearProduction || maturity == .nonlinearProduction) && isValid
+    }
+    public var isNonlinearProductionReady: Bool { maturity == .nonlinearProduction && isValid }
+    public var isProductionQualified: Bool {
+        isProductionReady || isLinearProductionReady || isNonlinearProductionReady
+    }
 
     init(backend: any SimulationEngineBackend) {
         identifier = backend.identifier
@@ -46,6 +74,7 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
         lifecycle = backend.lifecycle
         deprecationMessage = backend.deprecationMessage
         removalVersion = backend.removalVersion
+        nonlinearScope = backend.nonlinearScope
         capabilities = backend.capabilities
         issues = Self.validate(
             identifier: backend.identifier,
@@ -54,6 +83,7 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
             lifecycle: backend.lifecycle,
             deprecationMessage: backend.deprecationMessage,
             removalVersion: backend.removalVersion,
+            nonlinearScope: backend.nonlinearScope,
             capabilities: backend.capabilities
         )
     }
@@ -65,6 +95,7 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
         lifecycle: SimulationBackendLifecycle,
         deprecationMessage: String?,
         removalVersion: String?,
+        nonlinearScope: NonlinearBackendScope?,
         capabilities: SimulationBackendCapabilities
     ) -> [String] {
         var issues: [String] = []
@@ -113,7 +144,7 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
                 issues.append("production backend does not cover every execution feature")
             }
         }
-        if maturity == .linearProduction {
+        if maturity == .linearProduction || maturity == .nonlinearProduction {
             let analyses: Set<SimulationAnalysisKind> = [.dcOperatingPoint, .acSmallSignal, .transient]
             let devices: Set<CircuitIR.DeviceKind> = [.resistor, .capacitor, .inductor, .voltageSource, .currentSource]
             let features: Set<SimulationBackendFeature> = [.spiceNetlistInput, .circuitIRInput, .sourceWaveforms, .initialConditions]
@@ -128,6 +159,24 @@ public struct SimulationBackendDescriptor: Codable, Equatable, Sendable {
                 issues.append("linear-production backend lacks a required execution feature")
             }
         }
+        if maturity == .nonlinearProduction {
+            let required: Set<NonlinearBackendDevice> = [.shockleyDiode, .level1NmosBodyTied]
+            guard let nonlinearScope else {
+                issues.append("nonlinear-production backend has no nonlinear scope")
+                return issues
+            }
+            if nonlinearScope.contractVersion != NonlinearBackendScope.currentContractVersion {
+                issues.append("unsupported nonlinear scope contract version \(nonlinearScope.contractVersion)")
+            }
+            if !required.isSubset(of: Set(nonlinearScope.devices)) {
+                issues.append("nonlinear-production backend lacks the required diode/NMOS scope")
+            }
+            if !capabilities.supports(.diode) || !capabilities.supports(.mosfet) {
+                issues.append("nonlinear-production capability declaration omits diode or MOSFET")
+            }
+        } else if nonlinearScope != nil {
+            issues.append("non-nonlinear backend declares a nonlinear-production scope")
+        }
         return issues
     }
 }
@@ -137,9 +186,9 @@ public struct ProductionContractVersions: Codable, Equatable, Sendable {
     public let capabilityContract: Int
     public let circuitIR: Int
     public let simulationResult: Int
-    public let rustTransport: Int
     public let numericalTrust: Int
     public let linearBackendGraduation: Int
+    public let nonlinearConvergence: Int
 }
 
 /// Machine-readable answer to “is this build safe to ship on the stable 1.x boundary?”.
@@ -180,6 +229,10 @@ public enum ProductionBoundary {
         if linearProduction.map(\.identifier) != ["numeric-core"] {
             issues.append("numeric-core must be the sole linear-production backend")
         }
+        let nonlinearProduction = descriptors.filter(\.isNonlinearProductionReady)
+        if nonlinearProduction.map(\.identifier) != ["numeric-core"] {
+            issues.append("numeric-core must be the sole nonlinear-production backend")
+        }
         if SimulationEngine.defaultBackendIdentifier != "native-mna" {
             issues.append("the default backend must be native-mna")
         }
@@ -190,9 +243,9 @@ public enum ProductionBoundary {
                 capabilityContract: SimulationBackendCapabilities.currentContractVersion,
                 circuitIR: CircuitIR.currentSchemaVersion,
                 simulationResult: SimulationResultContract.currentVersion,
-                rustTransport: RustCircuitTransport.currentVersion,
                 numericalTrust: NumericalTrust.currentContractVersion,
-                linearBackendGraduation: LinearBackendGraduation.currentContractVersion
+                linearBackendGraduation: LinearBackendGraduation.currentContractVersion,
+                nonlinearConvergence: NonlinearConvergence.currentContractVersion
             ),
             defaultBackend: SimulationEngine.defaultBackendIdentifier,
             backends: descriptors,

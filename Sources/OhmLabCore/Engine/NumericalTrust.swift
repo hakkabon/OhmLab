@@ -65,8 +65,7 @@ public enum NumericalTrust {
                 && $0.capabilities.supports(.acSmallSignal)
         }
         let linkedIdentifiers = Set(candidates.map(\.identifier))
-        var required = Set(["native-mna", "numeric-core"])
-        if linkedIdentifiers.contains("ohm-core") { required.insert("ohm-core") }
+        let required = Set(["native-mna", "numeric-core"])
 
         let reports = candidates.map { backend in
             evaluate(backend: backend, cases: cases, required: required.contains(backend.identifier))

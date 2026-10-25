@@ -35,6 +35,7 @@ printf '{\n  "product": "OhmLab",\n  "version": "%s",\n  "platform": "macOS",\n 
 "$stage/bin/ohm" --version | grep -qx "ohm $version"
 "$stage/bin/ohm" doctor --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 "$stage/bin/ohm" qualify-linear --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
+"$stage/bin/ohm" qualify-nonlinear --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 
 identity="${OHMLAB_CODESIGN_IDENTITY:--}"
 if [[ "$identity" == "-" ]]; then

@@ -59,21 +59,12 @@ struct ConvergenceContractTests {
         #expect(native.analyses == SimulationAnalysisKind.allCases.sorted())
         #expect(native.devices == CircuitIR.DeviceKind.allCases.sorted())
         #expect(numeric.analyses == [.acSmallSignal, .dcOperatingPoint, .transient])
-        #expect(numeric.devices == [.capacitor, .currentSource, .inductor, .resistor, .voltageSource])
+        #expect(numeric.devices == [.capacitor, .currentSource, .diode, .inductor, .mosfet, .resistor, .voltageSource])
         #expect(numeric.supports(.transient))
         #expect(numeric.supports(.circuitIRInput))
         #expect(numeric.supports(.initialConditions))
         #expect(!numeric.supports(.temperature))
 
-        #if canImport(CCOhmCore)
-        let rust = try #require(matrix.first { $0.backendIdentifier == "ohm-core" })
-        #expect(rust.analyses == [.acSmallSignal, .dcOperatingPoint, .transient])
-        #expect(rust.supports(.circuitIRInput))
-        #expect(rust.supports(.modelLibraries))
-        #expect(rust.supports(.transient))
-        #expect(rust.supports(.sourceWaveforms))
-        #expect(rust.supports(.initialConditions))
-        #endif
     }
 
     @Test("Circuit IR round-trips and both engines agree", arguments: fixtures)
@@ -96,19 +87,6 @@ struct ConvergenceContractTests {
         try compare(native, numeric, tolerance: fixture.absoluteTolerance, fixture: fixture.id)
     }
 
-    #if canImport(CCOhmCore)
-    @Test("Circuit IR Rust transport agrees with native", arguments: fixtures)
-    func rustTransportDifferentialFixture(fixture: Fixture) throws {
-        let netlist = try String(
-            contentsOf: Self.fixtureDirectory.appendingPathComponent(fixture.file),
-            encoding: .utf8
-        )
-        let ir = try CircuitIRCompiler.compile(netlist: netlist)
-        let native = try NativeMNAEngine().solve(circuit: ir, settings: fixture.settings)
-        let rust = try RustEngineBackend().solve(circuit: ir, settings: fixture.settings)
-        try compare(native, rust, tolerance: fixture.absoluteTolerance, fixture: "rust-\(fixture.id)")
-    }
-    #endif
 
     @Test func circuitIRDecoderRejectsUnknownSchema() throws {
         let source = "V1 in 0 1\nR1 in 0 1k\n.end"
@@ -162,52 +140,6 @@ struct ConvergenceContractTests {
         }
     }
 
-    @Test func rustCircuitTransportRoundTripsAndFailsClosed() throws {
-        let ir = try CircuitIRCompiler.compile(netlist: """
-        V1 in 0 DC 5 AC 1
-        R1 in out 1k
-        R2 out 0 1k
-        .end
-        """)
-        var settings = AnalysisSettings.default
-        settings.acSweepType = .oct
-        settings.acStartFrequency = 10
-        settings.acStopFrequency = 10_000
-        settings.acPointsPerDecade = 8
-
-        let request = try RustCircuitTransport.Request(circuit: ir, settings: settings)
-        let data = try JSONEncoder().encode(request)
-        let decoded = try JSONDecoder().decode(RustCircuitTransport.Request.self, from: data)
-        #expect(decoded == request)
-        #expect(decoded.transportVersion == RustCircuitTransport.currentVersion)
-        #expect(decoded.circuit.schemaVersion == CircuitIR.currentSchemaVersion)
-        #expect(decoded.analysis.ac?.sweepType == .oct)
-
-        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        object["transportVersion"] = RustCircuitTransport.currentVersion + 1
-        let future = try JSONSerialization.data(withJSONObject: object)
-        #expect(throws: RustCircuitTransportError.self) {
-            _ = try JSONDecoder().decode(RustCircuitTransport.Request.self, from: future)
-        }
-
-        var transient = settings
-        transient.runTransient = true
-        transient.tranStep = 1e-4
-        transient.tranStop = 1e-3
-        let transientRequest = try RustCircuitTransport.Request(circuit: ir, settings: transient)
-        #expect(transientRequest.analysis.transient?.step == 1e-4)
-
-        let diode = try CircuitIRCompiler.compile(netlist: """
-        V1 in 0 1
-        D1 in 0 DMOD
-        .model DMOD D
-        .end
-        """)
-        #expect(throws: RustCircuitTransportError.self) {
-            _ = try RustCircuitTransport.Request(circuit: diode, settings: settings)
-        }
-    }
-
     @Test func linearTransientParityAndInitialConditions() throws {
         let netlist = """
         V1 in 0 PULSE(0 1 100u 0 0 10m 20m)
@@ -241,16 +173,6 @@ struct ConvergenceContractTests {
             #expect(abs(lhs - rhs) < 1e-1)
         }
 
-        #if canImport(CCOhmCore)
-        let rust = try RustEngineBackend().solve(circuit: ir, settings: settings)
-        let rustTransient = try #require(rust.transient)
-        #expect(rustTransient.times == nativeTransient.times)
-        let rustOutput = try #require(rustTransient.nodes.first { $0.name == "out" }?.values)
-        #expect(rustOutput.count == nativeOutput.count)
-        for (lhs, rhs) in zip(nativeOutput, rustOutput) {
-            #expect(abs(lhs - rhs) < 1e-10)
-        }
-        #endif
     }
 
     private func compare(

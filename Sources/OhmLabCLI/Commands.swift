@@ -26,7 +26,7 @@ enum CommandError: LocalizedError {
 
 enum Subcommand {
     static let names: Set<String> = [
-        "engines", "doctor", "verify", "qualify-linear", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
     ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
@@ -49,6 +49,7 @@ enum Subcommand {
         case "doctor": return try runDoctor(Array(arguments.dropFirst()))
         case "verify": return try runVerify(Array(arguments.dropFirst()))
         case "qualify-linear": return try runLinearQualification(Array(arguments.dropFirst()))
+        case "qualify-nonlinear": return try runNonlinearQualification(Array(arguments.dropFirst()))
         case "project": return try runProject(Array(arguments.dropFirst()))
         case "kicad": return try runKicad(Array(arguments.dropFirst()))
         case "sync": return try runSync(Array(arguments.dropFirst()))
@@ -161,6 +162,31 @@ enum Subcommand {
             }
             for issue in report.issues { writeStdout("  issue: \(issue)\n") }
             writeStdout(report.ready ? "GRADUATED\n" : "NOT GRADUATED\n")
+        }
+        return report.ready ? 0 : 1
+    }
+
+    // MARK: - nonlinear convergence
+
+    private static func runNonlinearQualification(_ arguments: [String]) throws -> Int32 {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandError.usage("usage: ohm qualify-nonlinear [--json]")
+        }
+        let report = NonlinearConvergence.evaluate()
+        if arguments == ["--json"] {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(report)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw CommandError.runtime("could not encode the nonlinear-convergence report")
+            }
+            writeStdout(text + "\n")
+        } else {
+            let passed = report.cases.filter(\.passed).count
+            writeStdout("OhmLab nonlinear convergence v\(report.contractVersion)\n")
+            writeStdout("  \(report.backend): \(passed)/\(report.cases.count) cases\n")
+            for issue in report.issues { writeStdout("  issue: \(issue)\n") }
+            writeStdout(report.ready ? "CONVERGED\n" : "NOT CONVERGED\n")
         }
         return report.ready ? 0 : 1
     }

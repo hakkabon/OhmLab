@@ -205,8 +205,7 @@ public enum CircuitSimulationError: LocalizedError {
 // MARK: - Engine backend façade
 
 /// A pluggable circuit-simulation backend. The built-in `NativeMNAEngine` is the
-/// default; alternative cores (for example the Rust `audio-spice-core` linked
-/// via the `CCOhmCore` module) can be registered at launch and swapped in
+/// default; alternative cores can be registered at launch and swapped in
 /// without touching any call site.
 public protocol SimulationEngineBackend: Sendable {
     /// A stable, human-readable identifier (surfaced in diagnostics and the CLI).
@@ -220,6 +219,7 @@ public protocol SimulationEngineBackend: Sendable {
     var lifecycle: SimulationBackendLifecycle { get }
     var deprecationMessage: String? { get }
     var removalVersion: String? { get }
+    var nonlinearScope: NonlinearBackendScope? { get }
 
     /// Backend implementation version, independent of the wire contracts.
     var implementationVersion: String? { get }
@@ -244,6 +244,7 @@ public extension SimulationEngineBackend {
     var lifecycle: SimulationBackendLifecycle { .supported }
     var deprecationMessage: String? { nil }
     var removalVersion: String? { nil }
+    var nonlinearScope: NonlinearBackendScope? { nil }
     var implementationVersion: String? { nil }
 
     var capabilities: SimulationBackendCapabilities {

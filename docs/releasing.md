@@ -1,18 +1,19 @@
 # Releasing OhmLab 1.x
 
 Every release candidate must pass `scripts/release-check.sh`. The gate tests the
-standard Swift product, exercises application workflows, validates frozen
-contracts, checks Rust with rustfmt and Clippy, and runs Swift again with the
-Rust transport linked.
+standard Swift product, exercises application workflows, and validates frozen
+and executable numerical contracts.
 
 For OhmLab 1.1 and later, `ohm verify --json` must also report `ready: true`.
 This is the deterministic analytical qualification for every linked numerical
 backend; `ohm doctor` alone is necessary but no longer sufficient.
 
 For OhmLab 1.2 and later, `ohm qualify-linear --json` must report `ready: true`.
-This freezes the scoped `numeric-core` graduation evidence. Rust-linked builds
-must additionally expose standalone `ohm-core` as deprecated with removal
-version 1.3.0 throughout the one-release compatibility window.
+This freezes the scoped `numeric-core` linear graduation evidence.
+
+For OhmLab 1.5 and later, `ohm qualify-nonlinear --json` must report
+`ready: true`. The declared scope must include both `shockley-diode` and
+`level1-nmos-body-tied`, and every differential case must pass.
 
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
@@ -31,13 +32,14 @@ architecture separately until the project adopts a universal-binary build.
 
 Compatibility rules for the 1.x line:
 
-- Do not change production-boundary, Circuit IR, result, capability, or Rust
-  transport versions in a patch release.
-- Production boundary v2 is required for 1.2 because the new maturity and
-  lifecycle values are semantic additions; the other wire contracts remain v1.
+- Do not change production-boundary, Circuit IR, result, capability, or
+  nonlinear-convergence versions in a patch release.
+- Production boundary v3 is required for 1.5 because nonlinear maturity and
+  scope are semantic additions and the standalone Rust transport was removed.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
-- Never weaken `ohm doctor` or `ohm verify`; `ready: false` blocks a release.
+- Never weaken `ohm doctor`, `ohm verify`, `ohm qualify-linear`, or
+  `ohm qualify-nonlinear`; `ready: false` blocks a release.
 - Keep `native-mna` the default and sole full-production backend.
-- Keep `numeric-core` as the sole linear-production backend until a later
-  contract explicitly graduates another implementation.
+- Keep `numeric-core` as the sole linear/nonlinear-production backend until a
+  later contract explicitly graduates another implementation.

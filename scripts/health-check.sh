@@ -2,9 +2,8 @@
 #
 # health-check.sh — one command for the health status of the OhmLab codebase.
 #
-# Builds the Swift package, runs the unit + example-circuit test suites, runs the
-# optional Rust core tests when cargo is available, then smoke-tests the `ohm`
-# CLI against the shipped examples: every circuit, the analyses (Monte Carlo,
+# Builds the Swift package, runs the unit + example-circuit test suites, then
+# smoke-tests the `ohm` CLI against the shipped examples: every circuit, the analyses (Monte Carlo,
 # corners, optimisation), the project bundle, and the sync engine.
 #
 # Exits non-zero if any step fails, so it is safe to wire into CI.
@@ -41,13 +40,6 @@ run "swift build" swift build
 section "Tests"
 run "swift test (units + example circuits)" swift test
 
-section "Rust core (optional)"
-if command -v cargo >/dev/null 2>&1; then
-    run "cargo test (rust/ohm-core)" bash -c 'cd rust/ohm-core && cargo test'
-else
-    printf '  skip  cargo not installed\n'
-fi
-
 ohm=".build/debug/ohm"
 bundle="Examples/07-project-bundle.ohmlabproj"
 
@@ -55,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 1.2 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 1.2.0"'
+run "OhmLab 1.5 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 1.5.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
@@ -63,6 +55,9 @@ run "analytical backend qualification" "$ohm" verify --json
 
 section "Linear backend graduation"
 run "linear-production qualification" "$ohm" qualify-linear --json
+
+section "Nonlinear convergence"
+run "nonlinear-production qualification" "$ohm" qualify-nonlinear --json
 
 section "Example circuits — CLI runs"
 for file in Examples/*.cir; do

@@ -36,9 +36,7 @@ public enum LinearBackendGraduation {
         public let ready: Bool
     }
 
-    /// Qualifies the stable Swift-NumericCore adapter. Standalone `ohm-core`
-    /// is deliberately excluded: 1.2 retains it only as a deprecated
-    /// compatibility backend before removal in 1.3.
+    /// Qualifies the stable Swift-NumericCore adapter's linear surface.
     public static func evaluate() -> Report {
         let required = ["numeric-core"]
         let trust = NumericalTrust.evaluate()

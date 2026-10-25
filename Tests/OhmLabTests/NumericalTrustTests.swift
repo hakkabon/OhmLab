@@ -7,15 +7,12 @@ struct NumericalTrustTests {
     @Test func analyticalCorpusQualifiesEveryRequiredBackend() {
         let report = NumericalTrust.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "1.2.0")
+        #expect(report.productVersion == "1.5.0")
         #expect(report.caseCount == 32)
         #expect(report.ready)
         #expect(report.issues.isEmpty)
         #expect(report.backends.first { $0.identifier == "native-mna" }?.passed == true)
         #expect(report.backends.first { $0.identifier == "numeric-core" }?.passed == true)
-        #if canImport(CCOhmCore)
-        #expect(report.backends.first { $0.identifier == "ohm-core" }?.passed == true)
-        #endif
         #expect(report.backends.filter(\.required).allSatisfy { $0.passed })
         #expect(report.backends.allSatisfy { $0.cases.count == report.caseCount })
     }

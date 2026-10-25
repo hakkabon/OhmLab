@@ -3112,28 +3112,6 @@ private struct StubEngineBackend: SimulationEngineBackend {
     #expect(abs((node2 ?? 0) - 2.5) < 1e-9)
 }
 
-#if canImport(CCOhmCore)
-@Test func rustBackendSolvesDividerLikeNative() throws {
-    let backend = RustEngineBackend()
-    #expect(backend.identifier == "ohm-core")
-
-    let settings = AnalysisSettings(
-        runDC: true,
-        runAC: false,
-        acStartFrequency: 1,
-        acStopFrequency: 1e3,
-        acPointsPerDecade: 10
-    )
-    let result = try backend.solve(
-        netlist: "V1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n",
-        settings: settings,
-        libraries: []
-    )
-    let node2 = result.dc?.nodes.first { $0.name == "2" }?.voltage
-    #expect(abs((node2 ?? 0) - 2.5) < 1e-9)
-}
-#endif
-
 // MARK: - Headless / batch (Phase 15)
 
 private let dividerNetlist = "V1 1 0 DC 5\nR1 1 2 1k\nR2 2 0 1k\n"
