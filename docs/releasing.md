@@ -1,4 +1,4 @@
-# Releasing OhmLab 1.x
+# Releasing OhmLab 2.x
 
 Every release candidate must pass `scripts/release-check.sh`. The gate tests the
 standard Swift product, exercises application workflows, and validates frozen
@@ -15,6 +15,11 @@ For OhmLab 1.5 and later, `ohm qualify-nonlinear --json` must report
 `ready: true`. The declared scope must include both `shockley-diode` and
 `level1-nmos-body-tied`, and every differential case must pass.
 
+For OhmLab 2.0 and later, `ohm qualify-platform --json` must report
+`ready: true`, and `ohm platform manifest` must publish portable protocol v1.
+This gate covers deterministic native/NumericCore request execution and
+fail-closed protocol negotiation.
+
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
 documents, release metadata, and a SHA-256 checksum. Without credentials it
@@ -30,16 +35,17 @@ never be committed.
 The archive is architecture-specific. Build and test every intended
 architecture separately until the project adopts a universal-binary build.
 
-Compatibility rules for the 1.x line:
+Compatibility rules for the 2.x line:
 
 - Do not change production-boundary, Circuit IR, result, capability, or
-  nonlinear-convergence versions in a patch release.
-- Production boundary v3 is required for 1.5 because nonlinear maturity and
-  scope are semantic additions and the standalone Rust transport was removed.
+  nonlinear-convergence, or portable-simulation versions in a patch release.
+- Production boundary v4 is required for 2.0 because the portable process
+  contract is a new public compatibility boundary.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
-- Never weaken `ohm doctor`, `ohm verify`, `ohm qualify-linear`, or
-  `ohm qualify-nonlinear`; `ready: false` blocks a release.
+- Never weaken `ohm doctor`, `ohm verify`, `ohm qualify-linear`,
+  `ohm qualify-nonlinear`, or `ohm qualify-platform`; `ready: false` blocks a
+  release.
 - Keep `native-mna` the default and sole full-production backend.
 - Keep `numeric-core` as the sole linear/nonlinear-production backend until a
   later contract explicitly graduates another implementation.

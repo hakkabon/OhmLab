@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 1.5.0" ]]; then
+if [[ "$version" != "ohm 2.0.0" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
@@ -17,13 +17,22 @@ fi
 trust_report="$(mktemp)"
 graduation_report="$(mktemp)"
 nonlinear_report="$(mktemp)"
+platform_report="$(mktemp)"
 report="$(mktemp)"
 artifacts="$(mktemp -d)"
-trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report"; rm -rf "$artifacts"' EXIT
+trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report" "$platform_report"; rm -rf "$artifacts"' EXIT
 .build/debug/ohm verify --json >"$trust_report"
 if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$trust_report"; then
     printf 'numerical trust report is not ready\n' >&2
     cat "$trust_report" >&2
+    exit 1
+fi
+
+.build/debug/ohm qualify-platform --json >"$platform_report"
+if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$platform_report" \
+    || ! rg -q '"protocolVersion"[[:space:]]*:[[:space:]]*1' "$platform_report"; then
+    printf 'portable platform qualification is not ready\n' >&2
+    cat "$platform_report" >&2
     exit 1
 fi
 

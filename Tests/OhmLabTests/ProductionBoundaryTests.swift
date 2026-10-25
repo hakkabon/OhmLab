@@ -42,22 +42,23 @@ struct ProductionBoundaryTests {
         }
     }
 
-    @Test func releaseAndContractsRemainCompatibleAtOneDotFive() {
-        #expect(OhmLabRelease.version == "1.5.0")
-        #expect(OhmLabRelease.productionBoundaryVersion == 3)
+    @Test func releaseAndContractsRemainCompatibleAtTwoDotZero() {
+        #expect(OhmLabRelease.version == "2.0.0")
+        #expect(OhmLabRelease.productionBoundaryVersion == 4)
         #expect(CircuitIR.currentSchemaVersion == 1)
         #expect(SimulationResultContract.currentVersion == 1)
         #expect(SimulationBackendCapabilities.currentContractVersion == 1)
         #expect(NumericalTrust.currentContractVersion == 1)
         #expect(LinearBackendGraduation.currentContractVersion == 1)
         #expect(NonlinearConvergence.currentContractVersion == 1)
+        #expect(PortableSimulationPlatform.currentContractVersion == 1)
     }
 
     @Test func readinessReportQualifiesOnlyTheNativeReference() {
         SimulationEngine.resetToDefaultBackend()
         let report = ProductionBoundary.report()
         #expect(report.ready)
-        #expect(report.productVersion == "1.5.0")
+        #expect(report.productVersion == "2.0.0")
         #expect(report.defaultBackend == "native-mna")
         #expect(report.backends.filter(\.isProductionReady).map(\.identifier) == ["native-mna"])
         #expect(report.backends.filter(\.isLinearProductionReady).map(\.identifier) == ["numeric-core"])

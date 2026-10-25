@@ -20,6 +20,7 @@ two purposes:
 | `05-diode-drop.cir` | Nonlinear DC (Newton–Raphson) | forward drop `≈ 0.655 V` at `1 mA` |
 | `06-subcircuit-attenuator.cir` | `.subckt` expansion | `v(2) = 2 V` from a `4 V` source |
 | `07-project-bundle.ohmlabproj/` | Project-bundle format | a single-sheet bundle wrapping the divider |
+| `portable-divider-request.json` | Portable protocol v1 | NumericCore returns `v(out) = 2.5 V` |
 
 ## Running them
 
@@ -30,6 +31,7 @@ swift build
 ohm Examples/01-voltage-divider.cir
 ohm Examples/02-rc-lowpass.cir -f json
 ohm monte-carlo Examples/07-project-bundle.ohmlabproj --probe 'v(2)' --default-tol 5%
+ohm platform run --pretty < Examples/portable-divider-request.json
 ```
 
 ## Checking them
@@ -42,8 +44,8 @@ every example:
 swift test --filter ExampleCircuitsTests
 ```
 
-For a full health check of the whole codebase (build, unit tests, examples, the
-Rust core, and CLI smoke tests), run:
+For a full health check of the whole codebase (build, unit tests, examples,
+portable protocol, and CLI smoke tests), run:
 
 ```sh
 scripts/health-check.sh

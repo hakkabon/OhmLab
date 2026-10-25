@@ -75,6 +75,16 @@ public enum EngineBackends {
         return factory?().capabilities
     }
 
+    /// Creates an isolated backend instance without changing process-wide
+    /// selection. Portable request hosts use this so concurrent callers cannot
+    /// affect one another through the application registry.
+    public static func make(_ name: String) -> (any SimulationEngineBackend)? {
+        lock.lock()
+        let factory = factories[name.lowercased()]
+        lock.unlock()
+        return factory?()
+    }
+
     /// Registers (or replaces) a backend factory under `name` (case-insensitive).
     public static func register(name: String, factory: @escaping Factory) {
         lock.lock(); defer { lock.unlock() }

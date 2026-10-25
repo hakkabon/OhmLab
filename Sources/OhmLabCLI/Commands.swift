@@ -26,7 +26,7 @@ enum CommandError: LocalizedError {
 
 enum Subcommand {
     static let names: Set<String> = [
-        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "qualify-platform", "platform", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
     ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
@@ -50,6 +50,8 @@ enum Subcommand {
         case "verify": return try runVerify(Array(arguments.dropFirst()))
         case "qualify-linear": return try runLinearQualification(Array(arguments.dropFirst()))
         case "qualify-nonlinear": return try runNonlinearQualification(Array(arguments.dropFirst()))
+        case "qualify-platform": return try runPlatformQualification(Array(arguments.dropFirst()))
+        case "platform": return try runPlatform(Array(arguments.dropFirst()))
         case "project": return try runProject(Array(arguments.dropFirst()))
         case "kicad": return try runKicad(Array(arguments.dropFirst()))
         case "sync": return try runSync(Array(arguments.dropFirst()))
@@ -189,6 +191,66 @@ enum Subcommand {
             writeStdout(report.ready ? "CONVERGED\n" : "NOT CONVERGED\n")
         }
         return report.ready ? 0 : 1
+    }
+
+    // MARK: - portable simulation platform
+
+    private static func runPlatformQualification(_ arguments: [String]) throws -> Int32 {
+        guard arguments.isEmpty || arguments == ["--json"] else {
+            throw CommandError.usage("usage: ohm qualify-platform [--json]")
+        }
+        let report = PortablePlatformQualification.evaluate()
+        if arguments == ["--json"] {
+            let data = try PortableSimulationPlatform.encode(report, pretty: true)
+            writeStdout(String(decoding: data, as: UTF8.self) + "\n")
+        } else {
+            let passed = report.cases.filter(\.passed).count
+            writeStdout("OhmLab portable platform qualification v\(report.contractVersion)\n")
+            writeStdout("  protocol v\(report.protocolVersion): \(passed)/\(report.cases.count) cases\n")
+            for issue in report.issues { writeStdout("  issue: \(issue)\n") }
+            writeStdout(report.ready ? "PORTABLE\n" : "NOT PORTABLE\n")
+        }
+        return report.ready ? 0 : 1
+    }
+
+    private static func runPlatform(_ arguments: [String]) throws -> Int32 {
+        guard let action = arguments.first else {
+            throw CommandError.usage("usage: ohm platform <manifest|run> [--pretty]")
+        }
+        let options = Array(arguments.dropFirst())
+        guard options.isEmpty || options == ["--pretty"] else {
+            throw CommandError.usage("usage: ohm platform <manifest|run> [--pretty]")
+        }
+        let pretty = options == ["--pretty"]
+        switch action {
+        case "manifest":
+            let data = try PortableSimulationPlatform.encode(PortableSimulationPlatform.manifest, pretty: pretty)
+            writeStdout(String(decoding: data, as: UTF8.self) + "\n")
+            return 0
+        case "run":
+            let input = try readPortableRequest()
+            let response = PortableSimulationPlatform.execute(input)
+            let data = try PortableSimulationPlatform.encode(response, pretty: pretty)
+            writeStdout(String(decoding: data, as: UTF8.self) + "\n")
+            return response.succeeded ? 0 : 1
+        default:
+            throw CommandError.usage("usage: ohm platform <manifest|run> [--pretty]")
+        }
+    }
+
+    /// Reads no more than the contract limit plus one sentinel byte. This
+    /// prevents an untrusted stdin producer from forcing unbounded allocation
+    /// before the protocol's size check can run.
+    private static func readPortableRequest() throws -> Data {
+        let maximum = PortableSimulationPlatform.limits.maximumRequestBytes
+        var data = Data()
+        while data.count <= maximum {
+            let remaining = maximum + 1 - data.count
+            guard let chunk = try FileHandle.standardInput.read(upToCount: min(64 * 1_024, remaining)),
+                  !chunk.isEmpty else { break }
+            data.append(chunk)
+        }
+        return data
     }
 
     // MARK: - engines

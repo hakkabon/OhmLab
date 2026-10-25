@@ -83,6 +83,28 @@ and fail closed in the adapter. Run `ohm qualify-nonlinear [--json]`; see
 [`docs/contracts/nonlinear-convergence-v1.md`](docs/contracts/nonlinear-convergence-v1.md)
 and [`docs/contracts/production-boundary-v3.md`](docs/contracts/production-boundary-v3.md).
 
+## 2.0 Portable Simulation Platform
+
+OhmLab 2.0 exposes simulation as a bounded, versioned JSON request/response
+protocol. A caller supplies Circuit IR, an explicit analysis plan, and a
+backend name; the host returns a typed result or a stable failure envelope.
+Execution uses an isolated backend instance, so service requests cannot change
+the desktop application's selected engine. The Swift package publishes the
+`OhmLabSimulationPlatform` library product for embedding.
+
+Use `ohm platform manifest [--pretty]` for discovery and pipe one request into
+`ohm platform run [--pretty]` for execution. The shipped
+`Examples/portable-divider-request.json` is a complete wire example.
+`ohm qualify-platform [--json]` validates deterministic native and NumericCore
+round trips, nonlinear transport, and fail-closed negotiation. See
+[`docs/contracts/portable-simulation-v1.md`](docs/contracts/portable-simulation-v1.md)
+and [`docs/contracts/production-boundary-v4.md`](docs/contracts/production-boundary-v4.md).
+
+“Portable” refers to the stable data/process boundary. The current SwiftUI app
+and prebuilt Swift-NumericCore dependency still target Apple platforms; the
+protocol deliberately makes future Linux, server, or other-language hosts
+possible without changing clients.
+
 ## Architecture: The Four-Layer Model
 
 Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
@@ -313,7 +335,7 @@ scripts/health-check.sh
 
 `swift test` proves every example via `ExampleCircuitsTests`, so the examples double as end-to-end regression tests of the parser, engine, and bundle format. See `Examples/README.md` for the full list and the directive format.
 
-`scripts/health-check.sh` runs the whole thing in one command: `swift build`, `swift test`, `cargo test` (when cargo is present), and `ohm` smoke tests of every example, the project bundle, the analyses, KiCad export, and the sync engine. It exits non-zero if anything fails, so it is safe to wire into CI.
+`scripts/health-check.sh` runs the whole thing in one command: `swift build`, `swift test`, and `ohm` smoke tests of every example, the portable protocol, the project bundle, the analyses, KiCad export, and the sync engine. It exits non-zero if anything fails, so it is safe to wire into CI.
 
 ## Workflows
 
@@ -338,6 +360,7 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 *   **Output** — `-f csv` (the long-format table used by the app's export) or `-f json` (the structured `CircuitResultJSON` projection: `dc`/`ac`/`transient`/`sweep`/`fourier` plus `warnings`), to stdout or `-o <file>`.
 *   **Engine** — `-e native` (default) or `-e numeric-core`; unknown names error out and list what is available.
 *   **Exit status** — `0` success, `1` simulation/parse error, `2` usage error; non-fatal notes go to stderr (suppress with `-q`).
+*   **Portable protocol** — `ohm platform manifest` discovers the wire contract and `ohm platform run` reads one Circuit-IR request from stdin and writes one response to stdout.
 
 `BatchRunner` (in `OhmLabCore`) is the testable core of this: it is pure (no file I/O beyond what it is handed), and the CLI adds argument parsing, file reading, and output writing on top.
 
@@ -351,6 +374,8 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 *   `ohm monte-carlo <input> --probe v(out) [--tol R1=5%,normal] [--default-tol 5%] [--samples N] [--seed N] [--temp T] [--temp-tol D] [--limit v(out)=lo:hi] [-f text|json]`.
 *   `ohm corner <input> --probe v(out) [--tol …] [--temp T --temp-tol D] [-f text|json]`.
 *   `ohm optimize <input> --var R1=1k:10k --probe v(out) [--goal max|min|target=V] [--grid N] [-f text|json]`.
+*   `ohm platform manifest|run [--pretty]` — discover or execute portable simulation protocol v1.
+*   `ohm qualify-platform [--json]` — run the portable-platform release contract.
 
 The analysis inputs accept the same documents/netlists as the flat mode, including a `.ohmlab` file (which supplies its saved settings) or a `.ohmlabproj` bundle's active sheet.
 

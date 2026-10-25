@@ -47,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 1.5 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 1.5.0"'
+run "OhmLab 2.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 2.0.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
@@ -58,6 +58,11 @@ run "linear-production qualification" "$ohm" qualify-linear --json
 
 section "Nonlinear convergence"
 run "nonlinear-production qualification" "$ohm" qualify-nonlinear --json
+
+section "Portable simulation platform"
+run "portable host manifest" "$ohm" platform manifest
+run "portable request execution" bash -c '.build/debug/ohm platform run < Examples/portable-divider-request.json'
+run "portable protocol qualification" "$ohm" qualify-platform --json
 
 section "Example circuits — CLI runs"
 for file in Examples/*.cir; do

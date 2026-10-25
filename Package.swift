@@ -51,6 +51,7 @@ let package = Package(
     // ── Products ─────────────────────────────────────────────────────────────
     products: [
         .library(name: "OhmLabCore", targets: ["OhmLabCore"]),
+        .library(name: "OhmLabSimulationPlatform", targets: ["OhmLabCore"]),
         .executable(name: "OhmLab", targets: ["OhmLab"]),
         .executable(name: "ohm", targets: ["OhmLabCLI"]),
     ],
