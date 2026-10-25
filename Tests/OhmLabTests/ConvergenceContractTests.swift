@@ -58,7 +58,7 @@ struct ConvergenceContractTests {
         let numeric = try #require(matrix.first { $0.backendIdentifier == "numeric-core" })
         #expect(native.analyses == SimulationAnalysisKind.allCases.sorted())
         #expect(native.devices == CircuitIR.DeviceKind.allCases.sorted())
-        #expect(numeric.analyses == [.acSmallSignal, .dcOperatingPoint, .transient])
+        #expect(numeric.analyses == [.acSmallSignal, .dcOperatingPoint, .dcSweep, .transient])
         #expect(numeric.devices == [.capacitor, .currentSource, .diode, .inductor, .mosfet, .resistor, .voltageSource])
         #expect(numeric.supports(.transient))
         #expect(numeric.supports(.circuitIRInput))

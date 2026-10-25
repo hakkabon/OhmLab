@@ -32,7 +32,7 @@ struct PortableSimulationPlatformTests {
 
     @Test func manifestPublishesStableBoundaryAndQualifiedBackends() {
         let manifest = PortableSimulationPlatform.manifest
-        #expect(manifest.productVersion == "2.2.0")
+        #expect(manifest.productVersion == "2.3.0")
         #expect(manifest.protocolVersion == 1)
         #expect(manifest.circuitIRVersion == 1)
         #expect(manifest.simulationResultVersion == 1)
@@ -68,7 +68,7 @@ struct PortableSimulationPlatformTests {
         #expect(response.backend == "numeric-core")
         #expect(response.result?.dc?.nodes.first { $0.name == "out" }?.value == 2.5)
         #expect(response.result?.ac?.frequencies.count == 2)
-        #expect(response.provenance?.productVersion == "2.2.0")
+        #expect(response.provenance?.productVersion == "2.3.0")
         #expect(response.provenance?.modelSource == "embedded-circuit-ir")
         #expect(response.provenance?.requestSHA256.count == 64)
         #expect(try PortableSimulationPlatform.encode(response) == PortableSimulationPlatform.encode(response))
@@ -201,10 +201,12 @@ struct PortableSimulationPlatformTests {
         #expect(PortableSimulationPlatform.execute(unknown).error?.code == .unknownBackend)
 
         let sweep = PortableSimulationPlatform.Request(
-            requestID: "unsupported", backend: "numeric-core", circuit: circuit,
+            requestID: "numeric-core-sweep", backend: "numeric-core", circuit: circuit,
             analysis: .init(dcOperatingPoint: false, dcSweep: .init(source: "V1", start: 0, stop: 5, step: 1))
         )
-        #expect(PortableSimulationPlatform.execute(sweep).error?.code == .unsupportedCapability)
+        let sweepResponse = PortableSimulationPlatform.execute(sweep)
+        #expect(sweepResponse.succeeded)
+        #expect(sweepResponse.result?.sweep?.points.count == 6)
 
         let malformed = PortableSimulationPlatform.execute(Data("not-json".utf8))
         #expect(malformed.error?.code == .invalidRequest)
@@ -226,7 +228,7 @@ struct PortableSimulationPlatformTests {
     @Test func executableQualificationPasses() {
         let report = PortablePlatformQualification.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "2.2.0")
+        #expect(report.productVersion == "2.3.0")
         #expect(report.cases.count == 8)
         #expect(report.cases.allSatisfy { $0.passed })
         #expect(report.issues.isEmpty)

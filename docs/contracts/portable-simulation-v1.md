@@ -85,3 +85,7 @@ changing clients.
 
 OhmLab 2.2 supplies the first non-Swift implementation: the Linux/macOS native
 Rust host described by [native Rust portability v1](native-rust-portability-v1.md).
+OhmLab 2.3 advances that host to
+[native Rust portability v2](native-rust-portability-v2.md), completing the
+protocol's DC, AC, transient, and single-source DC-sweep analysis plan through
+the [NumericCore feature-completion contract](numeric-core-feature-completion-v1.md).

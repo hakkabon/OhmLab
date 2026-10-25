@@ -1,17 +1,18 @@
 use nc_optimize::{
-    CircuitAcExcitation, CircuitDevice, CircuitModel, CircuitNode, CircuitOperatingPoint,
-    CircuitSource, CircuitWaveform, NonlinearSystemOptions, NonlinearSystemTermination,
+    consistent_dae_initial_conditions, CircuitAcExcitation, CircuitDevice, CircuitModel,
+    CircuitNode, CircuitOperatingPoint, CircuitSource, CircuitWaveform, NonlinearSystemOptions,
+    NonlinearSystemTermination, TimeIntegrationOptions, TimeIntegrationTermination,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const PRODUCT_VERSION: &str = "2.2.0";
-pub const IMPLEMENTATION_VERSION: &str = "rust-numeric-core-0.34.0-native";
+pub const PRODUCT_VERSION: &str = "2.3.0";
+pub const IMPLEMENTATION_VERSION: &str = "rust-numeric-core-0.34.0-native.2";
 pub const BACKEND: &str = "rust-numeric-core";
 pub const PROTOCOL_VERSION: u32 = 1;
-pub const HOST_CONTRACT_VERSION: u32 = 1;
+pub const HOST_CONTRACT_VERSION: u32 = 2;
 pub const MEDIA_TYPE: &str = "application/vnd.ohmlab.simulation+json;version=1";
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_NODES: usize = 100_000;
@@ -38,7 +39,8 @@ pub fn manifest_json() -> String {
         "protocolVersion": PROTOCOL_VERSION,
         "rustNumericCoreVersion": "0.34.0",
         "simulationResultVersion": 1,
-        "supportedAnalyses": ["ac-small-signal", "dc-operating-point"]
+        "supportedAnalyses": ["ac-small-signal", "dc-operating-point", "dc-sweep", "transient"],
+        "supportedFeatures": ["circuit-ir-input", "initial-conditions", "source-waveforms"]
     })).expect("static manifest is serializable")
 }
 
@@ -47,12 +49,16 @@ pub fn qualification_json() -> Execution {
     let ac = execute(&divider_request(true));
     let diode = execute(&nonlinear_request(true));
     let nmos = execute(&nonlinear_request(false));
+    let transient = execute(&transient_request());
+    let sweep = execute(&sweep_request());
     let malformed = execute(br#"{"protocolVersion":1,"unexpected":true}"#);
     let manifest: Value = serde_json::from_str(&manifest_json()).expect("manifest is JSON");
     let dc_json: Value = serde_json::from_str(&dc.json).expect("response is JSON");
     let ac_json: Value = serde_json::from_str(&ac.json).expect("response is JSON");
     let diode_json: Value = serde_json::from_str(&diode.json).expect("response is JSON");
     let nmos_json: Value = serde_json::from_str(&nmos.json).expect("response is JSON");
+    let transient_json: Value = serde_json::from_str(&transient.json).expect("response is JSON");
+    let sweep_json: Value = serde_json::from_str(&sweep.json).expect("response is JSON");
     let cases = vec![
         qualification_case(
             "native-rust-runtime",
@@ -95,12 +101,32 @@ pub fn qualification_json() -> Execution {
                     .is_some_and(|value| value > 0.0 && value < 5.0),
             "Circuit IR body-tied NMOS maps into the native Rust model",
         ),
+        qualification_case(
+            "transient-initial-conditions",
+            transient.succeeded
+                && numeric(
+                    &transient_json,
+                    &["result", "transient", "nodes", "0", "values", "0"],
+                )
+                .is_some_and(|value| (value - 1.0).abs() <= 1e-9),
+            "native DAE transient preserves Circuit IR initial conditions",
+        ),
+        qualification_case(
+            "dc-source-sweep",
+            sweep.succeeded
+                && numeric(
+                    &sweep_json,
+                    &["result", "sweep", "points", "2", "nodes", "1", "value"],
+                )
+                .is_some_and(|value| (value - 2.5).abs() <= 1e-12),
+            "native source sweep returns one operating point per coordinate",
+        ),
     ];
     let ready = cases.iter().all(|case| case["passed"] == true);
     Execution {
         json: serde_json::to_string(&json!({
             "cases": cases,
-            "contractVersion": 1,
+            "contractVersion": HOST_CONTRACT_VERSION,
             "host": BACKEND,
             "productVersion": PRODUCT_VERSION,
             "ready": ready,
@@ -109,6 +135,32 @@ pub fn qualification_json() -> Execution {
         .expect("qualification is serializable"),
         succeeded: ready,
     }
+}
+
+fn transient_request() -> Vec<u8> {
+    let mut request: Value = serde_json::from_slice(&divider_request(false)).unwrap();
+    request["requestID"] = json!("rust-transient");
+    request["analysis"] = json!({
+        "dcOperatingPoint": false,
+        "transient": {"start": 0.0, "step": 0.001, "stop": 0.002}
+    });
+    request["circuit"]["devices"] = json!([
+        {"kind":"resistor","name":"R1","terminals":[1,0],"value":1000},
+        {"kind":"capacitor","name":"C1","terminals":[1,0],"value":0.000001}
+    ]);
+    request["circuit"]["nodes"] = json!([{"name":"0"},{"name":"out"}]);
+    request["circuit"]["initialConditions"]["nodeVoltages"] = json!({"out": 1.0});
+    serde_json::to_vec(&request).unwrap()
+}
+
+fn sweep_request() -> Vec<u8> {
+    let mut request: Value = serde_json::from_slice(&divider_request(false)).unwrap();
+    request["requestID"] = json!("rust-sweep");
+    request["analysis"] = json!({
+        "dcOperatingPoint": false,
+        "dcSweep": {"source": "V1", "start": 0.0, "stop": 5.0, "step": 2.5}
+    });
+    serde_json::to_vec(&request).unwrap()
 }
 
 fn qualification_case(identifier: &str, passed: bool, detail: &str) -> Value {
@@ -217,14 +269,11 @@ pub fn execute(input: &[u8]) -> Execution {
             "native Rust host accepts only rust-numeric-core",
         );
     }
-    if request.analysis.dc_sweep.is_some() || request.analysis.transient.is_some() {
-        return encoded_failure(
-            &request_id,
-            "unsupported-capability",
-            "native Rust host 2.2 supports DC and AC analysis",
-        );
-    }
-    if !request.analysis.dc_operating_point && request.analysis.ac.is_none() {
+    if !request.analysis.dc_operating_point
+        && request.analysis.ac.is_none()
+        && request.analysis.transient.is_none()
+        && request.analysis.dc_sweep.is_none()
+    {
         return encoded_failure(
             &request_id,
             "invalid-request",
@@ -286,6 +335,18 @@ fn solve(request: Request, digest: String) -> Result<SuccessResponse, HostError>
         .as_ref()
         .map(|analysis| bridge.ac_result(&operating, analysis))
         .transpose()?;
+    let transient = request
+        .analysis
+        .transient
+        .as_ref()
+        .map(|analysis| bridge.transient_result(&operating, analysis))
+        .transpose()?;
+    let sweep = request
+        .analysis
+        .dc_sweep
+        .as_ref()
+        .map(|analysis| Bridge::sweep_result(&request.circuit, analysis))
+        .transpose()?;
     Ok(SuccessResponse {
         protocol_version: PROTOCOL_VERSION,
         request_id: request.request_id,
@@ -306,6 +367,8 @@ fn solve(request: Request, digest: String) -> Result<SuccessResponse, HostError>
             contract_version: 1,
             dc,
             ac,
+            transient,
+            sweep,
             fourier: Vec::new(),
             warnings: Vec::new(),
         },
@@ -324,6 +387,7 @@ fn nonlinear_options(solver: &SolverConfiguration) -> NonlinearSystemOptions {
 struct Bridge<'a> {
     circuit: &'a Circuit,
     model: CircuitModel,
+    source_override: Option<(usize, f64)>,
 }
 
 impl<'a> Bridge<'a> {
@@ -380,7 +444,10 @@ impl<'a> Bridge<'a> {
                         positive: terminals[0],
                         negative: terminals[1],
                         source: source(device)?,
-                        initial_current: 0.0,
+                        initial_current: initial_currents
+                            .get(&device.name.to_lowercase())
+                            .copied()
+                            .unwrap_or(0.0),
                     },
                     DeviceKind::Diode => {
                         require_nominal_temperature(circuit, device)?;
@@ -427,7 +494,11 @@ impl<'a> Bridge<'a> {
         }
         let model =
             CircuitModel::new(nodes, circuit.reference_node, devices).map_err(simulation)?;
-        Ok(Self { circuit, model })
+        Ok(Self {
+            circuit,
+            model,
+            source_override: None,
+        })
     }
 
     fn dc_result(&self, operating: &CircuitOperatingPoint) -> Result<DcResult, HostError> {
@@ -440,7 +511,8 @@ impl<'a> Bridge<'a> {
             .circuit
             .devices
             .iter()
-            .map(|device| {
+            .enumerate()
+            .map(|(index, device)| {
                 let voltage = operating.node_voltages[device.terminals[0]]
                     - operating.node_voltages[device.terminals[1]];
                 let current = match device.kind {
@@ -451,7 +523,11 @@ impl<'a> Bridge<'a> {
                             simulation(format!("missing branch current for {}", device.name))
                         })?
                     }
-                    DeviceKind::CurrentSource => device.source.as_ref().unwrap().dc_value,
+                    DeviceKind::CurrentSource => self
+                        .source_override
+                        .filter(|(source_index, _)| *source_index == index)
+                        .map(|(_, value)| value)
+                        .unwrap_or_else(|| device.source.as_ref().unwrap().dc_value),
                     DeviceKind::Diode => diode_current(device, voltage)?,
                     DeviceKind::Mosfet => nmos_current(device, &operating.node_voltages)?,
                     DeviceKind::Bjt | DeviceKind::Jfet => {
@@ -623,6 +699,233 @@ impl<'a> Bridge<'a> {
                 .collect(),
         })
     }
+
+    fn transient_result(
+        &self,
+        operating: &CircuitOperatingPoint,
+        analysis: &TransientAnalysis,
+    ) -> Result<TransientResult, HostError> {
+        let times = analysis.times()?;
+        let series_count = self.circuit.nodes.len().saturating_sub(1) + self.circuit.devices.len();
+        if times.len().saturating_mul(series_count) > MAX_PROJECTED_VALUES {
+            return Err(invalid(
+                "transient result exceeds the native host projection budget",
+            ));
+        }
+        let integration_end = *times
+            .last()
+            .ok_or_else(|| invalid("invalid transient analysis"))?;
+        let mut initial = operating.state.clone();
+        let node_overrides = lower_map(&self.circuit.initial_conditions.node_voltages);
+        for (node, description) in self.circuit.nodes.iter().enumerate() {
+            if let (Some(value), Some(unknown)) = (
+                node_overrides.get(&description.name.to_lowercase()),
+                self.model.node_unknown_index(node).map_err(simulation)?,
+            ) {
+                initial[unknown] = *value;
+            }
+        }
+        let current_overrides = lower_map(&self.circuit.initial_conditions.element_currents);
+        for (device, description) in self.circuit.devices.iter().enumerate() {
+            if let (Some(value), Some(unknown)) = (
+                current_overrides.get(&description.name.to_lowercase()),
+                self.model
+                    .branch_unknown_index(device)
+                    .map_err(simulation)?,
+            ) {
+                initial[unknown] = *value;
+            }
+        }
+        let zero_derivative = self.model.zero_derivative();
+        let evaluation = self
+            .model
+            .dae_evaluation(analysis.start, &initial, &zero_derivative)
+            .map_err(simulation)?;
+        let free_state = (0..initial.len())
+            .map(|column| {
+                evaluation
+                    .jacobian_derivative
+                    .iter()
+                    .all(|row| row[column].abs() <= f64::EPSILON)
+            })
+            .collect::<Vec<_>>();
+        let consistent = consistent_dae_initial_conditions(
+            analysis.start,
+            &initial,
+            &zero_derivative,
+            &free_state,
+            self.circuit.solver.maximum_iterations,
+            self.circuit.solver.absolute_voltage_tolerance,
+            |time, state, derivative| self.model.dae_evaluation(time, state, derivative),
+        )
+        .map_err(simulation)?;
+        let integrated = self
+            .model
+            .transient(
+                analysis.start,
+                integration_end,
+                &consistent.state,
+                &consistent.derivative,
+                TimeIntegrationOptions {
+                    absolute_tolerance: self.circuit.solver.absolute_voltage_tolerance,
+                    relative_tolerance: self.circuit.solver.relative_tolerance,
+                    initial_step: analysis.step,
+                    minimum_step: (analysis.step * 1e-9).max(1e-15),
+                    maximum_step: analysis.step,
+                    max_steps: MAX_SAMPLES,
+                    max_rejected_steps: 10_000,
+                    max_newton_iterations: self.circuit.solver.maximum_iterations,
+                    newton_tolerance: self.circuit.solver.absolute_voltage_tolerance,
+                },
+            )
+            .map_err(simulation)?;
+        if integrated.termination != TimeIntegrationTermination::ReachedEnd {
+            return Err(simulation(format!(
+                "transient integration terminated as {:?}",
+                integrated.termination
+            )));
+        }
+        let states = times
+            .iter()
+            .map(|time| {
+                integrated
+                    .evaluate(*time)
+                    .ok_or_else(|| simulation("transient result cannot be sampled"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut node_values = vec![Vec::with_capacity(times.len()); self.circuit.nodes.len()];
+        let mut component_values =
+            vec![Vec::with_capacity(times.len()); self.circuit.devices.len()];
+        let mut previous_voltages = vec![0.0; self.circuit.devices.len()];
+        for (sample, state) in states.iter().enumerate() {
+            let voltages = self.model.node_voltages(state).map_err(simulation)?;
+            for (node, value) in voltages.iter().enumerate() {
+                node_values[node].push(*value);
+            }
+            for (index, device) in self.circuit.devices.iter().enumerate() {
+                let voltage = voltages[device.terminals[0]] - voltages[device.terminals[1]];
+                let current = match device.kind {
+                    DeviceKind::Resistor => voltage / device.value.unwrap(),
+                    DeviceKind::Capacitor => {
+                        if sample == 0 {
+                            0.0
+                        } else {
+                            device.value.unwrap() * (voltage - previous_voltages[index])
+                                / (times[sample] - times[sample - 1])
+                        }
+                    }
+                    DeviceKind::Inductor | DeviceKind::VoltageSource => {
+                        let branch = self
+                            .model
+                            .branch_unknown_index(index)
+                            .map_err(simulation)?
+                            .ok_or_else(|| {
+                                simulation(format!("missing branch current for {}", device.name))
+                            })?;
+                        state[branch]
+                    }
+                    DeviceKind::CurrentSource => source_value(device, times[sample])?,
+                    DeviceKind::Diode => diode_current(device, voltage)?,
+                    DeviceKind::Mosfet => nmos_current(device, &voltages)?,
+                    DeviceKind::Bjt | DeviceKind::Jfet => {
+                        return Err(unsupported(format!("{} is not supported", device.name)))
+                    }
+                };
+                component_values[index].push(current);
+                previous_voltages[index] = voltage;
+            }
+        }
+        Ok(TransientResult {
+            times,
+            nodes: self
+                .circuit
+                .nodes
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(index, node)| NamedSeries {
+                    name: node.name.clone(),
+                    values: std::mem::take(&mut node_values[index]),
+                })
+                .collect(),
+            components: self
+                .circuit
+                .devices
+                .iter()
+                .enumerate()
+                .map(|(index, device)| NamedSeries {
+                    name: device.name.clone(),
+                    values: std::mem::take(&mut component_values[index]),
+                })
+                .collect(),
+        })
+    }
+
+    fn sweep_result(circuit: &Circuit, analysis: &DcSweep) -> Result<SweepResult, HostError> {
+        let values = analysis.values()?;
+        let point_width = circuit.nodes.len().saturating_sub(1) + circuit.devices.len();
+        if values.len().saturating_mul(point_width) > MAX_PROJECTED_VALUES {
+            return Err(invalid(
+                "DC sweep result exceeds the native host projection budget",
+            ));
+        }
+        let source_index = circuit
+            .devices
+            .iter()
+            .position(|device| {
+                device.name.eq_ignore_ascii_case(&analysis.source)
+                    && matches!(
+                        device.kind,
+                        DeviceKind::VoltageSource | DeviceKind::CurrentSource
+                    )
+            })
+            .ok_or_else(|| invalid(format!("unknown DC sweep source {}", analysis.source)))?;
+        let mut points = Vec::with_capacity(values.len());
+        let mut previous: Option<Vec<f64>> = None;
+        for value in &values {
+            let bridge = Bridge::new_with_source_override(circuit, source_index, *value)?;
+            let operating = bridge
+                .model
+                .dc_operating_point_continuation(
+                    previous.as_deref(),
+                    nonlinear_options(&circuit.solver),
+                    Default::default(),
+                )
+                .map_err(simulation)?;
+            let dc = bridge.dc_result(&operating)?;
+            previous = Some(operating.state);
+            points.push(SweepPoint {
+                coordinates: vec![NamedValue {
+                    name: analysis.source.clone(),
+                    value: *value,
+                }],
+                nodes: dc.nodes,
+                components: dc.components,
+            });
+        }
+        Ok(SweepResult {
+            axes: vec![SweepAxis {
+                name: analysis.source.clone(),
+                values,
+            }],
+            points,
+        })
+    }
+
+    fn new_with_source_override(
+        circuit: &'a Circuit,
+        source_index: usize,
+        value: f64,
+    ) -> Result<Self, HostError> {
+        let mut bridge = Self::new(circuit)?;
+        match &mut bridge.model.devices[source_index] {
+            CircuitDevice::VoltageSource { source, .. }
+            | CircuitDevice::CurrentSource { source, .. } => source.dc = value,
+            _ => return Err(invalid("DC sweep target is not an independent source")),
+        }
+        bridge.source_override = Some((source_index, value));
+        Ok(bridge)
+    }
 }
 
 fn lower_map(values: &BTreeMap<String, f64>) -> BTreeMap<String, f64> {
@@ -691,6 +994,66 @@ fn source(device: &Device) -> Result<CircuitSource, HostError> {
     Ok(match waveform {
         Some(waveform) => CircuitSource::transient(value.dc_value, waveform),
         None => CircuitSource::dc(value.dc_value),
+    })
+}
+
+fn source_value(device: &Device, time: f64) -> Result<f64, HostError> {
+    let source = device
+        .source
+        .as_ref()
+        .ok_or_else(|| invalid(format!("{} has no source", device.name)))?;
+    let Some(waveform) = source.transient.as_ref() else {
+        return Ok(source.dc_value);
+    };
+    Ok(match waveform.kind {
+        WaveformKind::Pulse => {
+            let low = waveform.parameter("initial")?;
+            let high = waveform.parameter("pulsed")?;
+            let delay = waveform.parameter("delay")?;
+            let rise = waveform.parameter("riseTime")?;
+            let fall = waveform.parameter("fallTime")?;
+            let width = waveform.parameter("pulseWidth")?;
+            let period = waveform.parameter("period")?;
+            if time < delay {
+                low
+            } else {
+                let local = if period > 0.0 {
+                    (time - delay) % period
+                } else {
+                    time - delay
+                };
+                if rise > 0.0 && local < rise {
+                    low + (high - low) * local / rise
+                } else if local < rise + width {
+                    high
+                } else if fall > 0.0 && local < rise + width + fall {
+                    high + (low - high) * (local - rise - width) / fall
+                } else {
+                    low
+                }
+            }
+        }
+        WaveformKind::Sine => {
+            let delay = waveform.parameter("delay")?;
+            let damping = waveform.parameter("damping")?;
+            if delay != 0.0 || damping != 0.0 {
+                return Err(unsupported(format!(
+                    "{} uses delayed or damped sine",
+                    device.name
+                )));
+            }
+            waveform.parameter("offset")?
+                + waveform.parameter("amplitude")?
+                    * (std::f64::consts::TAU * waveform.parameter("frequency")? * time
+                        + waveform.parameter("phaseDegrees")?.to_radians())
+                    .sin()
+        }
+        WaveformKind::Pwl => {
+            return Err(unsupported(format!(
+                "{} uses a piecewise-linear waveform",
+                device.name
+            )))
+        }
     })
 }
 
@@ -866,25 +1229,72 @@ enum SweepKind {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TransientAnalysis {
-    #[allow(dead_code)]
     step: f64,
-    #[allow(dead_code)]
     stop: f64,
-    #[allow(dead_code)]
     start: f64,
+}
+
+impl TransientAnalysis {
+    fn times(&self) -> Result<Vec<f64>, HostError> {
+        if !self.step.is_finite()
+            || !self.start.is_finite()
+            || !self.stop.is_finite()
+            || self.step <= 0.0
+            || self.start < 0.0
+            || self.stop <= self.start
+        {
+            return Err(invalid("invalid transient analysis"));
+        }
+        let steps = ((self.stop - self.start) / self.step).ceil() as usize;
+        if steps == 0 || steps >= MAX_SAMPLES {
+            return Err(invalid("transient analysis exceeds sample limit"));
+        }
+        Ok((0..=steps)
+            .map(|index| self.start + index as f64 * self.step)
+            .collect())
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DcSweep {
-    #[allow(dead_code)]
     source: String,
-    #[allow(dead_code)]
     start: f64,
-    #[allow(dead_code)]
     stop: f64,
-    #[allow(dead_code)]
     step: f64,
+}
+
+impl DcSweep {
+    fn values(&self) -> Result<Vec<f64>, HostError> {
+        if self.source.is_empty()
+            || !self.start.is_finite()
+            || !self.stop.is_finite()
+            || !self.step.is_finite()
+            || self.step == 0.0
+            || (self.stop > self.start && self.step < 0.0)
+            || (self.stop < self.start && self.step > 0.0)
+        {
+            return Err(invalid("invalid DC sweep"));
+        }
+        let steps = ((self.stop - self.start) / self.step).abs().ceil() as usize;
+        if steps >= MAX_SAMPLES {
+            return Err(invalid("DC sweep exceeds sample limit"));
+        }
+        let mut values = (0..=steps)
+            .map(|index| self.start + index as f64 * self.step)
+            .take_while(|value| {
+                if self.step > 0.0 {
+                    *value <= self.stop
+                } else {
+                    *value >= self.stop
+                }
+            })
+            .collect::<Vec<_>>();
+        if values.last().copied() != Some(self.stop) {
+            values.push(self.stop);
+        }
+        Ok(values)
+    }
 }
 
 #[derive(Deserialize)]
@@ -1205,6 +1615,10 @@ struct SimulationResult {
     dc: Option<DcResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ac: Option<AcResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transient: Option<TransientResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sweep: Option<SweepResult>,
     fourier: Vec<Value>,
     warnings: Vec<String>,
 }
@@ -1244,6 +1658,38 @@ struct FrequencyPoint {
     #[serde(rename = "magnitudeDB")]
     magnitude_db: f64,
     phase_degrees: f64,
+}
+
+#[derive(Serialize)]
+struct TransientResult {
+    times: Vec<f64>,
+    nodes: Vec<NamedSeries>,
+    components: Vec<NamedSeries>,
+}
+
+#[derive(Serialize)]
+struct NamedSeries {
+    name: String,
+    values: Vec<f64>,
+}
+
+#[derive(Serialize)]
+struct SweepAxis {
+    name: String,
+    values: Vec<f64>,
+}
+
+#[derive(Serialize)]
+struct SweepPoint {
+    coordinates: Vec<NamedValue>,
+    nodes: Vec<NamedValue>,
+    components: Vec<ComponentValue>,
+}
+
+#[derive(Serialize)]
+struct SweepResult {
+    axes: Vec<SweepAxis>,
+    points: Vec<SweepPoint>,
 }
 
 #[cfg(test)]
@@ -1287,10 +1733,10 @@ mod tests {
     }
 
     #[test]
-    fn executable_qualification_covers_nonlinear_mapping() {
+    fn executable_qualification_covers_completed_portable_surface() {
         let qualification = qualification_json();
         assert!(qualification.succeeded, "{}", qualification.json);
         let report: Value = serde_json::from_str(&qualification.json).unwrap();
-        assert_eq!(report["cases"].as_array().unwrap().len(), 6);
+        assert_eq!(report["cases"].as_array().unwrap().len(), 8);
     }
 }

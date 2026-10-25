@@ -28,11 +28,27 @@ public enum SimulationHostContract {
 /// Compatibility vocabulary for the process-native Rust host introduced in
 /// OhmLab 2.2. The executable is independently built and does not link Swift.
 public enum NativeRustPortabilityContract {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
     public static let backendIdentifier = "rust-numeric-core"
-    public static let implementationVersion = "rust-numeric-core-0.34.0-native"
+    public static let implementationVersion = "rust-numeric-core-0.34.0-native.2"
     public static let rustNumericCoreVersion = "0.34.0"
-    public static let supportedAnalyses = ["dc-operating-point", "ac-small-signal"]
+    public static let supportedAnalyses = [
+        "dc-operating-point", "ac-small-signal", "transient", "dc-sweep",
+    ]
+    public static let supportedFeatures = [
+        "circuit-ir-input", "source-waveforms", "initial-conditions",
+    ]
+}
+
+/// Release contract that closes the portable analysis gap between the
+/// Swift-NumericCore adapter and the process-native Rust-NumericCore host.
+public enum NumericCoreFeatureCompletionContract {
+    public static let currentVersion = 1
+    public static let swiftNumericCoreVersion = "1.1.0"
+    public static let rustNumericCoreVersion = "0.34.0"
+    public static let analyses = [
+        "dc-operating-point", "ac-small-signal", "transient", "dc-sweep",
+    ]
 }
 
 /// Per-host limits may narrow, but never expand, the protocol's global safety

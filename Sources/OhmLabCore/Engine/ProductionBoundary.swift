@@ -3,8 +3,8 @@ import OhmLabSimulationProtocol
 
 /// Product version shipped on the stable production boundary.
 public enum OhmLabRelease {
-    public static let version = "2.2.0"
-    public static let productionBoundaryVersion = 6
+    public static let version = "2.3.0"
+    public static let productionBoundaryVersion = 7
 }
 
 /// Whether a backend is covered by OhmLab's production compatibility promise.
@@ -193,6 +193,7 @@ public struct ProductionContractVersions: Codable, Equatable, Sendable {
     public let portableSimulation: Int
     public let simulationHost: Int
     public let nativeRustPortability: Int
+    public let numericCoreFeatureCompletion: Int
 }
 
 /// Machine-readable answer to “is this build safe to ship on the stable boundary?”.
@@ -237,6 +238,10 @@ public enum ProductionBoundary {
         if nonlinearProduction.map(\.identifier) != ["numeric-core"] {
             issues.append("numeric-core must be the sole nonlinear-production backend")
         }
+        if descriptors.first(where: { $0.identifier == "numeric-core" })?
+            .capabilities.supports(.dcSweep) != true {
+            issues.append("numeric-core must complete the portable DC-sweep surface")
+        }
         if SimulationEngine.defaultBackendIdentifier != "native-mna" {
             issues.append("the default backend must be native-mna")
         }
@@ -252,7 +257,8 @@ public enum ProductionBoundary {
                 nonlinearConvergence: NonlinearConvergence.currentContractVersion,
                 portableSimulation: PortableSimulationPlatform.currentContractVersion,
                 simulationHost: SimulationHostContract.currentVersion,
-                nativeRustPortability: NativeRustPortabilityContract.currentVersion
+                nativeRustPortability: NativeRustPortabilityContract.currentVersion,
+                numericCoreFeatureCompletion: NumericCoreFeatureCompletionContract.currentVersion
             ),
             defaultBackend: SimulationEngine.defaultBackendIdentifier,
             backends: descriptors,

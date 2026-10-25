@@ -31,7 +31,7 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
 
     public let capabilities = SimulationBackendCapabilities(
         backendIdentifier: "numeric-core",
-        analyses: [.dcOperatingPoint, .acSmallSignal, .transient],
+        analyses: [.dcOperatingPoint, .acSmallSignal, .transient, .dcSweep],
         devices: [.resistor, .capacitor, .inductor, .voltageSource, .currentSource, .diode, .mosfet],
         features: [
             .spiceNetlistInput, .circuitIRInput, .modelLibraries,
@@ -74,8 +74,17 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
                 effective.tranStart = parsed.analysis.tranStart
             }
         }
-        if effective.runDCSweep || !parsed.analysis.dcSweep.isEmpty || parsed.analysis.step != nil {
-            throw NumericCoreAdapterError.unsupportedAnalysis("DC or parameter sweeps")
+        if parsed.analysis.step != nil || parsed.analysis.dcSweep.count > 1 {
+            throw NumericCoreAdapterError.unsupportedAnalysis("parameter or multidimensional sweeps")
+        }
+        if let sweep = parsed.analysis.dcSweep.first {
+            effective.runDCSweep = true
+            effective.dcSweepSource = sweep.name
+            effective.dcSweepStart = sweep.values.first ?? 0
+            effective.dcSweepStop = sweep.values.last ?? 0
+            if sweep.values.count > 1 {
+                effective.dcSweepStep = sweep.values[1] - sweep.values[0]
+            }
         }
         if !parsed.analysis.fourier.isEmpty {
             throw NumericCoreAdapterError.unsupportedAnalysis("Fourier analysis")
@@ -94,10 +103,7 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         circuit ir: CircuitIR,
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
-        if settings.runDCSweep {
-            throw NumericCoreAdapterError.unsupportedAnalysis("DC or parameter sweeps")
-        }
-        guard settings.runDC || settings.runAC || settings.runTransient else {
+        guard settings.runDC || settings.runAC || settings.runTransient || settings.runDCSweep else {
             throw CircuitSimulationError.noAnalysisSelected
         }
 
@@ -110,13 +116,57 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         let transient = settings.runTransient
             ? try bridge.transientResult(operating, settings: settings)
             : nil
+        let sweep = settings.runDCSweep
+            ? try Self.sweepResult(ir, settings: settings)
+            : nil
         return CircuitSimResult(
             dc: dc,
             ac: ac,
             transient: transient,
-            sweep: nil,
+            sweep: sweep,
             fourier: [],
             warnings: []
+        )
+    }
+
+    private static func sweepResult(
+        _ ir: CircuitIR,
+        settings: AnalysisSettings
+    ) throws -> CircuitSimResult.SweepResult {
+        let values = SpiceNetlistParser.linearSweep(
+            from: settings.dcSweepStart,
+            to: settings.dcSweepStop,
+            step: settings.dcSweepStep
+        )
+        guard !settings.dcSweepSource.isEmpty, !values.isEmpty else {
+            throw CircuitSimulationError.invalidDCSweepSettings
+        }
+        guard values.count <= FrequencySweep.maxPointCount else {
+            throw CircuitSimulationError.tooManySamples
+        }
+        guard let sourceIndex = ir.devices.firstIndex(where: {
+            $0.name.caseInsensitiveCompare(settings.dcSweepSource) == .orderedSame
+                && ($0.kind == .voltageSource || $0.kind == .currentSource)
+        }) else {
+            throw CircuitSimulationError.unknownSweepSource(settings.dcSweepSource)
+        }
+        var points: [CircuitSimResult.SweepPoint] = []
+        points.reserveCapacity(values.count)
+        for value in values {
+            try Task.checkCancellation()
+            var swept = ir
+            swept.devices[sourceIndex].source?.dcValue = value
+            let pointBridge = try Bridge(ir: swept)
+            let point = try pointBridge.dcResult(pointBridge.model.dcOperatingPointContinuation())
+            points.append(.init(
+                coordinates: [(settings.dcSweepSource, value)],
+                nodes: point.nodes,
+                components: point.components
+            ))
+        }
+        return .init(
+            axes: [.init(name: settings.dcSweepSource, values: values)],
+            points: points
         )
     }
 }

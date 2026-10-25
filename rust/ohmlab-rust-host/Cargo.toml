@@ -1,6 +1,6 @@
 [package]
 name = "ohmlab-rust-host"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 license = "MIT"
 description = "Portable native Rust host for OhmLab simulation protocol v1"

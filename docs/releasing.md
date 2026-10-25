@@ -29,7 +29,8 @@ v1 schema and platform-extraction contract.
 
 For OhmLab 2.2 and later, `scripts/qualify-rust-host.sh` must pass. The locked
 Cargo graph must build `ohmlab-rust-host`, its native qualification must report
-`ready: true`, and its DC/AC results must agree with Swift-NumericCore. The
+`ready: true`, and its DC/AC/transient/sweep results must agree with
+Swift-NumericCore. The
 release archive must contain `bin/ohmlab-rust-host`.
 
 `scripts/package-release.sh [output-directory]` creates a host-architecture
@@ -57,6 +58,8 @@ Compatibility rules for the 2.x line:
   batching are a separately versioned public host boundary.
 - Production boundary v6 is required for 2.2 because the process-native Rust
   host is a new independently built deployment boundary.
+- Production boundary v7 is required for 2.3 because NumericCore transient and
+  DC-sweep execution complete the portable analysis surface.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
 - Never weaken `ohm doctor`, `ohm verify`, `ohm qualify-linear`,
