@@ -3,8 +3,8 @@ import OhmLabSimulationProtocol
 
 /// Product version shipped on the stable production boundary.
 public enum OhmLabRelease {
-    public static let version = "2.1.0"
-    public static let productionBoundaryVersion = 5
+    public static let version = "2.2.0"
+    public static let productionBoundaryVersion = 6
 }
 
 /// Whether a backend is covered by OhmLab's production compatibility promise.
@@ -192,6 +192,7 @@ public struct ProductionContractVersions: Codable, Equatable, Sendable {
     public let nonlinearConvergence: Int
     public let portableSimulation: Int
     public let simulationHost: Int
+    public let nativeRustPortability: Int
 }
 
 /// Machine-readable answer to “is this build safe to ship on the stable boundary?”.
@@ -250,7 +251,8 @@ public enum ProductionBoundary {
                 linearBackendGraduation: LinearBackendGraduation.currentContractVersion,
                 nonlinearConvergence: NonlinearConvergence.currentContractVersion,
                 portableSimulation: PortableSimulationPlatform.currentContractVersion,
-                simulationHost: SimulationHostContract.currentVersion
+                simulationHost: SimulationHostContract.currentVersion,
+                nativeRustPortability: NativeRustPortabilityContract.currentVersion
             ),
             defaultBackend: SimulationEngine.defaultBackendIdentifier,
             backends: descriptors,

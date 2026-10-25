@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 2.1.0" ]]; then
+if [[ "$version" != "ohm 2.2.0" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
@@ -43,6 +43,8 @@ if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$host_report"; then
     cat "$host_report" >&2
     exit 1
 fi
+
+./scripts/qualify-rust-host.sh
 
 .build/debug/ohm qualify-linear --json >"$graduation_report"
 if ! rg -q '"ready"[[:space:]]*:[[:space:]]*true' "$graduation_report" \

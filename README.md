@@ -123,6 +123,21 @@ Swift-NumericCore is now consumed through its stable 1.x semantic range rather
 than a provisional source revision. The currently resolved 1.1.0 release
 continues to package the Rust-NumericCore transport.
 
+## 2.2 Native Rust Portability
+
+The portable protocol now has a process-native Rust implementation under
+`rust/ohmlab-rust-host`. It links Rust-NumericCore 0.34.0's `nc-optimize`
+crate directly—without Swift, Foundation, or an XCFramework—and runs on macOS
+and Linux. The first frozen native scope is Circuit IR v1 DC operating-point
+and AC small-signal analysis for R/C/L/V/I, Shockley diodes, and qualified
+body-tied Level-1 NMOS devices. Unsupported transient, sweep, BJT, JFET, PMOS,
+and extended MOSFET requests fail explicitly.
+
+Run `scripts/qualify-rust-host.sh` to build the Rust executable, exercise its
+own qualification report, and compare DC/AC results with the Swift-NumericCore
+host. See
+[`docs/contracts/native-rust-portability-v1.md`](docs/contracts/native-rust-portability-v1.md).
+
 ## Architecture: The Four-Layer Model
 
 Unlike traditional tools where the SPICE netlist is the source of truth (which loses geometry, wire shapes, and layout on every save), `OhmLab` uses a strictly separated four-layer architecture. The **Schematic is the document**, and the netlist is merely a projection of it.
@@ -164,7 +179,8 @@ The simulation layer is a **native Swift linear solver**:
 Simulation is reached through `SimulationEngine`, a façade that dispatches to a registered `SimulationEngineBackend`:
 
 *   **`NativeMNAEngine`** (identifier `"native-mna"`) is the built-in Swift engine and the default backend — the full DC/AC/transient/DC-sweep/`.four` feature set described above.
-*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) is the nonlinear-production adapter for parsed R/C/L/V/I circuits, Shockley diodes, and body-tied Level-1 NMOS devices. It provides DC, AC, and transient analysis with initial conditions. NumericCore currently accepts `PULSE` and undelayed/undamped `SIN` sources; unsupported variants fail explicitly. The dependency is pinned to an exact reviewed revision and qualified together with its Rust-NumericCore binary.
+*   **`NumericCoreEngineBackend`** (identifier `"numeric-core"`) is the nonlinear-production adapter for parsed R/C/L/V/I circuits, Shockley diodes, and body-tied Level-1 NMOS devices. It provides DC, AC, and transient analysis with initial conditions. NumericCore currently accepts `PULSE` and undelayed/undamped `SIN` sources; unsupported variants fail explicitly. Swift-NumericCore uses its stable 1.x range and is qualified together with the bundled Rust-NumericCore binary.
+*   **`ohmlab-rust-host`** (identifier `"rust-numeric-core"`) is the standalone process host for Linux/macOS service deployment. Its 2.2 scope is portable-protocol DC and AC; it is not registered as an in-process Swift application backend.
 *   **Backends are swappable at runtime** with `SimulationEngine.register(_:makeDefault:)` and `SimulationEngine.resetToDefaultBackend()`. Because the façade is the single entry point (`EngineClient` and the CLI both call it), no call site changes when a backend changes. The schematic entry point has a default implementation that projects a snapshot to a netlist, so a foreign backend only has to implement the netlist solve.
 
 ## Key Frontend Features

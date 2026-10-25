@@ -32,7 +32,7 @@ struct PortableSimulationPlatformTests {
 
     @Test func manifestPublishesStableBoundaryAndQualifiedBackends() {
         let manifest = PortableSimulationPlatform.manifest
-        #expect(manifest.productVersion == "2.1.0")
+        #expect(manifest.productVersion == "2.2.0")
         #expect(manifest.protocolVersion == 1)
         #expect(manifest.circuitIRVersion == 1)
         #expect(manifest.simulationResultVersion == 1)
@@ -68,7 +68,7 @@ struct PortableSimulationPlatformTests {
         #expect(response.backend == "numeric-core")
         #expect(response.result?.dc?.nodes.first { $0.name == "out" }?.value == 2.5)
         #expect(response.result?.ac?.frequencies.count == 2)
-        #expect(response.provenance?.productVersion == "2.1.0")
+        #expect(response.provenance?.productVersion == "2.2.0")
         #expect(response.provenance?.modelSource == "embedded-circuit-ir")
         #expect(response.provenance?.requestSHA256.count == 64)
         #expect(try PortableSimulationPlatform.encode(response) == PortableSimulationPlatform.encode(response))
@@ -226,7 +226,7 @@ struct PortableSimulationPlatformTests {
     @Test func executableQualificationPasses() {
         let report = PortablePlatformQualification.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "2.1.0")
+        #expect(report.productVersion == "2.2.0")
         #expect(report.cases.count == 8)
         #expect(report.cases.allSatisfy { $0.passed })
         #expect(report.issues.isEmpty)

@@ -82,3 +82,6 @@ Protocol v1 is portable at the data and process boundary. It does not claim
 that the current GUI or prebuilt Swift-NumericCore binary runs on every
 operating system. New host builds can implement this wire contract without
 changing clients.
+
+OhmLab 2.2 supplies the first non-Swift implementation: the Linux/macOS native
+Rust host described by [native Rust portability v1](native-rust-portability-v1.md).

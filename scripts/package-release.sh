@@ -9,7 +9,9 @@ output="${1:-$root/dist}"
 cd "$root"
 
 swift build -c release
+cargo build --release --locked --manifest-path rust/ohmlab-rust-host/Cargo.toml
 bin_path="$(swift build -c release --show-bin-path)"
+rust_bin="$root/rust/ohmlab-rust-host/target/release/ohmlab-rust-host"
 version="$($bin_path/ohm --version)"
 version="${version#ohm }"
 [[ -n "$version" ]] || { printf 'could not determine release version\n' >&2; exit 1; }
@@ -26,6 +28,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$stage/bin" "$stage/docs/contracts" "$output"
 cp "$bin_path/OhmLab" "$app/Contents/MacOS/OhmLab"
 cp "$bin_path/ohm" "$stage/bin/ohm"
+cp "$rust_bin" "$stage/bin/ohmlab-rust-host"
 cp LICENSE README.md "$stage/"
 cp docs/contracts/*.md "$stage/docs/contracts/"
 cp -R docs/contracts/schemas "$stage/docs/contracts/"
@@ -39,6 +42,7 @@ printf '{\n  "product": "OhmLab",\n  "version": "%s",\n  "platform": "macOS",\n 
 "$stage/bin/ohm" qualify-nonlinear --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 "$stage/bin/ohm" qualify-platform --json | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 "$stage/bin/ohm" platform manifest | grep -Eq '"protocolVersion"[[:space:]]*:[[:space:]]*1'
+"$stage/bin/ohmlab-rust-host" qualify | grep -Eq '"ready"[[:space:]]*:[[:space:]]*true'
 
 identity="${OHMLAB_CODESIGN_IDENTITY:--}"
 if [[ "$identity" == "-" ]]; then
@@ -47,10 +51,12 @@ else
     timestamp=(--timestamp)
 fi
 codesign --force "${timestamp[@]}" --options runtime --sign "$identity" "$stage/bin/ohm"
+codesign --force "${timestamp[@]}" --options runtime --sign "$identity" "$stage/bin/ohmlab-rust-host"
 codesign --force "${timestamp[@]}" --options runtime --sign "$identity" "$app/Contents/MacOS/OhmLab"
 codesign --force "${timestamp[@]}" --options runtime --sign "$identity" "$app"
 codesign --verify --deep --strict "$app"
 codesign --verify --strict "$stage/bin/ohm"
+codesign --verify --strict "$stage/bin/ohmlab-rust-host"
 
 rm -f "$archive" "$checksum"
 ditto -c -k --sequesterRsrc --keepParent "$stage" "$archive"

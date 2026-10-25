@@ -9,5 +9,5 @@ DerivedData/
 .netrc
 .vscode/
 
-# Rust build artefacts (optional ohm-core engine)
-/rust/ohm-core/target/
+# Rust build artefacts
+/rust/*/target/

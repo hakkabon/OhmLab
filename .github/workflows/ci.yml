@@ -6,6 +6,22 @@ permissions:
   contents: read
 
 jobs:
+  rust-host:
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --locked --manifest-path rust/ohmlab-rust-host/Cargo.toml
+      - run: cargo build --locked --manifest-path rust/ohmlab-rust-host/Cargo.toml
+      - run: rust/ohmlab-rust-host/target/debug/ohmlab-rust-host qualify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ohmlab-rust-host-${{ matrix.os }}
+          path: rust/ohmlab-rust-host/target/debug/ohmlab-rust-host
+          if-no-files-found: error
+
   swift:
     runs-on: macos-14
     steps:
@@ -16,7 +32,7 @@ jobs:
 
   artifact:
     runs-on: macos-14
-    needs: [swift]
+    needs: [swift, rust-host]
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/package-release.sh "$RUNNER_TEMP/artifacts"

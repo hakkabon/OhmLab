@@ -1,0 +1,15 @@
+[package]
+name = "ohmlab-rust-host"
+version = "2.2.0"
+edition = "2021"
+license = "MIT"
+description = "Portable native Rust host for OhmLab simulation protocol v1"
+
+[dependencies]
+nc-optimize = { git = "https://github.com/hakkabon/Rust-NumericCore.git", tag = "v0.34.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+approx = "0.5"

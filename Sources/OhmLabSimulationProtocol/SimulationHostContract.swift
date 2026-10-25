@@ -25,6 +25,16 @@ public enum SimulationHostContract {
     }
 }
 
+/// Compatibility vocabulary for the process-native Rust host introduced in
+/// OhmLab 2.2. The executable is independently built and does not link Swift.
+public enum NativeRustPortabilityContract {
+    public static let currentVersion = 1
+    public static let backendIdentifier = "rust-numeric-core"
+    public static let implementationVersion = "rust-numeric-core-0.34.0-native"
+    public static let rustNumericCoreVersion = "0.34.0"
+    public static let supportedAnalyses = ["dc-operating-point", "ac-small-signal"]
+}
+
 /// Per-host limits may narrow, but never expand, the protocol's global safety
 /// ceilings. Timeout is elapsed wall-clock time for one request.
 public struct SimulationExecutionPolicy: Codable, Equatable, Sendable {

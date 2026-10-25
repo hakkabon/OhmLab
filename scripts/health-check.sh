@@ -47,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 2.1.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 2.1.0"'
+run "OhmLab 2.2.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 2.2.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
@@ -65,6 +65,7 @@ run "portable request execution" bash -c '.build/debug/ohm platform run < Exampl
 run "portable batch execution" bash -c '.build/debug/ohm platform batch --max-parallel 2 < Examples/portable-divider-batch.json'
 run "portable protocol qualification" "$ohm" qualify-platform --json
 run "extracted host qualification" "$ohm" qualify-host --json
+run "native Rust host qualification" ./scripts/qualify-rust-host.sh
 
 section "Example circuits — CLI runs"
 for file in Examples/*.cir; do

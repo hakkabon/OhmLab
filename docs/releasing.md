@@ -27,6 +27,11 @@ The package manifest must publish the separate `OhmLabSimulationProtocol` and
 `OhmLabSimulationHost` products, and the release archive must include the batch
 v1 schema and platform-extraction contract.
 
+For OhmLab 2.2 and later, `scripts/qualify-rust-host.sh` must pass. The locked
+Cargo graph must build `ohmlab-rust-host`, its native qualification must report
+`ready: true`, and its DC/AC results must agree with Swift-NumericCore. The
+release archive must contain `bin/ohmlab-rust-host`.
+
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
 documents, release metadata, and a SHA-256 checksum. Without credentials it
@@ -50,6 +55,8 @@ Compatibility rules for the 2.x line:
   contract is a new public compatibility boundary.
 - Production boundary v5 is required for 2.1 because execution policy and
   batching are a separately versioned public host boundary.
+- Production boundary v6 is required for 2.2 because the process-native Rust
+  host is a new independently built deployment boundary.
 - Do not change document or project schemas without an immutable legacy
   fixture and an explicit migration.
 - Never weaken `ohm doctor`, `ohm verify`, `ohm qualify-linear`,
