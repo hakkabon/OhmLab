@@ -96,7 +96,9 @@ Use `ohm platform manifest [--pretty]` for discovery and pipe one request into
 `ohm platform run [--pretty]` for execution. The shipped
 `Examples/portable-divider-request.json` is a complete wire example.
 `ohm qualify-platform [--json]` validates deterministic native and NumericCore
-round trips, nonlinear transport, and fail-closed negotiation. See
+round trips, nonlinear transport, bounded workloads, provenance, and
+fail-closed negotiation. The v1 JSON Schema and canonical cross-language
+fixtures freeze the wire representation for the 2.0.x line. See
 [`docs/contracts/portable-simulation-v1.md`](docs/contracts/portable-simulation-v1.md)
 and [`docs/contracts/production-boundary-v4.md`](docs/contracts/production-boundary-v4.md).
 

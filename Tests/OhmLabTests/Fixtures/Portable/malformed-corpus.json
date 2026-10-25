@@ -1,0 +1,10 @@
+[
+  {"identifier":"plain-text","payload":"not-json"},
+  {"identifier":"empty-object","payload":"{}"},
+  {"identifier":"array-root","payload":"[]"},
+  {"identifier":"null-root","payload":"null"},
+  {"identifier":"truncated","payload":"{\"protocolVersion\":1"},
+  {"identifier":"wrong-version-type","payload":"{\"protocolVersion\":\"1\",\"requestID\":\"x\",\"backend\":\"native-mna\",\"circuit\":{},\"analysis\":{}}"},
+  {"identifier":"non-finite-number","payload":"{\"protocolVersion\":1,\"requestID\":\"x\",\"backend\":\"native-mna\",\"circuit\":{},\"analysis\":{\"dcOperatingPoint\":true,\"transient\":{\"step\":NaN,\"stop\":1,\"start\":0}}}"},
+  {"identifier":"unknown-top-level-member","payload":"{\"protocolVersion\":1,\"requestID\":\"x\",\"backend\":\"native-mna\",\"circuit\":{},\"analysis\":{},\"unexpected\":true}"}
+]

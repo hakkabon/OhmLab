@@ -18,7 +18,9 @@ For OhmLab 1.5 and later, `ohm qualify-nonlinear --json` must report
 For OhmLab 2.0 and later, `ohm qualify-platform --json` must report
 `ready: true`, and `ohm platform manifest` must publish portable protocol v1.
 This gate covers deterministic native/NumericCore request execution and
-fail-closed protocol negotiation.
+fail-closed protocol negotiation. Patch releases must also keep the canonical
+portable request/response fixtures byte-stable, validate the malformed-input
+corpus, and ship the request JSON Schema in the release archive.
 
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract

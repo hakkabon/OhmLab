@@ -6,20 +6,34 @@ import Foundation
 public enum PortableSimulationPlatform {
     public static let currentContractVersion = 1
     public static let mediaType = "application/vnd.ohmlab.simulation+json;version=1"
+    public static let requestSchemaID = "urn:ohmlab:schema:portable-simulation-request:1"
+    public static let responseSchemaID = "urn:ohmlab:schema:portable-simulation-response:1"
 
     public struct Limits: Codable, Equatable, Sendable {
         public let maximumRequestBytes: Int
         public let maximumNodes: Int
         public let maximumDevices: Int
+        public let maximumAnalysisSamples: Int
+        public let maximumWaveformPoints: Int
+        public let maximumNameBytes: Int
+        public let maximumSolverIterations: Int
 
         public init(
             maximumRequestBytes: Int = 16 * 1_024 * 1_024,
             maximumNodes: Int = 100_000,
-            maximumDevices: Int = 200_000
+            maximumDevices: Int = 200_000,
+            maximumAnalysisSamples: Int = 100_000,
+            maximumWaveformPoints: Int = 100_000,
+            maximumNameBytes: Int = 1_024,
+            maximumSolverIterations: Int = 10_000
         ) {
             self.maximumRequestBytes = maximumRequestBytes
             self.maximumNodes = maximumNodes
             self.maximumDevices = maximumDevices
+            self.maximumAnalysisSamples = maximumAnalysisSamples
+            self.maximumWaveformPoints = maximumWaveformPoints
+            self.maximumNameBytes = maximumNameBytes
+            self.maximumSolverIterations = maximumSolverIterations
         }
     }
 
@@ -93,12 +107,25 @@ public enum PortableSimulationPlatform {
                       ac.points > 0 else {
                     throw PlatformError.invalidRequest("invalid AC sweep")
                 }
+                let samples: Double
+                switch ac.type {
+                case .lin: samples = Double(ac.points)
+                case .dec: samples = ceil(log10(ac.stopFrequency / ac.startFrequency) * Double(ac.points)) + 2
+                case .oct: samples = ceil(log2(ac.stopFrequency / ac.startFrequency) * Double(ac.points)) + 2
+                }
+                guard samples.isFinite, samples <= Double(limits.maximumAnalysisSamples) else {
+                    throw PlatformError.invalidRequest("AC sweep exceeds the \(limits.maximumAnalysisSamples)-sample limit")
+                }
             }
             if let transient {
                 guard transient.step.isFinite, transient.stop.isFinite, transient.start.isFinite,
                       transient.step > 0, transient.stop > 0,
                       transient.start >= 0, transient.start <= transient.stop else {
                     throw PlatformError.invalidRequest("invalid transient analysis")
+                }
+                let samples = ceil(transient.stop / transient.step) + 1
+                guard samples.isFinite, samples <= Double(limits.maximumAnalysisSamples) else {
+                    throw PlatformError.invalidRequest("transient analysis exceeds the \(limits.maximumAnalysisSamples)-sample limit")
                 }
             }
             if let dcSweep {
@@ -109,6 +136,10 @@ public enum PortableSimulationPlatform {
                         || (dcSweep.stop > dcSweep.start && dcSweep.step > 0)
                         || (dcSweep.stop < dcSweep.start && dcSweep.step < 0) else {
                     throw PlatformError.invalidRequest("invalid DC sweep")
+                }
+                let samples = ceil(abs((dcSweep.stop - dcSweep.start) / dcSweep.step)) + 1
+                guard samples.isFinite, samples <= Double(limits.maximumAnalysisSamples) else {
+                    throw PlatformError.invalidRequest("DC sweep exceeds the \(limits.maximumAnalysisSamples)-sample limit")
                 }
             }
             return AnalysisSettings(
@@ -167,12 +198,27 @@ public enum PortableSimulationPlatform {
         public let message: String
     }
 
+    /// Stable, deterministic evidence needed to reproduce a successful run.
+    /// Circuit models are embedded in Circuit IR v1, so no host filesystem or
+    /// mutable model-library lookup participates in the digest.
+    public struct Provenance: Codable, Equatable, Sendable {
+        public let productVersion: String
+        public let protocolMediaType: String
+        public let circuitIRVersion: Int
+        public let simulationResultVersion: Int
+        public let backend: String
+        public let implementationVersion: String?
+        public let modelSource: String
+        public let requestSHA256: String
+    }
+
     public struct Response: Codable, Equatable, Sendable {
         public let protocolVersion: Int
         public let requestID: String
         public let status: Status
         public let backend: String?
         public let implementationVersion: String?
+        public let provenance: Provenance?
         public let result: Result?
         public let error: Failure?
 
@@ -183,6 +229,10 @@ public enum PortableSimulationPlatform {
         public let productVersion: String
         public let protocolVersion: Int
         public let mediaType: String
+        public let requestSchemaID: String
+        public let responseSchemaID: String
+        public let canonicalEncoding: String
+        public let provenanceDigest: String
         public let circuitIRVersion: Int
         public let simulationResultVersion: Int
         public let supportedAnalyses: [SimulationAnalysisKind]
@@ -337,6 +387,10 @@ public enum PortableSimulationPlatform {
             productVersion: OhmLabRelease.version,
             protocolVersion: currentContractVersion,
             mediaType: mediaType,
+            requestSchemaID: requestSchemaID,
+            responseSchemaID: responseSchemaID,
+            canonicalEncoding: "json-sorted-keys-utf8",
+            provenanceDigest: "sha-256",
             circuitIRVersion: CircuitIR.currentSchemaVersion,
             simulationResultVersion: SimulationResultContract.currentVersion,
             supportedAnalyses: [.dcOperatingPoint, .acSmallSignal, .transient, .dcSweep],
@@ -350,7 +404,7 @@ public enum PortableSimulationPlatform {
         func failure(_ code: ErrorCode, _ message: String, backend: String? = nil) -> Response {
             Response(protocolVersion: currentContractVersion, requestID: request.requestID,
                      status: .failure, backend: backend, implementationVersion: nil,
-                     result: nil, error: Failure(code: code, message: message))
+                     provenance: nil, result: nil, error: Failure(code: code, message: message))
         }
         guard request.protocolVersion == currentContractVersion else {
             return failure(.unsupportedProtocol, "unsupported portable simulation protocol version \(request.protocolVersion)")
@@ -368,6 +422,7 @@ public enum PortableSimulationPlatform {
         }
         do {
             try request.circuit.validate()
+            try validateResourceBudget(request)
             try ProductionBoundary.requireValid(backend)
             guard backend.capabilities.supports(.circuitIRInput) else {
                 return failure(.unsupportedCapability, "backend does not accept Circuit IR", backend: backend.identifier)
@@ -382,12 +437,23 @@ public enum PortableSimulationPlatform {
             }
             let raw = try backend.solve(circuit: request.circuit, settings: settings)
             try SimulationResultContract.validate(raw)
+            let canonicalRequest = try encode(request)
             return Response(
                 protocolVersion: currentContractVersion,
                 requestID: request.requestID,
                 status: .success,
                 backend: backend.identifier,
                 implementationVersion: backend.implementationVersion,
+                provenance: Provenance(
+                    productVersion: OhmLabRelease.version,
+                    protocolMediaType: mediaType,
+                    circuitIRVersion: request.circuit.schemaVersion,
+                    simulationResultVersion: raw.contractVersion,
+                    backend: backend.identifier,
+                    implementationVersion: backend.implementationVersion,
+                    modelSource: "embedded-circuit-ir",
+                    requestSHA256: StableSHA256.hexDigest(canonicalRequest)
+                ),
                 result: Result(raw),
                 error: nil
             )
@@ -412,6 +478,7 @@ public enum PortableSimulationPlatform {
                 status: .failure,
                 backend: nil,
                 implementationVersion: nil,
+                provenance: nil,
                 result: nil,
                 error: Failure(code: .invalidRequest, message: error.localizedDescription)
             )
@@ -422,8 +489,16 @@ public enum PortableSimulationPlatform {
         guard data.count <= limits.maximumRequestBytes else {
             throw PlatformError.invalidRequest("request exceeds \(limits.maximumRequestBytes) bytes")
         }
-        do { return try JSONDecoder().decode(Request.self, from: data) }
-        catch { throw PlatformError.invalidRequest("invalid request JSON: \(error.localizedDescription)") }
+        do {
+            let object = try JSONSerialization.jsonObject(with: data)
+            guard let dictionary = object as? [String: Any] else {
+                throw PlatformError.invalidRequest("request JSON must be an object")
+            }
+            try validateKnownJSONMembers(dictionary)
+            return try JSONDecoder().decode(Request.self, from: data)
+        }
+        catch let error as PlatformError { throw error }
+        catch { throw PlatformError.invalidRequest("invalid request JSON") }
     }
 
     public static func encode<T: Encodable>(_ value: T, pretty: Bool = false) throws -> Data {
@@ -437,6 +512,109 @@ public enum PortableSimulationPlatform {
         var code: ErrorCode { .invalidRequest }
         var errorDescription: String? {
             switch self { case .invalidRequest(let message): message }
+        }
+    }
+
+    private static func validateResourceBudget(_ request: Request) throws {
+        let names = request.circuit.nodes.map(\.name) + request.circuit.devices.map(\.name)
+        guard names.allSatisfy({ $0.utf8.count <= limits.maximumNameBytes }) else {
+            throw PlatformError.invalidRequest("circuit name exceeds \(limits.maximumNameBytes) UTF-8 bytes")
+        }
+        guard request.circuit.solver.maximumIterations <= limits.maximumSolverIterations else {
+            throw PlatformError.invalidRequest("solver exceeds the \(limits.maximumSolverIterations)-iteration limit")
+        }
+        let waveformPoints = request.circuit.devices.reduce(into: 0) { count, device in
+            count += device.source?.transient?.points.count ?? 0
+        }
+        guard waveformPoints <= limits.maximumWaveformPoints else {
+            throw PlatformError.invalidRequest("circuit exceeds the \(limits.maximumWaveformPoints)-waveform-point limit")
+        }
+        guard request.circuit.initialConditions.nodeVoltages.count <= request.circuit.nodes.count,
+              request.circuit.initialConditions.elementCurrents.count <= request.circuit.devices.count else {
+            throw PlatformError.invalidRequest("initial conditions exceed circuit dimensions")
+        }
+    }
+
+    /// Swift decoding deliberately ignores unknown keys. Protocol v1 instead
+    /// fails closed so a misspelled option cannot appear to have taken effect.
+    private static func validateKnownJSONMembers(_ root: [String: Any]) throws {
+        try requireKeys(root, ["protocolVersion", "requestID", "backend", "circuit", "analysis"], at: "request")
+        if let analysis = root["analysis"] as? [String: Any] {
+            try requireKeys(analysis, ["dcOperatingPoint", "ac", "transient", "dcSweep"], at: "analysis")
+            if let ac = analysis["ac"] as? [String: Any] {
+                try requireKeys(ac, ["type", "startFrequency", "stopFrequency", "points"], at: "analysis.ac")
+            }
+            if let transient = analysis["transient"] as? [String: Any] {
+                try requireKeys(transient, ["step", "stop", "start"], at: "analysis.transient")
+            }
+            if let sweep = analysis["dcSweep"] as? [String: Any] {
+                try requireKeys(sweep, ["source", "start", "stop", "step"], at: "analysis.dcSweep")
+            }
+        }
+        guard let circuit = root["circuit"] as? [String: Any] else { return }
+        try requireKeys(
+            circuit, ["schemaVersion", "referenceNode", "nodes", "devices", "solver", "initialConditions"],
+            at: "circuit"
+        )
+        for (index, value) in (circuit["nodes"] as? [Any] ?? []).enumerated() {
+            if let node = value as? [String: Any] {
+                try requireKeys(node, ["name"], at: "circuit.nodes[\(index)]")
+            }
+        }
+        for (index, value) in (circuit["devices"] as? [Any] ?? []).enumerated() {
+            guard let device = value as? [String: Any] else { continue }
+            let path = "circuit.devices[\(index)]"
+            try requireKeys(
+                device, ["name", "kind", "terminals", "value", "source", "diode", "bjt", "mosfet", "jfet"],
+                at: path
+            )
+            if let source = device["source"] as? [String: Any] {
+                try requireKeys(source, ["dcValue", "acMagnitude", "acPhaseDegrees", "transient"], at: "\(path).source")
+                if let waveform = source["transient"] as? [String: Any] {
+                    try requireKeys(waveform, ["kind", "parameters", "points"], at: "\(path).source.transient")
+                    for (pointIndex, value) in (waveform["points"] as? [Any] ?? []).enumerated() {
+                        if let point = value as? [String: Any] {
+                            try requireKeys(point, ["time", "value"], at: "\(path).source.transient.points[\(pointIndex)]")
+                        }
+                    }
+                }
+            }
+            let modelKeys: [(String, Set<String>)] = [
+                ("diode", ["saturationCurrent", "emissionCoefficient", "thermalVoltage", "area",
+                           "saturationCurrentTemperatureExponent", "activationEnergy"]),
+                ("bjt", ["polarity", "saturationCurrent", "forwardBeta", "reverseBeta", "thermalVoltage",
+                         "saturationCurrentTemperatureExponent", "activationEnergy", "betaTemperatureExponent"]),
+                ("mosfet", ["polarity", "thresholdVoltage", "transconductanceParameter",
+                            "channelLengthModulation", "bodyEffect", "surfacePotential",
+                            "mobilityTemperatureExponent", "thresholdTemperatureCoefficient"]),
+                ("jfet", ["polarity", "thresholdVoltage", "transconductanceParameter",
+                          "channelLengthModulation", "gateSaturationCurrent", "thermalVoltage",
+                          "mobilityTemperatureExponent", "thresholdTemperatureCoefficient",
+                          "saturationCurrentTemperatureExponent", "activationEnergy"]),
+            ]
+            for (name, keys) in modelKeys where device[name] != nil {
+                if let model = device[name] as? [String: Any] {
+                    try requireKeys(model, keys, at: "\(path).\(name)")
+                }
+            }
+        }
+        if let solver = circuit["solver"] as? [String: Any] {
+            try requireKeys(
+                solver, ["relativeTolerance", "absoluteCurrentTolerance", "absoluteVoltageTolerance",
+                         "minimumConductance", "maximumIterations", "temperatureCelsius",
+                         "nominalTemperatureCelsius"],
+                at: "circuit.solver"
+            )
+        }
+        if let conditions = circuit["initialConditions"] as? [String: Any] {
+            try requireKeys(conditions, ["nodeVoltages", "elementCurrents"], at: "circuit.initialConditions")
+        }
+    }
+
+    private static func requireKeys(_ value: [String: Any], _ allowed: Set<String>, at path: String) throws {
+        let unknown = Set(value.keys).subtracting(allowed).sorted()
+        guard unknown.isEmpty else {
+            throw PlatformError.invalidRequest("\(path) contains unknown member \(unknown[0])")
         }
     }
 }

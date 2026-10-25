@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ohmlab:schema:portable-simulation-response:1",
+  "title": "OhmLab portable simulation response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "requestID", "status"],
+  "properties": {
+    "protocolVersion": {"const": 1},
+    "requestID": {"type": "string", "maxLength": 256},
+    "status": {"enum": ["success", "failure"]},
+    "backend": {"type": "string"},
+    "implementationVersion": {"type": "string"},
+    "provenance": {"$ref": "#/$defs/provenance"},
+    "result": {"$ref": "#/$defs/result"},
+    "error": {"$ref": "#/$defs/error"}
+  },
+  "oneOf": [
+    {
+      "properties": {"status": {"const": "success"}},
+      "required": ["backend", "provenance", "result"],
+      "not": {"required": ["error"]}
+    },
+    {
+      "properties": {"status": {"const": "failure"}},
+      "required": ["error"],
+      "not": {"anyOf": [{"required": ["provenance"]}, {"required": ["result"]}]}
+    }
+  ],
+  "$defs": {
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["productVersion", "protocolMediaType", "circuitIRVersion", "simulationResultVersion", "backend", "modelSource", "requestSHA256"],
+      "properties": {
+        "productVersion": {"type": "string"},
+        "protocolMediaType": {"const": "application/vnd.ohmlab.simulation+json;version=1"},
+        "circuitIRVersion": {"const": 1},
+        "simulationResultVersion": {"const": 1},
+        "backend": {"type": "string"},
+        "implementationVersion": {"type": "string"},
+        "modelSource": {"const": "embedded-circuit-ir"},
+        "requestSHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "error": {
+      "type": "object", "additionalProperties": false, "required": ["code", "message"],
+      "properties": {
+        "code": {"enum": ["unsupported-protocol", "invalid-request", "unknown-backend", "unsupported-capability", "simulation-failed"]},
+        "message": {"type": "string"}
+      }
+    },
+    "namedValue": {
+      "type": "object", "additionalProperties": false, "required": ["name", "value"],
+      "properties": {"name": {"type": "string"}, "value": {"type": "number"}}
+    },
+    "componentValue": {
+      "type": "object", "additionalProperties": false, "required": ["name", "voltage", "current"],
+      "properties": {"name": {"type": "string"}, "voltage": {"type": "number"}, "current": {"type": "number"}}
+    },
+    "frequencyPoint": {
+      "type": "object", "additionalProperties": false, "required": ["frequency", "magnitudeDB", "phaseDegrees"],
+      "properties": {"frequency": {"type": "number"}, "magnitudeDB": {"type": "number"}, "phaseDegrees": {"type": "number"}}
+    },
+    "frequencySeries": {
+      "type": "object", "additionalProperties": false, "required": ["name", "values"],
+      "properties": {"name": {"type": "string"}, "values": {"type": "array", "items": {"$ref": "#/$defs/frequencyPoint"}}}
+    },
+    "namedSeries": {
+      "type": "object", "additionalProperties": false, "required": ["name", "values"],
+      "properties": {"name": {"type": "string"}, "values": {"type": "array", "items": {"type": "number"}}}
+    },
+    "dc": {
+      "type": "object", "additionalProperties": false, "required": ["nodes", "components", "sources", "converged"],
+      "properties": {
+        "nodes": {"type": "array", "items": {"$ref": "#/$defs/namedValue"}},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/componentValue"}},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/namedValue"}},
+        "converged": {"type": "boolean"}
+      }
+    },
+    "ac": {
+      "type": "object", "additionalProperties": false, "required": ["frequencies", "nodes", "components"],
+      "properties": {
+        "frequencies": {"type": "array", "items": {"type": "number"}},
+        "nodes": {"type": "array", "items": {"$ref": "#/$defs/frequencySeries"}},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/frequencySeries"}}
+      }
+    },
+    "transient": {
+      "type": "object", "additionalProperties": false, "required": ["times", "nodes", "components"],
+      "properties": {
+        "times": {"type": "array", "items": {"type": "number"}},
+        "nodes": {"type": "array", "items": {"$ref": "#/$defs/namedSeries"}},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/namedSeries"}}
+      }
+    },
+    "sweep": {
+      "type": "object", "additionalProperties": false, "required": ["axes", "points"],
+      "properties": {
+        "axes": {"type": "array", "items": {"$ref": "#/$defs/namedSeries"}},
+        "points": {"type": "array", "items": {"$ref": "#/$defs/sweepPoint"}}
+      }
+    },
+    "sweepPoint": {
+      "type": "object", "additionalProperties": false, "required": ["coordinates", "nodes", "components"],
+      "properties": {
+        "coordinates": {"type": "array", "items": {"$ref": "#/$defs/namedValue"}},
+        "nodes": {"type": "array", "items": {"$ref": "#/$defs/namedValue"}},
+        "components": {"type": "array", "items": {"$ref": "#/$defs/componentValue"}}
+      }
+    },
+    "harmonic": {
+      "type": "object", "additionalProperties": false,
+      "required": ["number", "frequency", "magnitude", "phaseDegrees", "normalizedMagnitude", "normalizedPhaseDegrees"],
+      "properties": {
+        "number": {"type": "integer"}, "frequency": {"type": "number"}, "magnitude": {"type": "number"},
+        "phaseDegrees": {"type": "number"}, "normalizedMagnitude": {"type": "number"}, "normalizedPhaseDegrees": {"type": "number"}
+      }
+    },
+    "fourier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["variable", "fundamentalFrequency", "dcComponent", "totalHarmonicDistortion", "harmonics"],
+      "properties": {
+        "variable": {"type": "string"}, "fundamentalFrequency": {"type": "number"},
+        "dcComponent": {"type": "number"}, "totalHarmonicDistortion": {"type": "number"},
+        "harmonics": {"type": "array", "items": {"$ref": "#/$defs/harmonic"}}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false, "required": ["contractVersion", "fourier", "warnings"],
+      "properties": {
+        "contractVersion": {"const": 1},
+        "dc": {"$ref": "#/$defs/dc"}, "ac": {"$ref": "#/$defs/ac"},
+        "transient": {"$ref": "#/$defs/transient"}, "sweep": {"$ref": "#/$defs/sweep"},
+        "fourier": {"type": "array", "items": {"$ref": "#/$defs/fourier"}},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

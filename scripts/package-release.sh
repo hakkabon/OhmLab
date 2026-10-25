@@ -28,6 +28,7 @@ cp "$bin_path/OhmLab" "$app/Contents/MacOS/OhmLab"
 cp "$bin_path/ohm" "$stage/bin/ohm"
 cp LICENSE README.md "$stage/"
 cp docs/contracts/*.md "$stage/docs/contracts/"
+cp -R docs/contracts/schemas "$stage/docs/contracts/"
 sed "s/@VERSION@/$version/g" Packaging/Info.plist.in >"$app/Contents/Info.plist"
 printf '{\n  "product": "OhmLab",\n  "version": "%s",\n  "platform": "macOS",\n  "architecture": "%s",\n  "minimumSystemVersion": "14.0"\n}\n' \
     "$version" "$architecture" >"$stage/release.json"

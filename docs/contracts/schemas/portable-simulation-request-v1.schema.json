@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ohmlab:schema:portable-simulation-request:1",
+  "title": "OhmLab portable simulation request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "requestID", "backend", "circuit", "analysis"],
+  "properties": {
+    "protocolVersion": {"const": 1},
+    "requestID": {"type": "string", "minLength": 1, "maxLength": 256},
+    "backend": {"type": "string", "minLength": 1},
+    "circuit": {"$ref": "#/$defs/circuit"},
+    "analysis": {"$ref": "#/$defs/analysis"}
+  },
+  "$defs": {
+    "finiteNumber": {"type": "number"},
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dcOperatingPoint"],
+      "properties": {
+        "dcOperatingPoint": {"type": "boolean"},
+        "ac": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "startFrequency", "stopFrequency", "points"],
+          "properties": {
+            "type": {"enum": ["lin", "dec", "oct"]},
+            "startFrequency": {"type": "number", "exclusiveMinimum": 0},
+            "stopFrequency": {"type": "number", "exclusiveMinimum": 0},
+            "points": {"type": "integer", "minimum": 1, "maximum": 100000}
+          }
+        },
+        "transient": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["step", "stop", "start"],
+          "properties": {
+            "step": {"type": "number", "exclusiveMinimum": 0},
+            "stop": {"type": "number", "exclusiveMinimum": 0},
+            "start": {"type": "number", "minimum": 0}
+          }
+        },
+        "dcSweep": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "start", "stop", "step"],
+          "properties": {
+            "source": {"type": "string", "minLength": 1, "maxLength": 1024},
+            "start": {"$ref": "#/$defs/finiteNumber"},
+            "stop": {"$ref": "#/$defs/finiteNumber"},
+            "step": {"type": "number", "not": {"const": 0}}
+          }
+        }
+      }
+    },
+    "circuit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "referenceNode", "nodes", "devices", "solver", "initialConditions"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "referenceNode": {"const": 0},
+        "nodes": {
+          "type": "array", "minItems": 1, "maxItems": 100000,
+          "items": {"$ref": "#/$defs/node"}
+        },
+        "devices": {
+          "type": "array", "maxItems": 200000,
+          "items": {"$ref": "#/$defs/device"}
+        },
+        "solver": {"$ref": "#/$defs/solver"},
+        "initialConditions": {"$ref": "#/$defs/conditions"}
+      }
+    },
+    "node": {
+      "type": "object", "additionalProperties": false, "required": ["name"],
+      "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 1024}}
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "terminals"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "kind": {"enum": ["resistor", "capacitor", "inductor", "voltage-source", "current-source", "diode", "bjt", "mosfet", "jfet"]},
+        "terminals": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "integer", "minimum": 0}},
+        "value": {"type": "number", "exclusiveMinimum": 0},
+        "source": {"$ref": "#/$defs/source"},
+        "diode": {"$ref": "#/$defs/diode"},
+        "bjt": {"$ref": "#/$defs/bjt"},
+        "mosfet": {"$ref": "#/$defs/mosfet"},
+        "jfet": {"$ref": "#/$defs/jfet"}
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["dcValue", "acMagnitude", "acPhaseDegrees"],
+      "properties": {
+        "dcValue": {"$ref": "#/$defs/finiteNumber"},
+        "acMagnitude": {"$ref": "#/$defs/finiteNumber"},
+        "acPhaseDegrees": {"$ref": "#/$defs/finiteNumber"},
+        "transient": {"$ref": "#/$defs/waveform"}
+      }
+    },
+    "waveform": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "parameters", "points"],
+      "properties": {
+        "kind": {"enum": ["pulse", "sine", "pwl"]},
+        "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/finiteNumber"}},
+        "points": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/waveformPoint"}}
+      }
+    },
+    "waveformPoint": {
+      "type": "object", "additionalProperties": false, "required": ["time", "value"],
+      "properties": {"time": {"$ref": "#/$defs/finiteNumber"}, "value": {"$ref": "#/$defs/finiteNumber"}}
+    },
+    "diode": {
+      "type": "object", "additionalProperties": false,
+      "required": ["saturationCurrent", "emissionCoefficient", "thermalVoltage", "area", "saturationCurrentTemperatureExponent", "activationEnergy"],
+      "properties": {
+        "saturationCurrent": {"type": "number", "exclusiveMinimum": 0},
+        "emissionCoefficient": {"type": "number", "exclusiveMinimum": 0},
+        "thermalVoltage": {"type": "number", "exclusiveMinimum": 0},
+        "area": {"type": "number", "exclusiveMinimum": 0},
+        "saturationCurrentTemperatureExponent": {"$ref": "#/$defs/finiteNumber"},
+        "activationEnergy": {"$ref": "#/$defs/finiteNumber"}
+      }
+    },
+    "bjt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["polarity", "saturationCurrent", "forwardBeta", "reverseBeta", "thermalVoltage", "saturationCurrentTemperatureExponent", "activationEnergy", "betaTemperatureExponent"],
+      "properties": {
+        "polarity": {"enum": ["npn", "pnp"]},
+        "saturationCurrent": {"type": "number", "exclusiveMinimum": 0},
+        "forwardBeta": {"type": "number", "exclusiveMinimum": 0},
+        "reverseBeta": {"type": "number", "exclusiveMinimum": 0},
+        "thermalVoltage": {"type": "number", "exclusiveMinimum": 0},
+        "saturationCurrentTemperatureExponent": {"$ref": "#/$defs/finiteNumber"},
+        "activationEnergy": {"$ref": "#/$defs/finiteNumber"},
+        "betaTemperatureExponent": {"$ref": "#/$defs/finiteNumber"}
+      }
+    },
+    "mosfet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["polarity", "thresholdVoltage", "transconductanceParameter", "channelLengthModulation", "bodyEffect", "surfacePotential", "mobilityTemperatureExponent", "thresholdTemperatureCoefficient"],
+      "properties": {
+        "polarity": {"enum": ["nmos", "pmos"]},
+        "thresholdVoltage": {"$ref": "#/$defs/finiteNumber"},
+        "transconductanceParameter": {"type": "number", "exclusiveMinimum": 0},
+        "channelLengthModulation": {"type": "number", "minimum": 0},
+        "bodyEffect": {"type": "number", "minimum": 0},
+        "surfacePotential": {"type": "number", "exclusiveMinimum": 0},
+        "mobilityTemperatureExponent": {"$ref": "#/$defs/finiteNumber"},
+        "thresholdTemperatureCoefficient": {"$ref": "#/$defs/finiteNumber"}
+      }
+    },
+    "jfet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["polarity", "thresholdVoltage", "transconductanceParameter", "channelLengthModulation", "gateSaturationCurrent", "thermalVoltage", "mobilityTemperatureExponent", "thresholdTemperatureCoefficient", "saturationCurrentTemperatureExponent", "activationEnergy"],
+      "properties": {
+        "polarity": {"enum": ["njf", "pjf"]},
+        "thresholdVoltage": {"$ref": "#/$defs/finiteNumber"},
+        "transconductanceParameter": {"type": "number", "exclusiveMinimum": 0},
+        "channelLengthModulation": {"type": "number", "minimum": 0},
+        "gateSaturationCurrent": {"type": "number", "exclusiveMinimum": 0},
+        "thermalVoltage": {"type": "number", "exclusiveMinimum": 0},
+        "mobilityTemperatureExponent": {"$ref": "#/$defs/finiteNumber"},
+        "thresholdTemperatureCoefficient": {"$ref": "#/$defs/finiteNumber"},
+        "saturationCurrentTemperatureExponent": {"$ref": "#/$defs/finiteNumber"},
+        "activationEnergy": {"$ref": "#/$defs/finiteNumber"}
+      }
+    },
+    "solver": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relativeTolerance", "absoluteCurrentTolerance", "absoluteVoltageTolerance", "minimumConductance", "maximumIterations", "temperatureCelsius", "nominalTemperatureCelsius"],
+      "properties": {
+        "relativeTolerance": {"type": "number", "exclusiveMinimum": 0},
+        "absoluteCurrentTolerance": {"type": "number", "exclusiveMinimum": 0},
+        "absoluteVoltageTolerance": {"type": "number", "exclusiveMinimum": 0},
+        "minimumConductance": {"type": "number", "exclusiveMinimum": 0},
+        "maximumIterations": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "temperatureCelsius": {"type": "number", "exclusiveMinimum": -273.15},
+        "nominalTemperatureCelsius": {"type": "number", "exclusiveMinimum": -273.15}
+      }
+    },
+    "conditions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["nodeVoltages", "elementCurrents"],
+      "properties": {
+        "nodeVoltages": {"type": "object", "additionalProperties": {"$ref": "#/$defs/finiteNumber"}},
+        "elementCurrents": {"type": "object", "additionalProperties": {"$ref": "#/$defs/finiteNumber"}}
+      }
+    }
+  }
+}

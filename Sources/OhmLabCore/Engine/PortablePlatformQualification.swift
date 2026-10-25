@@ -3,7 +3,7 @@ import Foundation
 /// Executable release evidence for portable-simulation protocol v1.
 public enum PortablePlatformQualification {
     public static let currentContractVersion = 1
-    public static let minimumCaseCount = 5
+    public static let minimumCaseCount = 8
 
     public struct CaseResult: Codable, Equatable, Sendable {
         public let identifier: String
@@ -85,6 +85,41 @@ public enum PortablePlatformQualification {
                 identifier: "unknown-backend-fails-closed",
                 passed: unknownResponse.error?.code == .unknownBackend,
                 detail: unknownResponse.error?.message ?? "unknown backend unexpectedly succeeded"
+            ))
+
+            let malformed = PortableSimulationPlatform.execute(Data("not-json".utf8))
+            cases.append(.init(
+                identifier: "malformed-json-fails-closed",
+                passed: malformed.error?.code == .invalidRequest && malformed.requestID.isEmpty,
+                detail: malformed.error?.message ?? "malformed JSON unexpectedly succeeded"
+            ))
+
+            let amplified = PortableSimulationPlatform.Request(
+                requestID: "qualification-amplified", circuit: divider,
+                analysis: .init(
+                    dcOperatingPoint: false,
+                    transient: .init(step: 1e-12, stop: 1)
+                )
+            )
+            let amplifiedResponse = PortableSimulationPlatform.execute(amplified)
+            cases.append(.init(
+                identifier: "amplified-workload-fails-closed",
+                passed: amplifiedResponse.error?.code == .invalidRequest,
+                detail: amplifiedResponse.error?.message ?? "amplified workload unexpectedly succeeded"
+            ))
+
+            let provenanceRequest = PortableSimulationPlatform.Request(
+                requestID: "qualification-provenance", circuit: divider,
+                analysis: .init(dcOperatingPoint: true)
+            )
+            let first = PortableSimulationPlatform.execute(provenanceRequest)
+            let second = PortableSimulationPlatform.execute(provenanceRequest)
+            let digest = first.provenance?.requestSHA256 ?? ""
+            cases.append(.init(
+                identifier: "deterministic-provenance",
+                passed: first.succeeded && digest.count == 64 && digest == second.provenance?.requestSHA256
+                    && first.provenance?.modelSource == "embedded-circuit-ir",
+                detail: digest.isEmpty ? "successful response omitted provenance" : digest
             ))
         } catch {
             cases.append(.init(identifier: "corpus-construction", passed: false, detail: error.localizedDescription))

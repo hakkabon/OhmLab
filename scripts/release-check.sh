@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 2.0.0" ]]; then
+if [[ "$version" != "ohm 2.0.1" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
