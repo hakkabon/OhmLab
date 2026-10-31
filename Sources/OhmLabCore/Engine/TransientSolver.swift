@@ -35,10 +35,16 @@ public struct TransientSolver: Sendable {
         guard stopTime > startTime else {
             throw CircuitSolveError.invalidElement("Transient stop time")
         }
-        let stepCount = Int(((stopTime - startTime) / timestep).rounded(.up))
-        guard stepCount > 0, stepCount <= maxSteps else {
+        // Compute the step count in the Double domain first: a tiny timestep or
+        // a huge span can overflow `Int` before the range check runs, which
+        // traps instead of throwing. Reject anything outside `maxSteps`.
+        let rawStepCount = ((stopTime - startTime) / timestep).rounded(.up)
+        guard rawStepCount.isFinite,
+              rawStepCount >= 1,
+              rawStepCount <= Double(maxSteps) else {
             throw CircuitSolveError.invalidElement("Transient step count")
         }
+        let stepCount = Int(rawStepCount)
 
         // Initial condition: DC operating point with sources at `startTime`,
         // then any `.ic` overrides applied to node voltages and inductor currents.

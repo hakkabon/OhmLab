@@ -1124,10 +1124,15 @@ public enum SpiceNetlistParser {
     static func linearSweep(from start: Double, to stop: Double, step: Double) -> [Double] {
         guard step.isFinite, step != 0, start.isFinite, stop.isFinite else { return [] }
         let span = stop - start
-        guard span != 0, span / step > 0 else { return [] }
+        guard span.isFinite, span != 0 else { return [] }
+        // Do the division and rounding before converting to `Int`: a span that
+        // is huge relative to the step (or a subnormal step) overflows the
+        // conversion and traps.
+        let rawCount = (span / step).rounded()
+        guard rawCount.isFinite, rawCount >= 1, rawCount <= 999_999 else { return [] }
+        let count = Int(rawCount) + 1
         var values: [Double] = []
-        let count = Int((span / step).rounded()) + 1
-        guard count > 0, count <= 1_000_000 else { return [] }
+        values.reserveCapacity(count)
         for index in 0..<count {
             values.append(start + Double(index) * step)
         }
