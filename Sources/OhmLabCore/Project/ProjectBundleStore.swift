@@ -47,11 +47,22 @@ public enum ProjectBundleStore {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        // Remove stale sheet files no longer referenced by the manifest.
-        if let existing = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
-            for url in existing where url.pathExtension == CircuitFileStore.fileExtension {
-                try? fileManager.removeItem(at: url)
-            }
+        // Remove only sheet files the *previous* manifest owned and the new
+        // manifest no longer references. Deleting every `.ohmlab` in the folder
+        // would also remove unrelated documents the user keeps alongside the
+        // bundle (a sibling export, a backup, another project).
+        let manifestURL = directory.appendingPathComponent(manifestFileName)
+        let previousSheets: [ProjectSheet]
+        if let data = try? Data(contentsOf: manifestURL),
+           let previous = try? decodeManifest(data) {
+            previousSheets = previous.sheets
+        } else {
+            previousSheets = []
+        }
+        let currentFiles = Set(bundle.manifest.sheets.map(\.fileName))
+        for sheet in previousSheets where !currentFiles.contains(sheet.fileName) {
+            guard let stale = try? ProjectPath.resolve(sheet.fileName, under: directory) else { continue }
+            try? fileManager.removeItem(at: stale)
         }
 
         for sheet in bundle.manifest.sheets {
@@ -63,10 +74,7 @@ public enum ProjectBundleStore {
             )
             try CircuitFileStore.write(document, to: url)
         }
-        try encodeManifest(bundle.manifest).write(
-            to: directory.appendingPathComponent(manifestFileName),
-            options: .atomic
-        )
+        try encodeManifest(bundle.manifest).write(to: manifestURL, options: .atomic)
     }
 
     // MARK: - Archive

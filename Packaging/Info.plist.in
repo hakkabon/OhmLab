@@ -22,6 +22,12 @@
             <key>LSItemContentTypes</key>
             <array><string>com.hakkabon.ohmlab.circuit</string></array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>SPICE Netlist</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array><string>com.hakkabon.ohmlab.spice-netlist</string></array>
+        </dict>
     </array>
     <key>UTExportedTypeDeclarations</key>
     <array>
@@ -34,6 +40,19 @@
             <dict>
                 <key>public.filename-extension</key>
                 <array><string>ohmlab</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.hakkabon.ohmlab.spice-netlist</string>
+            <key>UTTypeDescription</key><string>SPICE Netlist</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>cir</string></array>
+                <key>public.mime-type</key>
+                <array><string>text/plain</string></array>
             </dict>
         </dict>
     </array>

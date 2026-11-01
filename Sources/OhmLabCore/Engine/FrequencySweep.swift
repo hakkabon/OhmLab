@@ -30,8 +30,10 @@ public enum FrequencySweep {
             return count
         case .dec, .oct:
             let span = log(stop / start) / log(base(for: type))
-            let intervals = max(1, Int((span * Double(count)).rounded(.up)))
-            return intervals + 2
+            guard let intervals = intervalCount(span: span, count: count) else { return 0 }
+            // Signal an oversized sweep without overflowing `intervals + 2`;
+            // callers compare the result against `maxPointCount`.
+            return intervals >= maxPointCount ? maxPointCount + 1 : intervals + 2
         }
     }
 
@@ -50,13 +52,25 @@ public enum FrequencySweep {
         case .dec, .oct:
             let base = base(for: type)
             let span = log(stop / start) / log(base)
-            let intervals = max(1, Int((span * Double(count)).rounded(.up)))
+            guard let intervals = intervalCount(span: span, count: count),
+                  intervals <= maxPointCount else { return [] }
             var frequencies = (0...intervals).map { index in
                 min(start * pow(base, Double(index) / Double(count)), stop)
             }
             if frequencies.last != stop { frequencies.append(stop) }
             return frequencies
         }
+    }
+
+    /// Number of logarithmic intervals, or nil when the sweep is not
+    /// representable. The span can be infinite when `stop / start` overflows,
+    /// so it is validated before the `Int` conversion.
+    private static func intervalCount(span: Double, count: Int) -> Int? {
+        guard span.isFinite, count > 0 else { return nil }
+        let scaled = (span * Double(count)).rounded(.up)
+        guard scaled.isFinite, scaled >= 1 else { return nil }
+        guard scaled < Double(Int.max) else { return Int.max }
+        return Int(scaled)
     }
 
     private static func base(for type: FrequencySweepType) -> Double {

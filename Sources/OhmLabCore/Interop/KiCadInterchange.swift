@@ -10,9 +10,11 @@ import Foundation
 import UniformTypeIdentifiers
 
 extension UTType {
-    /// A SPICE netlist (`.cir`), falling back to plain text when the system has
-    /// no declaration for the extension.
-    public static let spiceNetlist = UTType(filenameExtension: "cir") ?? .plainText
+    /// OhmLab's exported SPICE netlist type, declared in the app's Info.plist.
+    public static let spiceNetlist =
+        UTType("com.hakkabon.ohmlab.spice-netlist")
+        ?? UTType(filenameExtension: "cir")
+        ?? .plainText
 }
 
 public enum KiCadInterchangeError: LocalizedError {
@@ -46,6 +48,19 @@ public enum KiCadInterchangeError: LocalizedError {
 public enum KiCadInterchange {
     public static let netlistExtensions: Set<String> = ["cir", "net", "sp", "spi", "ckt", "txt"]
     public static let schematicExtensions: Set<String> = ["kicad_sch"]
+    /// Preferred extension for exported netlists.
+    public static let netlistExtension = "cir"
+
+    /// A safe export file name for a document. Appends `.cir` unless the name
+    /// already carries a netlist extension, so a document called "amp" exports
+    /// as "amp.cir" while "amp.cir" does not become "amp.cir.cir".
+    public static func netlistFileName(for documentName: String) -> String {
+        let trimmed = documentName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? "netlist" : trimmed
+        let extensionName = (base as NSString).pathExtension.lowercased()
+        guard !netlistExtensions.contains(extensionName) else { return base }
+        return "\(base).\(netlistExtension)"
+    }
 
     /// Reads a SPICE netlist from disk as UTF-8 text.
     public static func readNetlist(at url: URL) throws -> String {

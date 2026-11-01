@@ -618,6 +618,7 @@ public class SchematicDocument: ObservableObject {
         guard symbols[index].parameters[key] != value else { return }
         checkpoint()
         symbols[index].parameters[key] = value
+        markContentChanged()
     }
 
     // MARK: - Wire editing

@@ -527,11 +527,14 @@ private extension NumericCoreEngineBackend {
                   settings.tranStop.isFinite, settings.tranStop > settings.tranStart else {
                 throw CircuitSimulationError.invalidTransientSettings
             }
-            let stepCount = Int(((settings.tranStop - settings.tranStart) / settings.tranStep).rounded(.up))
-            guard stepCount > 0 else { throw CircuitSimulationError.invalidTransientSettings }
-            guard stepCount <= FrequencySweep.maxPointCount else {
+            let rawStepCount = ((settings.tranStop - settings.tranStart) / settings.tranStep).rounded(.up)
+            guard rawStepCount.isFinite, rawStepCount >= 1 else {
+                throw CircuitSimulationError.invalidTransientSettings
+            }
+            guard rawStepCount <= Double(FrequencySweep.maxPointCount) else {
                 throw CircuitSimulationError.tooManySamples
             }
+            let stepCount = Int(rawStepCount)
 
             var initial = operating.state
             let nodeOverrides = Dictionary(

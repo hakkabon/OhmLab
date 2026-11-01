@@ -70,7 +70,7 @@ struct CircuitSimulatorView: View {
             isPresented: $isExportingNetlist,
             document: NetlistFileDocument(text: (try? document.netlistForExport()) ?? document.netlistText),
             contentType: .spiceNetlist,
-            defaultFilename: document.name
+            defaultFilename: KiCadInterchange.netlistFileName(for: document.name)
         ) { result in
             if case .failure(let error) = result {
                 document.simulationError = error.localizedDescription
