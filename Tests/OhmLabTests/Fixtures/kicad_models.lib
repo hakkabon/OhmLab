@@ -1,0 +1,11 @@
+* KiCad-style model library used by the netlist fidelity tests.
+* The two sections deliberately define DMOD differently so a test can prove
+* that only the requested section is loaded.
+
+.lib Diodes
+.model DMOD D(IS=2e-14 N=1.0)
+.endl
+
+.lib Alternate
+.model DMOD D(IS=9e-9 N=2.0)
+.endl

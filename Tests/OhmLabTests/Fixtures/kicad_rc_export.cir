@@ -1,0 +1,11 @@
+* KiCad 8.0 SPICE netlist export
+.title "RC low-pass with diode clamp"
+.lib "kicad_models.lib" "Diodes"
+V1 in 0 PULSE(0 5 0
++ 1n 1n 1u 2u)
+R1 in out 1k
+C1 out 0
++ 1u
+D1 out 0 DMOD
+.tran 1u 100u 0 10n
+.end

@@ -72,7 +72,10 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
             effective.runTransient = true
             if settings.tranStep == AnalysisSettings.default.tranStep,
                settings.tranStop == AnalysisSettings.default.tranStop {
-                effective.tranStep = parsed.analysis.tranStep
+                effective.tranStep = min(
+                    parsed.analysis.tranStep,
+                    parsed.analysis.tranMaxStep ?? .infinity
+                )
                 effective.tranStop = parsed.analysis.tranStop
                 effective.tranStart = parsed.analysis.tranStart
             }

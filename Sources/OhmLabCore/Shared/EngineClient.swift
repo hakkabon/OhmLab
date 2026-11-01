@@ -446,7 +446,10 @@ struct NativeMNAEngine: SimulationEngineBackend {
             effective.runTransient = settings.runTransient || parsed.analysis.hasTransient
             if settings.tranStep == AnalysisSettings.default.tranStep,
                settings.tranStop == AnalysisSettings.default.tranStop {
-                effective.tranStep = parsed.analysis.tranStep
+                effective.tranStep = min(
+                    parsed.analysis.tranStep,
+                    parsed.analysis.tranMaxStep ?? .infinity
+                )
                 effective.tranStop = parsed.analysis.tranStop
                 effective.tranStart = parsed.analysis.tranStart
             }
@@ -465,6 +468,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
                 circuit: parsed.circuit,
                 settings: effective,
                 initialConditions: parsed.initialConditions,
+                useInitialConditionsOnly: parsed.analysis.tranUseInitialConditions,
                 fourierSpecs: parsed.analysis.fourier
             )
             result.sweep = try Self.runParameterStep(
@@ -487,6 +491,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
             circuit: parsed.circuit,
             settings: effective,
             initialConditions: parsed.initialConditions,
+            useInitialConditionsOnly: parsed.analysis.tranUseInitialConditions,
             sweepAxes: axes,
             fourierSpecs: parsed.analysis.fourier
         )
@@ -512,6 +517,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
         circuit: LinearCircuit,
         settings: AnalysisSettings,
         initialConditions: InitialConditions = InitialConditions(),
+        useInitialConditionsOnly: Bool = false,
         sweepAxes: [SpiceSweepAxis] = [],
         fourierSpecs: [SpiceFourierSpec] = []
     ) throws -> CircuitSimResult {
@@ -616,7 +622,8 @@ struct NativeMNAEngine: SimulationEngineBackend {
                     startTime: settings.tranStart,
                     stopTime: settings.tranStop,
                     maxSteps: FrequencySweep.maxPointCount,
-                    initialConditions: initialConditions
+                    initialConditions: initialConditions,
+                    useInitialConditionsOnly: useInitialConditionsOnly
                 )
             } catch is CancellationError {
                 throw CancellationError()

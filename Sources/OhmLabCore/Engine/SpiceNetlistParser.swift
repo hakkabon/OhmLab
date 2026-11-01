@@ -184,6 +184,11 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
     public var tranStep: Double
     public var tranStop: Double
     public var tranStart: Double
+    /// `.tran … tmax`: the largest internal timestep. Nil when not given.
+    public var tranMaxStep: Double?
+    /// `.tran … UIC`: start from `.ic`/zero state instead of a DC operating
+    /// point.
+    public var tranUseInitialConditions: Bool
     /// Nested `.dc` sweep axes, ordered outermost first. The last axis is the
     /// innermost one (the plot's X axis).
     public var dcSweep: [SpiceSweepAxis]
@@ -203,6 +208,8 @@ public struct SpiceAnalysisCard: Sendable, Equatable {
         tranStep: 1e-4,
         tranStop: 1e-2,
         tranStart: 0,
+        tranMaxStep: nil,
+        tranUseInitialConditions: false,
         dcSweep: [],
         step: nil,
         fourier: []
@@ -383,7 +390,8 @@ public enum SpiceNetlistParser {
         }
 
         func run(_ text: String, include: SpiceIncludeResolver?) throws -> ParsedSpiceNetlist {
-            let expanded = try expandIncludes(text, include: include, depth: 0)
+            let folded = SpiceNetlistParser.foldContinuations(text)
+            let expanded = try expandIncludes(folded, include: include, depth: 0)
             let rawLines = expanded.components(separatedBy: .newlines)
             var topLevel: [SubcircuitLine] = []
             var open: SubcircuitDefinition?
@@ -492,11 +500,30 @@ public enum SpiceNetlistParser {
                     continue
                 }
                 let contents = try include(path)
-                guard let contents else {
+                guard var contents else {
                     warnings.append("Skipped \(directive) \"\(path)\": file could not be resolved.")
                     continue
                 }
-                output.append(try expandIncludes(contents, include: include, depth: depth + 1))
+                if directive == ".lib", tokens.count >= 3 {
+                    let section = SpiceNetlistParser.unquoted(tokens[2])
+                    guard let extracted = SpiceNetlistParser.librarySection(
+                        named: section,
+                        in: contents
+                    ) else {
+                        warnings.append(
+                            "Skipped .lib \"\(path)\" section \"\(section)\": section not found."
+                        )
+                        continue
+                    }
+                    contents = extracted
+                }
+                output.append(
+                    try expandIncludes(
+                        SpiceNetlistParser.foldContinuations(contents),
+                        include: include,
+                        depth: depth + 1
+                    )
+                )
             }
             return output.joined(separator: "\n")
         }
@@ -1082,6 +1109,58 @@ public enum SpiceNetlistParser {
         return line
     }
 
+    /// Folds SPICE continuation lines (a line whose first non-blank character
+    /// is `+`) into the previous logical line. Continuation lines are replaced
+    /// by empty lines so reported line numbers still match the source.
+    static func foldContinuations(_ text: String) -> String {
+        var lines: [String] = []
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = stripComment(rawLine)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("+") else {
+                lines.append(line)
+                continue
+            }
+            let continuation = trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
+            guard let last = lines.indices.last,
+                  !lines[last].trimmingCharacters(in: .whitespaces).hasPrefix("*") else {
+                // An orphan continuation has nothing to attach to; keep it so
+                // the element parser reports the unsupported line.
+                lines.append(line)
+                continue
+            }
+            lines[last] += " " + continuation
+            lines.append("")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Extracts the body of `.lib <section>` … `.endl` from a model library.
+    /// Returns nil when the section is absent.
+    static func librarySection(named name: String, in text: String) -> String? {
+        let target = unquoted(name).lowercased()
+        var collecting = false
+        var found = false
+        var body: [String] = []
+        for rawLine in text.components(separatedBy: .newlines) {
+            let stripped = stripComment(rawLine).trimmingCharacters(in: .whitespaces)
+            let tokens = splitTokens(stripped)
+            let directive = tokens.first?.lowercased()
+            if !collecting {
+                guard directive == ".lib", tokens.count >= 2,
+                      unquoted(tokens[1]).lowercased() == target else { continue }
+                collecting = true
+                found = true
+                continue
+            }
+            if directive == ".endl" { break }
+            // Nested section markers are not part of the extracted body.
+            if directive == ".lib" { continue }
+            body.append(rawLine)
+        }
+        return found ? body.joined(separator: "\n") : nil
+    }
+
     /// Node names that mean the ground reference (node 0). SPICE itself uses
     /// `0`; schematics exported from other tools often spell it `gnd`.
     private static let groundAliases: Set<String> = ["0", "GND", "GROUND", "AGND"]
@@ -1387,17 +1466,26 @@ public enum SpiceNetlistParser {
         text: String,
         into analysis: inout SpiceAnalysisCard
     ) throws {
-        // .tran <tstep> <tstop> [tstart [tmax]]
-        guard tokens.count >= 3 else { throw SpiceParseError.invalidAnalysis(line: line, text: text) }
-        let step = try parseNumber(tokens[1], line: line)
-        let stop = try parseNumber(tokens[2], line: line)
-        let start = tokens.count > 3 ? try parseNumber(tokens[3], line: line) : 0
-        guard step > 0, stop > start, start >= 0 else {
+        // .tran <tstep> <tstop> [tstart [tmax]] [UIC]
+        var body = Array(tokens.dropFirst())
+        let useInitialConditions = body.contains { $0.lowercased() == "uic" }
+        body.removeAll { $0.lowercased() == "uic" }
+        guard body.count >= 2 else {
+            throw SpiceParseError.invalidAnalysis(line: line, text: text)
+        }
+        let step = try parseNumber(body[0], line: line)
+        let stop = try parseNumber(body[1], line: line)
+        let start = body.count > 2 ? try parseNumber(body[2], line: line) : 0
+        let maxStep = body.count > 3 ? try parseNumber(body[3], line: line) : nil
+        guard step > 0, stop > start, start >= 0,
+              maxStep.map({ $0 > 0 && $0.isFinite }) ?? true else {
             throw SpiceParseError.invalidAnalysis(line: line, text: text)
         }
         analysis.tranStep = step
         analysis.tranStop = stop
         analysis.tranStart = start
+        analysis.tranMaxStep = maxStep
+        analysis.tranUseInitialConditions = useInitialConditions
     }
 
     /// Parses `.four <freq> <var> [var…]`.

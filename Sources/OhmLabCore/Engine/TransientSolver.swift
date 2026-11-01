@@ -30,7 +30,8 @@ public struct TransientSolver: Sendable {
         startTime: Double,
         stopTime: Double,
         maxSteps: Int,
-        initialConditions: InitialConditions = InitialConditions()
+        initialConditions: InitialConditions = InitialConditions(),
+        useInitialConditionsOnly: Bool = false
     ) throws -> Result {
         guard stopTime > startTime else {
             throw CircuitSolveError.invalidElement("Transient stop time")
@@ -40,9 +41,20 @@ public struct TransientSolver: Sendable {
             throw CircuitSolveError.invalidElement("Transient step count")
         }
 
-        // Initial condition: DC operating point with sources at `startTime`,
-        // then any `.ic` overrides applied to node voltages and inductor currents.
-        let rawOperatingPoint = try circuit.solveOperatingPoint(atTime: startTime)
+        // Initial condition: normally the DC operating point with sources at
+        // `startTime`. `UIC` (use initial conditions) skips that solve and
+        // starts from zero state, with any `.ic` overrides applied on top.
+        let rawOperatingPoint: LinearCircuit.Solution
+        if useInitialConditionsOnly {
+            rawOperatingPoint = LinearCircuit.Solution(
+                nodeVoltages: [Complex](repeating: .zero, count: circuit.nodeCount),
+                sourceCurrents: [],
+                isDC: true,
+                elementCurrents: [Complex](repeating: .zero, count: circuit.elements.count)
+            )
+        } else {
+            rawOperatingPoint = try circuit.solveOperatingPoint(atTime: startTime)
+        }
         let operatingPoint = initialConditions.applied(to: rawOperatingPoint, in: circuit)
         var capacitorVoltage = [Double](repeating: 0, count: circuit.elements.count)
         var inductorCurrent = [Double](repeating: 0, count: circuit.elements.count)
