@@ -52,11 +52,28 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         settings: AnalysisSettings,
         libraries: [SpiceModelLibrary]
     ) throws -> CircuitSimResult {
+        try solve(
+            netlist: netlist,
+            settings: settings,
+            libraries: libraries,
+            baseDirectory: nil
+        )
+    }
+
+    public func solve(
+        netlist: String,
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
+    ) throws -> CircuitSimResult {
         guard !netlist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CircuitSimulationError.emptyNetlist
         }
-        let include = SpiceLibraryManager(libraries: libraries).includeResolver()
-        let parsed = try SpiceNetlistParser.parse(netlist, include: include, libraries: libraries)
+        let parsed = try SpiceNetlistLoader.parse(
+            netlist,
+            libraries: libraries,
+            baseDirectory: baseDirectory
+        )
         var effective = settings
         if parsed.analysis.hasAC {
             effective.runAC = true

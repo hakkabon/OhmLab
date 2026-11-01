@@ -144,8 +144,13 @@ public struct CircuitFile: Codable, Equatable, Sendable {
     public var usesSchematic: Bool?
     /// Imported vendor model libraries.
     public var modelLibraries: [StoredModelLibrary]?
+    /// The netlist with `.include`/`.lib` cards resolved at import time.
+    public var resolvedNetlistText: String?
+    /// Directory of the imported netlist/schematic. Relative include paths are
+    /// resolved against it when `resolvedNetlistText` is unavailable.
+    public var importBaseDirectory: String?
 
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
 
     public init(
         schemaVersion: Int = CircuitFile.currentSchemaVersion,
@@ -153,16 +158,20 @@ public struct CircuitFile: Codable, Equatable, Sendable {
         schematic: SchematicSnapshot,
         analysis: AnalysisSettings,
         netlistText: String? = nil,
+        resolvedNetlistText: String? = nil,
         usesSchematic: Bool? = nil,
-        modelLibraries: [StoredModelLibrary]? = nil
+        modelLibraries: [StoredModelLibrary]? = nil,
+        importBaseDirectory: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.name = name
         self.schematic = schematic
         self.analysis = analysis
         self.netlistText = netlistText
+        self.resolvedNetlistText = resolvedNetlistText
         self.usesSchematic = usesSchematic
         self.modelLibraries = modelLibraries
+        self.importBaseDirectory = importBaseDirectory
     }
 }
 
@@ -227,6 +236,11 @@ public enum CircuitFileStore {
             file.schemaVersion = 3
             fallthrough
         case 3:
+            // v4 persists the include-resolved netlist and the directory it was
+            // imported from. Both are optional, so old files need no rewriting.
+            file.schemaVersion = 4
+            fallthrough
+        case 4:
             return file
         default:
             throw CircuitFileError.unsupportedVersion(file.schemaVersion)

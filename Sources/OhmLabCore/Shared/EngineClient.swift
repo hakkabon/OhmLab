@@ -235,6 +235,15 @@ public protocol SimulationEngineBackend: Sendable {
     /// Solves a SPICE netlist, optionally seeding model libraries.
     func solve(netlist: String, settings: AnalysisSettings, libraries: [SpiceModelLibrary]) throws -> CircuitSimResult
 
+    /// Solves a SPICE netlist, resolving relative `.include`/`.lib` paths
+    /// against `baseDirectory`.
+    func solve(
+        netlist: String,
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
+    ) throws -> CircuitSimResult
+
     /// Solves a normalized Circuit IR v1 request without reparsing SPICE.
     func solve(circuit: CircuitIR, settings: AnalysisSettings) throws -> CircuitSimResult
 }
@@ -261,6 +270,17 @@ public extension SimulationEngineBackend {
 
     func solve(circuit: CircuitIR, settings: AnalysisSettings) throws -> CircuitSimResult {
         throw SimulationContractError.backendDoesNotAcceptCircuitIR(identifier)
+    }
+
+    /// Backends that do not implement directory-aware include resolution fall
+    /// back to their regular netlist entry point.
+    func solve(
+        netlist: String,
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
+    ) throws -> CircuitSimResult {
+        try solve(netlist: netlist, settings: settings, libraries: libraries)
     }
 }
 
@@ -342,7 +362,8 @@ public enum SimulationEngine {
     public static func solve(
         netlist: String,
         settings: AnalysisSettings,
-        libraries: [SpiceModelLibrary] = []
+        libraries: [SpiceModelLibrary] = [],
+        baseDirectory: URL? = nil
     ) throws -> CircuitSimResult {
         // Netlist processors run before the backend sees the text, so a plugin
         // can macro-expand custom devices into supported primitives.
@@ -352,7 +373,8 @@ public enum SimulationEngine {
         let raw = try backend.solve(
             netlist: processed,
             settings: settings,
-            libraries: libraries
+            libraries: libraries,
+            baseDirectory: baseDirectory
         )
         let result = PluginManager.shared.processResult(
             raw,
@@ -423,11 +445,42 @@ struct NativeMNAEngine: SimulationEngineBackend {
         settings: AnalysisSettings,
         libraries: [SpiceModelLibrary] = []
     ) throws -> CircuitSimResult {
+        try solveNetlist(
+            netlist,
+            settings: settings,
+            libraries: libraries,
+            baseDirectory: nil
+        )
+    }
+
+    func solve(
+        netlist: String,
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
+    ) throws -> CircuitSimResult {
+        try solveNetlist(
+            netlist,
+            settings: settings,
+            libraries: libraries,
+            baseDirectory: baseDirectory
+        )
+    }
+
+    private func solveNetlist(
+        _ netlist: String,
+        settings: AnalysisSettings,
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
+    ) throws -> CircuitSimResult {
         guard !netlist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CircuitSimulationError.emptyNetlist
         }
-        let include = SpiceLibraryManager(libraries: libraries).includeResolver()
-        let parsed = try SpiceNetlistParser.parse(netlist, include: include, libraries: libraries)
+        let parsed = try SpiceNetlistLoader.parse(
+            netlist,
+            libraries: libraries,
+            baseDirectory: baseDirectory
+        )
 
         // Prefer analysis settings entered in the UI; fall back to the `.ac`
         // card when the UI settings are left at their defaults and none supplied.
@@ -476,7 +529,8 @@ struct NativeMNAEngine: SimulationEngineBackend {
                 step: step,
                 axes: axes,
                 settings: effective,
-                libraries: libraries
+                libraries: libraries,
+                baseDirectory: baseDirectory
             )
             if effective.runAC || effective.runTransient {
                 result.warnings.append(
@@ -775,7 +829,8 @@ struct NativeMNAEngine: SimulationEngineBackend {
         step: SpiceStepSpec,
         axes: [SpiceSweepAxis],
         settings: AnalysisSettings,
-        libraries: [SpiceModelLibrary]
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
     ) throws -> CircuitSimResult.SweepResult {
         var points: [CircuitSimResult.SweepPoint] = []
         let stepAxis = SpiceSweepAxis(name: step.parameter, values: step.values)
@@ -792,10 +847,11 @@ struct NativeMNAEngine: SimulationEngineBackend {
         }
         for stepValue in step.values {
             try Task.checkCancellation()
-            let parsed = try SpiceNetlistParser.parse(
+            let parsed = try SpiceNetlistLoader.parse(
                 netlist,
                 parameterOverrides: step.isTemperature ? [:] : [step.parameter: stepValue],
-                libraries: libraries
+                libraries: libraries,
+                baseDirectory: baseDirectory
             )
             var circuit = parsed.circuit
             if step.isTemperature {
@@ -898,11 +954,17 @@ final class EngineClient: ObservableObject {
     func simulate(
         netlist: String,
         settings: AnalysisSettings,
-        libraries: [SpiceModelLibrary] = []
+        libraries: [SpiceModelLibrary] = [],
+        baseDirectory: URL? = nil
     ) async throws -> CircuitSimResult {
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            return try SimulationEngine.solve(netlist: netlist, settings: settings, libraries: libraries)
+            return try SimulationEngine.solve(
+                netlist: netlist,
+                settings: settings,
+                libraries: libraries,
+                baseDirectory: baseDirectory
+            )
         }
         return try await withTaskCancellationHandler {
             try await worker.value

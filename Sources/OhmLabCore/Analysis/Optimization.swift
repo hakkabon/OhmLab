@@ -44,6 +44,8 @@ public struct OptimizeRequest: Sendable {
     /// Maximum Nelder–Mead iterations after the grid pass.
     public var maxIterations: Int
     public var libraries: [SpiceModelLibrary]
+    /// Directory used to resolve relative `.include`/`.lib` paths.
+    public var baseDirectory: URL?
 
     public init(
         netlist: String,
@@ -53,7 +55,8 @@ public struct OptimizeRequest: Sendable {
         goal: OptimizeGoal = .maximize,
         gridDivisions: Int = 5,
         maxIterations: Int = 200,
-        libraries: [SpiceModelLibrary] = []
+        libraries: [SpiceModelLibrary] = [],
+        baseDirectory: URL? = nil
     ) {
         self.netlist = netlist
         self.settings = settings
@@ -63,6 +66,7 @@ public struct OptimizeRequest: Sendable {
         self.gridDivisions = gridDivisions
         self.maxIterations = maxIterations
         self.libraries = libraries
+        self.baseDirectory = baseDirectory
     }
 }
 
@@ -115,7 +119,10 @@ public enum Optimization {
             let result: CircuitSimResult
             do {
                 result = try SimulationEngine.solve(
-                    netlist: text, settings: settings, libraries: request.libraries
+                    netlist: text,
+                    settings: settings,
+                    libraries: request.libraries,
+                    baseDirectory: request.baseDirectory
                 )
             } catch is CancellationError {
                 throw CancellationError()

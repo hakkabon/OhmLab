@@ -478,10 +478,14 @@ public extension CircuitIR {
 public enum CircuitIRCompiler {
     public static func compile(
         netlist: String,
-        libraries: [SpiceModelLibrary] = []
+        libraries: [SpiceModelLibrary] = [],
+        baseDirectory: URL? = nil
     ) throws -> CircuitIR {
-        let include = SpiceLibraryManager(libraries: libraries).includeResolver()
-        let parsed = try SpiceNetlistParser.parse(netlist, include: include, libraries: libraries)
+        let parsed = try SpiceNetlistLoader.parse(
+            netlist,
+            libraries: libraries,
+            baseDirectory: baseDirectory
+        )
         return try CircuitIR(linearCircuit: parsed.circuit, initialConditions: parsed.initialConditions)
     }
 }

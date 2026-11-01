@@ -81,12 +81,16 @@ public enum KiCadProjectInterchange {
         topSchematic: URL,
         now: Date
     ) -> ProjectBundle {
+        let baseDirectory = sourceURL.deletingLastPathComponent()
+        let inlined = SpiceIncludePipeline.inline(netlist, baseDirectory: baseDirectory)
         let document = CircuitFile(
             name: name,
             schematic: SchematicSnapshot(),
             analysis: .default,
             netlistText: netlist,
-            usesSchematic: false
+            resolvedNetlistText: inlined.text == netlist ? nil : inlined.text,
+            usesSchematic: false,
+            importBaseDirectory: baseDirectory.path
         )
         let sheet = ProjectSheet(id: "top", name: name, fileName: "Sheets/top.ohmlab")
         var manifest = ProjectManifest(
@@ -132,17 +136,19 @@ public enum KiCadProjectInterchange {
         return written
     }
 
-    /// The SPICE netlist for a document: its stored netlist text, or a projection
-    /// of its schematic when it is in schematic mode.
+    /// The SPICE netlist for a document: its include-resolved netlist when one
+    /// was captured at import, otherwise its stored netlist text, or a
+    /// projection of its schematic when it is in schematic mode.
     static func netlist(for document: CircuitFile) throws -> String {
-        if document.usesSchematic == false, let text = document.netlistText,
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return text
-        }
-        if let text = document.netlistText,
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           document.usesSchematic != true {
-            return text
+        if document.usesSchematic != true {
+            if let text = document.resolvedNetlistText,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+            if let text = document.netlistText,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
         }
         return try SpiceNetlistBuilder.build(snapshot: document.schematic)
     }

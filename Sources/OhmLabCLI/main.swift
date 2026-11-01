@@ -330,11 +330,15 @@ private func execute(_ arguments: [String]) throws -> Int {
 
     let input = try loadInput(config)
 
+    let baseDirectory: URL? = config.inputPath.map {
+        URL(fileURLWithPath: $0).deletingLastPathComponent()
+    }
     let request = BatchRequest(
         input: input,
         format: config.format,
         engine: config.engine,
-        settingsOverride: settings(for: config, input: input)
+        settingsOverride: settings(for: config, input: input),
+        baseDirectory: baseDirectory
     )
     let outcome = try BatchRunner.run(request)
 

@@ -18,12 +18,28 @@ final class CircuitDocument: ObservableObject, Identifiable {
     /// explicit `.include`.
     @Published var modelLibraries: [SpiceModelLibrary] = []
 
+    /// The netlist with `.include`/`.lib` cards resolved at import time. Nil
+    /// when the document has not been imported or the text was edited by hand.
+    @Published var resolvedNetlistText: String?
+    /// Directory of the imported netlist/schematic. Relative include paths are
+    /// resolved against it when `resolvedNetlistText` is unavailable.
+    @Published var importBaseDirectory: URL?
+
     /// Where the current netlist text came from, when it was imported rather
     /// than typed. Cleared as soon as the netlist is edited by hand.
     struct ImportSource: Equatable {
         enum Kind: Equatable { case spiceNetlist, kicadSchematic }
         let fileName: String
         let kind: Kind
+        /// Directory containing the imported file; relative includes resolve
+        /// here before falling back to imported library locations.
+        let directory: URL?
+
+        init(fileName: String, kind: Kind, directory: URL? = nil) {
+            self.fileName = fileName
+            self.kind = kind
+            self.directory = directory
+        }
     }
     @Published var importSource: ImportSource?
     /// Non-fatal notes from parsing an imported netlist (skipped includes,
@@ -91,10 +107,13 @@ final class CircuitDocument: ObservableObject, Identifiable {
             .dropFirst()
             .sink { [weak self] _ in
                 guard let self else { return }
-                // Hand edits invalidate the import provenance; imports do not.
+                // Hand edits invalidate the import provenance and the inlined
+                // netlist. The import directory is kept so relative includes can
+                // still be resolved by the engine.
                 if !self.applyingImport {
                     self.importSource = nil
                     self.importWarnings = []
+                    self.resolvedNetlistText = nil
                 }
                 self.contentDidChange()
             }
@@ -149,7 +168,11 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     private func netlistDiagnostics() -> [Diagnostic] {
         do {
-            _ = try SpiceNetlistParser.parse(netlistText, libraries: modelLibraries)
+            _ = try SpiceNetlistLoader.parse(
+                effectiveNetlistText,
+                libraries: modelLibraries,
+                baseDirectory: importBaseDirectory
+            )
             return []
         } catch {
             return [Diagnostic(severity: .error, message: error.localizedDescription)]
@@ -158,6 +181,13 @@ final class CircuitDocument: ObservableObject, Identifiable {
 
     var hasBlockingErrors: Bool {
         diagnostics.contains { $0.severity == .error }
+    }
+
+    /// The text handed to the engine: the include-resolved netlist when one was
+    /// captured at import, otherwise the editor's text with the import
+    /// directory supplying relative include paths.
+    var effectiveNetlistText: String {
+        resolvedNetlistText ?? netlistText
     }
 
     // MARK: - Simulation
@@ -200,9 +230,10 @@ final class CircuitDocument: ObservableObject, Identifiable {
                 )
             } else {
                 result = try await EngineClient.shared.simulate(
-                    netlist: netlistText,
+                    netlist: effectiveNetlistText,
                     settings: settings,
-                    libraries: modelLibraries
+                    libraries: modelLibraries,
+                    baseDirectory: importBaseDirectory
                 )
             }
             guard !Task.isCancelled,
@@ -274,19 +305,31 @@ final class CircuitDocument: ObservableObject, Identifiable {
             schematic: schematic.snapshot(),
             analysis: settings,
             netlistText: netlistText,
+            resolvedNetlistText: resolvedNetlistText,
             usesSchematic: usesSchematic,
-            modelLibraries: modelLibraries.map { StoredModelLibrary(name: $0.name, text: $0.rawText) }
+            modelLibraries: modelLibraries.map { StoredModelLibrary(name: $0.name, text: $0.rawText) },
+            importBaseDirectory: importBaseDirectory?.path
         )
     }
 
-    func load(_ file: CircuitFile) {
+    func load(_ file: CircuitFile, fallbackBaseDirectory: URL? = nil) {
         name = file.name
         settings = file.analysis
         schematic.replaceContents(with: file.schematic)
         if let text = file.netlistText { netlistText = text }
+        resolvedNetlistText = file.resolvedNetlistText
+        importBaseDirectory = file.importBaseDirectory.map {
+            URL(fileURLWithPath: $0)
+        } ?? fallbackBaseDirectory
         usesSchematic = file.usesSchematic ?? true
         modelLibraries = (file.modelLibraries ?? []).compactMap { stored in
             try? SpiceModelLibrary.parse(stored.text, name: stored.name)
+        }
+        // Older documents have no resolved netlist. If the document's own
+        // directory is known, inline from there so relative includes work
+        // without requiring a re-import.
+        if resolvedNetlistText == nil, usesSchematic == false, importBaseDirectory != nil {
+            refreshImportWarnings()
         }
         simulationResult = nil
         simulationError = nil
@@ -314,6 +357,7 @@ final class CircuitDocument: ObservableObject, Identifiable {
         applyingImport = true
         netlistText = text
         importSource = source
+        importBaseDirectory = source?.directory
         usesSchematic = false
         applyingImport = false
         refreshImportWarnings()
@@ -327,19 +371,33 @@ final class CircuitDocument: ObservableObject, Identifiable {
         let result = SchematicImporter.importNetlist(text)
         applyingImport = true
         netlistText = text
-        importSource = source
+        if let source {
+            importSource = source
+            importBaseDirectory = source.directory
+        }
         applyingImport = false
         schematic.replaceContents(with: result.snapshot)
         usesSchematic = true
-        importWarnings = result.warnings
+        refreshImportWarnings()
+        importWarnings = result.warnings + importWarnings
         refreshDiagnostics()
         return result.warnings
     }
 
     /// The SPICE netlist to hand to another tool: the projection when editing a
-    /// schematic, otherwise the netlist text as entered.
+    /// schematic, otherwise the include-resolved netlist. When the resolved
+    /// text is unavailable (for example after a hand edit), it is rebuilt from
+    /// the import directory.
     func netlistForExport() throws -> String {
-        usesSchematic ? try SpiceNetlistBuilder.build(from: schematic) : netlistText
+        if usesSchematic {
+            return try SpiceNetlistBuilder.build(from: schematic)
+        }
+        if let resolvedNetlistText { return resolvedNetlistText }
+        return SpiceIncludePipeline.inline(
+            netlistText,
+            baseDirectory: importBaseDirectory,
+            libraries: modelLibraries
+        ).text
     }
 
     /// Imports either a KiCad schematic (`.kicad_sch`, macOS via `kicad-cli`) or
@@ -349,13 +407,22 @@ final class CircuitDocument: ObservableObject, Identifiable {
     /// the diagnostics panel reports anything the engine cannot run.
     func importDesign(at url: URL) throws {
         let ext = url.pathExtension.lowercased()
+        let directory = url.deletingLastPathComponent()
         let source: ImportSource
         if KiCadInterchange.schematicExtensions.contains(ext) {
             let text = try KiCadInterchange.exportedNetlistText(at: url)
-            source = ImportSource(fileName: url.lastPathComponent, kind: .kicadSchematic)
+            source = ImportSource(
+                fileName: url.lastPathComponent,
+                kind: .kicadSchematic,
+                directory: directory
+            )
             importNetlist(text, source: source)
         } else if KiCadInterchange.netlistExtensions.contains(ext) {
-            source = ImportSource(fileName: url.lastPathComponent, kind: .spiceNetlist)
+            source = ImportSource(
+                fileName: url.lastPathComponent,
+                kind: .spiceNetlist,
+                directory: directory
+            )
             importNetlist(try KiCadInterchange.readNetlist(at: url), source: source)
         } else if Self.modelLibraryExtensions.contains(ext) {
             try importModelLibrary(at: url)
@@ -367,12 +434,28 @@ final class CircuitDocument: ObservableObject, Identifiable {
         name = url.deletingPathExtension().lastPathComponent
     }
 
+    /// Resolves includes and records parser/inlining warnings. Also captures the
+    /// inlined text so simulation and export do not depend on the source files.
     private func refreshImportWarnings() {
-        guard let parsed = try? SpiceNetlistParser.parse(netlistText, libraries: modelLibraries) else {
-            importWarnings = []
-            return
+        let inlined = SpiceIncludePipeline.inline(
+            netlistText,
+            baseDirectory: importBaseDirectory,
+            libraries: modelLibraries
+        )
+        resolvedNetlistText = inlined.text == netlistText ? nil : inlined.text
+        var warnings = inlined.warnings
+        // Parse the already-inlined text directly so unresolved cards are not
+        // reported twice by a second pass through the pipeline.
+        let include = SpiceLibraryManager(libraries: modelLibraries)
+            .includeResolver(relativeTo: importBaseDirectory)
+        if let parsed = try? SpiceNetlistParser.parse(
+            inlined.text,
+            include: include,
+            libraries: modelLibraries
+        ) {
+            warnings.append(contentsOf: parsed.warnings)
         }
-        importWarnings = parsed.warnings
+        importWarnings = warnings
     }
 
     /// Imports a vendor model library from disk so its `.model`/`.subckt` cards

@@ -137,8 +137,10 @@ public struct ProjectBundle: Equatable, Sendable {
             schematic: file.schematic,
             analysis: file.analysis,
             netlistText: file.netlistText,
+            resolvedNetlistText: file.resolvedNetlistText,
             usesSchematic: file.usesSchematic,
-            modelLibraries: file.modelLibraries
+            modelLibraries: file.modelLibraries,
+            importBaseDirectory: file.importBaseDirectory
         )
         var manifest = ProjectManifest(name: name ?? file.name, sheets: [sheet], activeSheetID: sheet.id)
         manifest.modelLibraries = file.modelLibraries ?? []

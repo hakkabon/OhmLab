@@ -51,17 +51,22 @@ public struct BatchRequest: Sendable {
     public var engine: String?
     /// Replaces the document's own analysis settings when non-nil.
     public var settingsOverride: AnalysisSettings?
+    /// Directory used to resolve relative `.include`/`.lib` paths in netlist
+    /// input. Documents carry their own import directory and take precedence.
+    public var baseDirectory: URL?
 
     public init(
         input: BatchInput,
         format: BatchOutputFormat = .csv,
         engine: String? = nil,
-        settingsOverride: AnalysisSettings? = nil
+        settingsOverride: AnalysisSettings? = nil,
+        baseDirectory: URL? = nil
     ) {
         self.input = input
         self.format = format
         self.engine = engine
         self.settingsOverride = settingsOverride
+        self.baseDirectory = baseDirectory
     }
 }
 
@@ -109,7 +114,11 @@ public enum BatchRunner {
                 throw BatchError.emptyInput
             }
             let settings = request.settingsOverride ?? netlistDefaults()
-            result = try SimulationEngine.solve(netlist: text, settings: settings)
+            result = try SimulationEngine.solve(
+                netlist: text,
+                settings: settings,
+                baseDirectory: request.baseDirectory
+            )
 
         case .document(let file):
             let settings = request.settingsOverride ?? file.analysis
@@ -119,10 +128,14 @@ public enum BatchRunner {
             if file.usesSchematic == true {
                 result = try SimulationEngine.solve(snapshot: file.schematic, settings: settings)
             } else {
+                let baseDirectory = file.importBaseDirectory.map {
+                    URL(fileURLWithPath: $0)
+                } ?? request.baseDirectory
                 result = try SimulationEngine.solve(
-                    netlist: file.netlistText ?? "",
+                    netlist: file.resolvedNetlistText ?? file.netlistText ?? "",
                     settings: settings,
-                    libraries: libraries
+                    libraries: libraries,
+                    baseDirectory: baseDirectory
                 )
             }
         }

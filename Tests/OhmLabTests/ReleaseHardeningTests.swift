@@ -8,7 +8,7 @@ struct ReleaseHardeningTests {
         .appendingPathComponent("Fixtures/Compatibility", isDirectory: true)
 
     @Test func frozenPersistenceVersionsRemainCompatible() {
-        #expect(CircuitFile.currentSchemaVersion == 3)
+        #expect(CircuitFile.currentSchemaVersion == 4)
         #expect(SchematicSnapshot.currentSchemaVersion == 2)
         #expect(ProjectManifest.currentSchemaVersion == 1)
         #expect(OhmLabRelease.productionBoundaryVersion == 8)

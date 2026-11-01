@@ -23,6 +23,8 @@ public struct MonteCarloRequest: Sendable {
     public var probes: [CircuitProbe]
     public var limits: [ProbeLimit]
     public var libraries: [SpiceModelLibrary]
+    /// Directory used to resolve relative `.include`/`.lib` paths.
+    public var baseDirectory: URL?
 
     public init(
         netlist: String,
@@ -35,7 +37,8 @@ public struct MonteCarloRequest: Sendable {
         temperatureTolerance: Double? = nil,
         probes: [CircuitProbe] = [],
         limits: [ProbeLimit] = [],
-        libraries: [SpiceModelLibrary] = []
+        libraries: [SpiceModelLibrary] = [],
+        baseDirectory: URL? = nil
     ) {
         self.netlist = netlist
         self.settings = settings
@@ -48,6 +51,7 @@ public struct MonteCarloRequest: Sendable {
         self.probes = probes
         self.limits = limits
         self.libraries = libraries
+        self.baseDirectory = baseDirectory
     }
 }
 
@@ -111,7 +115,12 @@ public enum MonteCarloAnalysis {
 
         // The nominal operating point, validating the probes up front.
         let nominalNetlist = nominalNetlist(request.netlist, temperature: nominalTemperature)
-        let nominalDC = try solveDC(nominalNetlist, settings: settings, libraries: request.libraries)
+        let nominalDC = try solveDC(
+            nominalNetlist,
+            settings: settings,
+            libraries: request.libraries,
+            baseDirectory: request.baseDirectory
+        )
         let nominalValues = try request.probes.map { try $0.requiredValue(in: nominalDC) }
 
         var samples = [[Double]](repeating: [], count: request.probes.count)
@@ -135,7 +144,12 @@ public enum MonteCarloAnalysis {
                 text = NetlistTemperature.setting(temperature, in: text)
             }
 
-            guard let dc = try? solveDC(text, settings: settings, libraries: request.libraries) else {
+            guard let dc = try? solveDC(
+                text,
+                settings: settings,
+                libraries: request.libraries,
+                baseDirectory: request.baseDirectory
+            ) else {
                 failures += 1
                 continue
             }
@@ -187,9 +201,15 @@ public enum MonteCarloAnalysis {
     private static func solveDC(
         _ netlist: String,
         settings: AnalysisSettings,
-        libraries: [SpiceModelLibrary]
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
     ) throws -> CircuitSimResult.DCResult {
-        let result = try SimulationEngine.solve(netlist: netlist, settings: settings, libraries: libraries)
+        let result = try SimulationEngine.solve(
+            netlist: netlist,
+            settings: settings,
+            libraries: libraries,
+            baseDirectory: baseDirectory
+        )
         guard let dc = result.dc else {
             throw CircuitSimulationError.noAnalysisSelected
         }

@@ -17,6 +17,8 @@ public struct CornerRequest: Sendable {
     /// Upper bound on the full-factorial corner count, to stop a run away.
     public var maxCorners: Int
     public var libraries: [SpiceModelLibrary]
+    /// Directory used to resolve relative `.include`/`.lib` paths.
+    public var baseDirectory: URL?
 
     public init(
         netlist: String,
@@ -27,7 +29,8 @@ public struct CornerRequest: Sendable {
         temperatureTolerance: Double? = nil,
         probes: [CircuitProbe] = [],
         maxCorners: Int = 4096,
-        libraries: [SpiceModelLibrary] = []
+        libraries: [SpiceModelLibrary] = [],
+        baseDirectory: URL? = nil
     ) {
         self.netlist = netlist
         self.settings = settings
@@ -38,6 +41,7 @@ public struct CornerRequest: Sendable {
         self.probes = probes
         self.maxCorners = maxCorners
         self.libraries = libraries
+        self.baseDirectory = baseDirectory
     }
 }
 
@@ -138,7 +142,12 @@ public enum CornerAnalysis {
                 text = NetlistTemperature.setting(temperature, in: text)
             }
 
-            guard let dc = try? solveDC(text, settings: settings, libraries: request.libraries) else {
+            guard let dc = try? solveDC(
+                text,
+                settings: settings,
+                libraries: request.libraries,
+                baseDirectory: request.baseDirectory
+            ) else {
                 failures += 1
                 continue
             }
@@ -181,9 +190,15 @@ public enum CornerAnalysis {
     private static func solveDC(
         _ netlist: String,
         settings: AnalysisSettings,
-        libraries: [SpiceModelLibrary]
+        libraries: [SpiceModelLibrary],
+        baseDirectory: URL?
     ) throws -> CircuitSimResult.DCResult {
-        let result = try SimulationEngine.solve(netlist: netlist, settings: settings, libraries: libraries)
+        let result = try SimulationEngine.solve(
+            netlist: netlist,
+            settings: settings,
+            libraries: libraries,
+            baseDirectory: baseDirectory
+        )
         guard let dc = result.dc else { throw CircuitSimulationError.noAnalysisSelected }
         return dc
     }

@@ -16,7 +16,10 @@ public struct DocumentWorkspaceView: View {
         _file = configuration.$document
 
         let document = CircuitDocument()
-        document.load(configuration.document.file)
+        document.load(
+            configuration.document.file,
+            fallbackBaseDirectory: configuration.fileURL?.deletingLastPathComponent()
+        )
         document.fileURL = configuration.fileURL
         if let url = configuration.fileURL {
             document.name = url.deletingPathExtension().lastPathComponent

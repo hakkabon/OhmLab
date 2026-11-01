@@ -511,7 +511,8 @@ enum Subcommand {
             temperature: temperature,
             temperatureTolerance: temperatureTolerance,
             probes: probes,
-            limits: limits
+            limits: limits,
+            baseDirectory: input.baseDirectory
         )
         let result = try MonteCarloAnalysis.run(request)
         for warning in result.warnings { writeStderr("ohm: warning: \(warning)\n") }
@@ -596,7 +597,8 @@ enum Subcommand {
             defaultTolerance: defaultTolerance,
             temperature: temperature,
             temperatureTolerance: temperatureTolerance,
-            probes: probes
+            probes: probes,
+            baseDirectory: input.baseDirectory
         ))
         for warning in result.warnings { writeStderr("ohm: warning: \(warning)\n") }
 
@@ -672,7 +674,8 @@ enum Subcommand {
             variables: variables,
             objective: objective,
             goal: goal,
-            gridDivisions: grid
+            gridDivisions: grid,
+            baseDirectory: input.baseDirectory
         ))
 
         if format == "json" {
@@ -698,23 +701,24 @@ enum Subcommand {
         path: String?,
         netlistText: String?,
         stdin: Bool
-    ) throws -> (netlist: String, settings: AnalysisSettings) {
+    ) throws -> (netlist: String, settings: AnalysisSettings, baseDirectory: URL?) {
         let sources = [netlistText != nil, stdin, path != nil].filter { $0 }.count
         guard sources == 1 else {
             throw CommandError.usage(sources == 0
                 ? "no input: pass a file, --netlist <text>, or - for stdin"
                 : "provide exactly one input (file, --netlist, or stdin)")
         }
-        if let netlistText { return (netlistText, .default) }
+        if let netlistText { return (netlistText, .default, nil) }
         if stdin {
             let data = FileHandle.standardInput.readDataToEndOfFile()
             guard let text = String(data: data, encoding: .utf8) else {
                 throw CommandError.runtime("standard input is not valid UTF-8")
             }
-            return (text, .default)
+            return (text, .default, nil)
         }
         guard let path else { throw CommandError.usage("no input") }
         let url = URL(fileURLWithPath: path)
+        let containingDirectory = url.deletingLastPathComponent()
 
         // A project bundle is a directory, so dispatch on the extension before
         // trying to read it as a file.
@@ -724,7 +728,10 @@ enum Subcommand {
                 guard let file = bundle.activeDocument else {
                     throw CommandError.runtime("\(path) has no sheets")
                 }
-                return (try netlist(of: file), file.analysis)
+                let baseDirectory = file.importBaseDirectory.map {
+                    URL(fileURLWithPath: $0)
+                } ?? containingDirectory
+                return (try netlist(of: file), file.analysis, baseDirectory)
             } catch let error as CommandError {
                 throw error
             } catch {
@@ -742,7 +749,10 @@ enum Subcommand {
         if url.pathExtension.lowercased() == CircuitFileStore.fileExtension {
             do {
                 let file = try CircuitFileStore.decode(data)
-                return (try netlist(of: file), file.analysis)
+                let baseDirectory = file.importBaseDirectory.map {
+                    URL(fileURLWithPath: $0)
+                } ?? containingDirectory
+                return (try netlist(of: file), file.analysis, baseDirectory)
             } catch {
                 throw CommandError.runtime("cannot open \(path): \(error.localizedDescription)")
             }
@@ -751,13 +761,19 @@ enum Subcommand {
         guard let text = String(data: data, encoding: .utf8) else {
             throw CommandError.runtime("\(path) is not valid UTF-8")
         }
-        return (text, .default)
+        return (text, .default, containingDirectory)
     }
 
     private static func netlist(of file: CircuitFile) throws -> String {
-        if let text = file.netlistText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           file.usesSchematic != true {
-            return text
+        if file.usesSchematic != true {
+            if let text = file.resolvedNetlistText,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+            if let text = file.netlistText,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
         }
         return try SpiceNetlistBuilder.build(snapshot: file.schematic)
     }
