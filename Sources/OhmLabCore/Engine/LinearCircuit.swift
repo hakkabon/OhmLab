@@ -981,6 +981,10 @@ public struct LinearCircuit: Sendable {
         var state = initialState
         var solution = try assembleOnce(mode: mode, nonlinearState: state)
         for _ in 0..<options.maximumIterations {
+            // Newton iterations are the innermost long-running loop for a DC
+            // operating point. Without this checkpoint a deadline could not
+            // interrupt a large nonlinear solve.
+            try SimulationExecutionDeadline.check()
             var maxVoltageDelta = 0.0
             var maxVoltage = 0.0
             var maxCurrentDelta = 0.0

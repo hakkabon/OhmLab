@@ -111,9 +111,15 @@ possible without changing clients.
 
 The portable surface is now split into `OhmLabSimulationProtocol`, a
 Foundation-only package product, and `OhmLabSimulationHost`, the executable
-runtime that links the simulator. The host adds elapsed-time deadlines,
-external cancellation tokens, narrower deployment resource budgets, and
-ordered batches of up to 256 requests. Use `ohm platform batch` for batch JSON
+runtime that links the simulator. The host adds wall-clock deadlines, external
+cancellation tokens, narrower deployment resource budgets, and ordered batches
+of up to 256 requests. Solver work always runs in a child task, and a deadline
+cancels it at the solver's cooperative checkpoints and waits for it to stop
+before returning, so no work outlives the response. Budget violations report
+`resource-limit` and deadlines report `timeout` instead of a generic failure.
+The manifest publishes a `backendLimits` dense envelope for each qualified
+backend (currently 512 MNA unknowns), so the 100,000-node protocol ceiling is
+not mistaken for an executable promise. Use `ohm platform batch` for batch JSON
 and `ohm qualify-host --json` for executable qualification. The original
 `OhmLabSimulationPlatform` product remains available as a 2.x compatibility
 surface. See

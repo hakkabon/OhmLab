@@ -45,9 +45,19 @@ struct PortableSimulationPlatformTests {
         #expect(manifest.canonicalEncoding == "json-sorted-keys-utf8")
         #expect(manifest.provenanceDigest == "sha-256")
         #expect(manifest.backends.map(\.identifier) == ["native-mna", "numeric-core"])
+        #expect(manifest.backendLimits.map(\.identifier) == ["native-mna", "numeric-core"])
+        #expect(manifest.backendLimits.allSatisfy {
+            $0.maximumDenseUnknowns == PortableSimulationPlatform.maximumDenseUnknowns
+                && $0.maximumNodes > $0.maximumDenseUnknowns
+                && $0.maximumDevices > 0
+        })
         #expect(manifest.limits.maximumRequestBytes == 16 * 1_024 * 1_024)
         #expect(manifest.limits.maximumAnalysisSamples == 100_000)
         #expect(manifest.limits.maximumWaveformPoints == 100_000)
+        // The published portable envelope must match the separately qualified
+        // dense-solver ceiling, not drift into a second source of truth.
+        #expect(PortableSimulationPlatform.maximumDenseUnknowns
+            == ScaleAndNumericalRobustness.maximumDenseUnknowns)
     }
 
     @Test func requestRoundTripsAndProducesDeterministicJSON() throws {
@@ -149,13 +159,13 @@ struct PortableSimulationPlatformTests {
                           points: PortableSimulationPlatform.limits.maximumAnalysisSamples + 1)
             )
         )
-        #expect(PortableSimulationPlatform.execute(tooManyACPoints).error?.code == .invalidRequest)
+        #expect(PortableSimulationPlatform.execute(tooManyACPoints).error?.code == .resourceLimit)
 
         let tinyTransientStep = PortableSimulationPlatform.Request(
             requestID: "tiny-step", circuit: circuit,
             analysis: .init(dcOperatingPoint: false, transient: .init(step: 1e-12, stop: 1))
         )
-        #expect(PortableSimulationPlatform.execute(tinyTransientStep).error?.code == .invalidRequest)
+        #expect(PortableSimulationPlatform.execute(tinyTransientStep).error?.code == .resourceLimit)
 
         var excessiveIterations = circuit
         excessiveIterations.solver.maximumIterations = PortableSimulationPlatform.limits.maximumSolverIterations + 1
@@ -163,7 +173,27 @@ struct PortableSimulationPlatformTests {
             requestID: "too-many-iterations", circuit: excessiveIterations,
             analysis: .init(dcOperatingPoint: true)
         )
-        #expect(PortableSimulationPlatform.execute(excessiveSolver).error?.code == .invalidRequest)
+        #expect(PortableSimulationPlatform.execute(excessiveSolver).error?.code == .resourceLimit)
+    }
+
+    @Test func denseBackendBudgetFailsWithAResourceCode() throws {
+        var lines = ["V1 n0 0 DC 10"]
+        let sectionCount = PortableSimulationPlatform.maximumDenseUnknowns + 1
+        for index in 1..<sectionCount {
+            lines.append("R\(index) n\(index - 1) n\(index) 1k")
+        }
+        lines.append("R\(sectionCount) n\(sectionCount - 1) 0 1k")
+        lines.append(".end")
+        let circuit = try CircuitIRCompiler.compile(netlist: lines.joined(separator: "\n"))
+        let request = PortableSimulationPlatform.Request(
+            requestID: "dense-budget",
+            circuit: circuit,
+            analysis: .init(dcOperatingPoint: true)
+        )
+
+        let response = PortableSimulationPlatform.execute(request)
+        #expect(response.error?.code == .resourceLimit)
+        #expect(response.error?.message.contains("dense unknowns") == true)
     }
 
     @Test func provenanceDigestUsesCanonicalSHA256() throws {
@@ -216,7 +246,7 @@ struct PortableSimulationPlatformTests {
             repeating: 0,
             count: PortableSimulationPlatform.limits.maximumRequestBytes + 1
         ))
-        #expect(oversized.error?.code == .invalidRequest)
+        #expect(oversized.error?.code == .resourceLimit)
 
         let wrongDirection = PortableSimulationPlatform.Request(
             requestID: "wrong-direction", circuit: circuit,
@@ -229,7 +259,7 @@ struct PortableSimulationPlatformTests {
         let report = PortablePlatformQualification.evaluate()
         #expect(report.contractVersion == 1)
         #expect(report.productVersion == "2.4.0")
-        #expect(report.cases.count == 8)
+        #expect(report.cases.count == 10)
         #expect(report.cases.allSatisfy { $0.passed })
         #expect(report.issues.isEmpty)
         #expect(report.ready)

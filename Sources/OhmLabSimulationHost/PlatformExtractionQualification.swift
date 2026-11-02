@@ -5,7 +5,7 @@ import OhmLabSimulationProtocol
 /// Executable evidence for the 2.1 protocol/host module boundary.
 public enum PlatformExtractionQualification {
     public static let currentContractVersion = 1
-    public static let minimumCaseCount = 6
+    public static let minimumCaseCount = 9
 
     public struct CaseResult: Codable, Equatable, Sendable {
         public let identifier: String
@@ -45,6 +45,20 @@ public enum PlatformExtractionQualification {
                 detail: "Foundation-only execution and batch contracts"
             ))
 
+            let manifest = OhmLabSimulationHost.manifest
+            let backendIdentifiers = manifest.backends.map(\.identifier).sorted()
+            let limitIdentifiers = manifest.backendLimits.map(\.identifier).sorted()
+            cases.append(.init(
+                identifier: "per-backend-limits-published",
+                passed: limitIdentifiers == backendIdentifiers
+                    && manifest.backendLimits.allSatisfy {
+                        $0.maximumDenseUnknowns > 0
+                            && $0.maximumNodes >= $0.maximumDenseUnknowns
+                            && $0.maximumDevices > 0
+                    },
+                detail: "manifest publishes an executable dense envelope per backend"
+            ))
+
             let response = await OhmLabSimulationHost.execute(request, policy: policy)
             cases.append(.init(
                 identifier: "isolated-host-execution",
@@ -68,8 +82,48 @@ public enum PlatformExtractionQualification {
             )
             cases.append(.init(
                 identifier: "result-budget",
-                passed: budgeted.error?.message == "result exceeds host byte budget",
+                passed: budgeted.error?.code == .resourceLimit
+                    && budgeted.error?.message == "result exceeds host byte budget",
                 detail: budgeted.error?.message ?? "result budget was not enforced"
+            ))
+
+            let denseBudget = await OhmLabSimulationHost.execute(
+                request,
+                policy: .init(maximumNodes: 1)
+            )
+            cases.append(.init(
+                identifier: "resource-limit-code",
+                passed: denseBudget.error?.code == .resourceLimit,
+                detail: denseBudget.error?.message ?? "resource budget was not reported as a resource limit"
+            ))
+
+            // The NumericCore divider sweep takes roughly a minute to run to
+            // completion but only milliseconds to reach its first deadline
+            // checkpoint. The 30-second bound is deliberately loose so that a
+            // busy test machine cannot fail the case by delaying scheduling;
+            // it still separates an interrupted run from a completed one.
+            let longSweep = PortableSimulationPlatform.Request(
+                requestID: "host-qualification-deadline",
+                backend: "numeric-core",
+                circuit: circuit,
+                analysis: .init(
+                    dcOperatingPoint: false,
+                    dcSweep: .init(source: "V1", start: 0, stop: 100, step: 0.0011)
+                )
+            )
+            let clock = ContinuousClock()
+            let started = clock.now
+            let timedOut = await OhmLabSimulationHost.execute(
+                longSweep,
+                policy: .init(timeoutMilliseconds: 1)
+            )
+            let elapsed = started.duration(to: clock.now)
+            cases.append(.init(
+                identifier: "deadline-enforced",
+                passed: timedOut.error?.code == .timeout && elapsed < .seconds(30),
+                detail: timedOut.error?.code == .timeout
+                    ? "deadline stopped a long sweep in \(elapsed)"
+                    : (timedOut.error?.message ?? "long sweep unexpectedly succeeded")
             ))
 
             let second = PortableSimulationPlatform.Request(

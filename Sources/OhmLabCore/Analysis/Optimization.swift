@@ -109,7 +109,7 @@ public enum Optimization {
         var history: [OptimizeResult.Step] = []
 
         func evaluate(_ x: [Double]) throws -> (values: [String: Double], objective: Double, cost: Double) {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             var values: [String: Double] = [:]
             for (index, bound) in bounds.enumerated() {
                 values[bound.designator] = x[index]
@@ -149,7 +149,7 @@ public enum Optimization {
         var bestObjective = Double.nan
 
         for point in grid(bounds: bounds, divisions: divisions) {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             let outcome = try evaluate(point)
             if outcome.cost < bestCost {
                 bestCost = outcome.cost
@@ -169,7 +169,7 @@ public enum Optimization {
             guard !Task.isCancelled else { return .infinity }
             return (try? evaluate(x).cost) ?? .infinity
         }
-        try Task.checkCancellation()
+        try SimulationExecutionDeadline.check()
         let final = try evaluate(refined)
         if final.cost < bestCost {
             bestCost = final.cost

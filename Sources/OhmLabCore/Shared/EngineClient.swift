@@ -613,7 +613,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
             var elementPoints = [[FreqPoint]](repeating: [], count: circuit.elements.count)
             var maxMagnitude = 0.0
             for frequency in frequencies {
-                try Task.checkCancellation()
+                try SimulationExecutionDeadline.check()
                 let solution: LinearCircuit.Solution
                 do {
                     solution = try circuit.solveAC(frequencyHz: frequency)
@@ -714,7 +714,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
             if let transient = transientResult {
                 for spec in fourierSpecs {
                     for variable in spec.variables {
-                        try Task.checkCancellation()
+                        try SimulationExecutionDeadline.check()
                         guard let values = fourierSeries(
                             variable,
                             transient: transient
@@ -784,6 +784,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
         circuit: LinearCircuit,
         axes: [SpiceSweepAxis]
     ) throws -> CircuitSimResult.SweepResult {
+        try SimulationExecutionDeadline.check()
         let sources = Set(circuit.sourceNames.map { $0.uppercased() })
         // `.dc` axes must name an existing source; step axes are parameters and
         // are resolved by re-parsing, so they contribute no override here.
@@ -795,13 +796,14 @@ struct NativeMNAEngine: SimulationEngineBackend {
         }
         var combinations: [[Double]] = [[]]
         for axis in axes {
+            try SimulationExecutionDeadline.check()
             combinations = combinations.flatMap { prefix in
                 axis.values.map { prefix + [$0] }
             }
         }
         var points: [CircuitSimResult.SweepPoint] = []
         for combination in combinations {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             var overrides: [String: Double] = [:]
             for (axis, value) in zip(axes, combination) {
                 overrides[axis.name] = value
@@ -846,7 +848,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
             }
         }
         for stepValue in step.values {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             let parsed = try SpiceNetlistLoader.parse(
                 netlist,
                 parameterOverrides: step.isTemperature ? [:] : [step.parameter: stepValue],
@@ -862,7 +864,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
                 throw CircuitSimulationError.unknownSweepSource(axis.name)
             }
             for inner in innerCombinations {
-                try Task.checkCancellation()
+                try SimulationExecutionDeadline.check()
                 var overrides: [String: Double] = [:]
                 for (axis, value) in zip(axes, inner) {
                     overrides[axis.name] = value
@@ -941,7 +943,7 @@ final class EngineClient: ObservableObject {
         settings: AnalysisSettings
     ) async throws -> CircuitSimResult {
         let worker = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             return try SimulationEngine.solve(snapshot: snapshot, settings: settings)
         }
         return try await withTaskCancellationHandler {
@@ -958,7 +960,7 @@ final class EngineClient: ObservableObject {
         baseDirectory: URL? = nil
     ) async throws -> CircuitSimResult {
         let worker = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             return try SimulationEngine.solve(
                 netlist: netlist,
                 settings: settings,

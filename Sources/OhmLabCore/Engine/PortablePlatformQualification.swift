@@ -3,7 +3,7 @@ import Foundation
 /// Executable release evidence for portable-simulation protocol v1.
 public enum PortablePlatformQualification {
     public static let currentContractVersion = 1
-    public static let minimumCaseCount = 8
+    public static let minimumCaseCount = 10
 
     public struct CaseResult: Codable, Equatable, Sendable {
         public let identifier: String
@@ -34,6 +34,21 @@ public enum PortablePlatformQualification {
                 dcOperatingPoint: true,
                 ac: .init(type: .lin, startFrequency: 1_000, stopFrequency: 1_001, points: 2)
             )
+
+            let manifest = PortableSimulationPlatform.manifest
+            let backendIdentifiers = manifest.backends.map(\.identifier).sorted()
+            let limitIdentifiers = manifest.backendLimits.map(\.identifier).sorted()
+            cases.append(.init(
+                identifier: "per-backend-limits-published",
+                passed: limitIdentifiers == backendIdentifiers
+                    && manifest.backendLimits.allSatisfy {
+                        $0.maximumDenseUnknowns > 0
+                            && $0.maximumNodes >= $0.maximumDenseUnknowns
+                            && $0.maximumDevices > 0
+                    },
+                detail: "manifest publishes an executable dense envelope per backend"
+            ))
+
             for backend in ["native-mna", "numeric-core"] {
                 let request = PortableSimulationPlatform.Request(
                     requestID: "qualification-\(backend)", backend: backend,
@@ -104,8 +119,26 @@ public enum PortablePlatformQualification {
             let amplifiedResponse = PortableSimulationPlatform.execute(amplified)
             cases.append(.init(
                 identifier: "amplified-workload-fails-closed",
-                passed: amplifiedResponse.error?.code == .invalidRequest,
+                passed: amplifiedResponse.error?.code == .resourceLimit,
                 detail: amplifiedResponse.error?.message ?? "amplified workload unexpectedly succeeded"
+            ))
+
+            // One unknown over the advertised dense envelope must fail before
+            // the solver allocates a matrix, with the machine-readable resource
+            // limit code rather than a generic simulation failure.
+            let denseNetlist = Self.ladder(sectionCount: PortableSimulationPlatform.maximumDenseUnknowns + 1)
+            let denseCircuit = try CircuitIRCompiler.compile(netlist: denseNetlist)
+            let denseRequest = PortableSimulationPlatform.Request(
+                requestID: "qualification-dense-budget",
+                backend: "native-mna",
+                circuit: denseCircuit,
+                analysis: .init(dcOperatingPoint: true)
+            )
+            let denseResponse = PortableSimulationPlatform.execute(denseRequest)
+            cases.append(.init(
+                identifier: "dense-budget-resource-code",
+                passed: denseResponse.error?.code == .resourceLimit,
+                detail: denseResponse.error?.message ?? "over-budget circuit unexpectedly succeeded"
             ))
 
             let provenanceRequest = PortableSimulationPlatform.Request(
@@ -146,6 +179,16 @@ public enum PortablePlatformQualification {
 }
 
 private extension PortablePlatformQualification {
+    static func ladder(sectionCount: Int) -> String {
+        var lines = ["V1 n0 0 DC 10"]
+        for index in 1..<sectionCount {
+            lines.append("R\(index) n\(index - 1) n\(index) 1k")
+        }
+        lines.append("R\(sectionCount) n\(sectionCount - 1) 0 1k")
+        lines.append(".end")
+        return lines.joined(separator: "\n")
+    }
+
     static func roundTripCase(
         identifier: String,
         request: PortableSimulationPlatform.Request,

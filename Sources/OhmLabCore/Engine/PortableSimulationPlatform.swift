@@ -40,6 +40,81 @@ public enum PortableSimulationPlatform {
 
     public static let limits = Limits()
 
+    /// Limits that apply to one concrete backend rather than to the protocol as
+    /// a whole. The global `Limits` are rejection ceilings; a backend limit is
+    /// the envelope the host can actually execute without exhausting the dense
+    /// solver. Publishing both keeps clients from reading the 100,000-node
+    /// protocol ceiling as a promise that every backend can solve 100,000 nodes.
+    public struct BackendLimits: Codable, Equatable, Sendable {
+        public let identifier: String
+        public let maximumDenseUnknowns: Int
+        public let maximumNodes: Int
+        public let maximumDevices: Int
+
+        public init(
+            identifier: String,
+            maximumDenseUnknowns: Int,
+            maximumNodes: Int,
+            maximumDevices: Int
+        ) {
+            self.identifier = identifier
+            self.maximumDenseUnknowns = maximumDenseUnknowns
+            self.maximumNodes = maximumNodes
+            self.maximumDevices = maximumDevices
+        }
+    }
+
+    /// The qualified dense-solver envelope shared by the linked production
+    /// backends. `maximumNodes` is one more than the unknown ceiling because
+    /// Circuit IR nodes include the reference node.
+    public static let maximumDenseUnknowns = 512
+
+    public static func limits(forBackend identifier: String) -> BackendLimits? {
+        switch identifier.lowercased() {
+        case "native", "native-mna":
+            return BackendLimits(
+                identifier: "native-mna",
+                maximumDenseUnknowns: maximumDenseUnknowns,
+                maximumNodes: maximumDenseUnknowns + 1,
+                maximumDevices: limits.maximumDevices
+            )
+        case "numeric-core", "numericcore":
+            return BackendLimits(
+                identifier: "numeric-core",
+                maximumDenseUnknowns: maximumDenseUnknowns,
+                maximumNodes: maximumDenseUnknowns + 1,
+                maximumDevices: limits.maximumDevices
+            )
+        default:
+            return nil
+        }
+    }
+
+    /// Conservative MNA unknown count: every non-reference node plus one branch
+    /// current per voltage source and, when the plan uses DC stamps, per
+    /// inductor. AC-only plans stamp inductors as admittances, so they do not
+    /// consume a branch unknown there.
+    public static func denseUnknownCount(
+        _ circuit: CircuitIR,
+        analysis: AnalysisPlan? = nil
+    ) -> Int {
+        let nodeUnknowns = max(circuit.nodes.count - 1, 0)
+        let usesDCStamps = analysis.map {
+            $0.dcOperatingPoint || $0.dcSweep != nil || $0.transient != nil
+        } ?? true
+        let branchUnknowns = circuit.devices.reduce(into: 0) { count, device in
+            switch device.kind {
+            case .voltageSource:
+                count += 1
+            case .inductor where usesDCStamps:
+                count += 1
+            default:
+                break
+            }
+        }
+        return nodeUnknowns + branchUnknowns
+    }
+
     public struct ACSweep: Codable, Equatable, Sendable {
         public let type: FrequencySweepType
         public let startFrequency: Double
@@ -115,7 +190,7 @@ public enum PortableSimulationPlatform {
                 case .oct: samples = ceil(log2(ac.stopFrequency / ac.startFrequency) * Double(ac.points)) + 2
                 }
                 guard samples.isFinite, samples <= Double(limits.maximumAnalysisSamples) else {
-                    throw PlatformError.invalidRequest("AC sweep exceeds the \(limits.maximumAnalysisSamples)-sample limit")
+                    throw PlatformError.resourceLimit("AC sweep exceeds the \(limits.maximumAnalysisSamples)-sample limit")
                 }
             }
             if let transient {
@@ -126,7 +201,7 @@ public enum PortableSimulationPlatform {
                 }
                 let samples = ceil(transient.stop / transient.step) + 1
                 guard samples.isFinite, samples <= Double(limits.maximumAnalysisSamples) else {
-                    throw PlatformError.invalidRequest("transient analysis exceeds the \(limits.maximumAnalysisSamples)-sample limit")
+                    throw PlatformError.resourceLimit("transient analysis exceeds the \(limits.maximumAnalysisSamples)-sample limit")
                 }
             }
             if let dcSweep {
@@ -140,7 +215,7 @@ public enum PortableSimulationPlatform {
                 }
                 let samples = ceil(abs((dcSweep.stop - dcSweep.start) / dcSweep.step)) + 1
                 guard samples.isFinite, samples <= Double(limits.maximumAnalysisSamples) else {
-                    throw PlatformError.invalidRequest("DC sweep exceeds the \(limits.maximumAnalysisSamples)-sample limit")
+                    throw PlatformError.resourceLimit("DC sweep exceeds the \(limits.maximumAnalysisSamples)-sample limit")
                 }
             }
             return AnalysisSettings(
@@ -192,6 +267,11 @@ public enum PortableSimulationPlatform {
         case unknownBackend = "unknown-backend"
         case unsupportedCapability = "unsupported-capability"
         case simulationFailed = "simulation-failed"
+        /// The request was valid but did not finish inside the host deadline.
+        case timeout = "timeout"
+        /// The request exceeded a host or backend resource budget before or
+        /// during execution.
+        case resourceLimit = "resource-limit"
     }
 
     public struct Failure: Codable, Equatable, Sendable {
@@ -268,6 +348,9 @@ public enum PortableSimulationPlatform {
         public let supportedFeatures: [SimulationBackendFeature]
         public let limits: Limits
         public let backends: [SimulationBackendDescriptor]
+        /// Effective dense-solver envelope per qualified backend. The global
+        /// `limits` remain the protocol's rejection ceilings.
+        public let backendLimits: [BackendLimits]
     }
 
     public struct NamedValue: Codable, Equatable, Sendable {
@@ -428,8 +511,13 @@ public enum PortableSimulationPlatform {
             supportedAnalyses: [.dcOperatingPoint, .acSmallSignal, .transient, .dcSweep],
             supportedFeatures: [.circuitIRInput, .sourceWaveforms, .initialConditions, .temperature],
             limits: limits,
-            backends: EngineBackends.descriptorMatrix.filter(\.isProductionQualified)
+            backends: qualifiedBackends,
+            backendLimits: qualifiedBackends.compactMap { limits(forBackend: $0.identifier) }
         )
+    }
+
+    private static var qualifiedBackends: [SimulationBackendDescriptor] {
+        EngineBackends.descriptorMatrix.filter(\.isProductionQualified)
     }
 
     public static func execute(_ request: Request) -> Response {
@@ -447,7 +535,7 @@ public enum PortableSimulationPlatform {
         }
         guard request.circuit.nodes.count <= limits.maximumNodes,
               request.circuit.devices.count <= limits.maximumDevices else {
-            return failure(.invalidRequest, "circuit exceeds portable platform limits")
+            return failure(.resourceLimit, "circuit exceeds portable platform limits")
         }
         guard let backend = EngineBackends.make(request.backend) else {
             return failure(.unknownBackend, "unknown backend \(request.backend)")
@@ -456,6 +544,18 @@ public enum PortableSimulationPlatform {
             try request.circuit.validate()
             try validateResourceBudget(request)
             try ProductionBoundary.requireValid(backend)
+            if let backendLimit = limits(forBackend: backend.identifier) {
+                let unknowns = denseUnknownCount(request.circuit, analysis: request.analysis)
+                guard request.circuit.nodes.count <= backendLimit.maximumNodes,
+                      request.circuit.devices.count <= backendLimit.maximumDevices,
+                      unknowns <= backendLimit.maximumDenseUnknowns else {
+                    return failure(
+                        .resourceLimit,
+                        "circuit requires \(unknowns) dense unknowns; \(backend.identifier) is limited to \(backendLimit.maximumDenseUnknowns)",
+                        backend: backend.identifier
+                    )
+                }
+            }
             guard backend.capabilities.supports(.circuitIRInput) else {
                 return failure(.unsupportedCapability, "backend does not accept Circuit IR", backend: backend.identifier)
             }
@@ -491,8 +591,19 @@ public enum PortableSimulationPlatform {
             )
         } catch let error as PlatformError {
             return failure(error.code, error.localizedDescription, backend: backend.identifier)
+        } catch is SimulationDeadlineError {
+            return failure(.timeout, "simulation deadline exceeded", backend: backend.identifier)
+        } catch let error as NumericCoreAdapterError {
+            let code: ErrorCode
+            switch error {
+            case .resourceLimit: code = .resourceLimit
+            default: code = .simulationFailed
+            }
+            return failure(code, error.localizedDescription, backend: backend.identifier)
         } catch let error as CircuitIRError {
             return failure(.invalidRequest, error.localizedDescription, backend: backend.identifier)
+        } catch is CancellationError {
+            return failure(.simulationFailed, "simulation cancelled", backend: backend.identifier)
         } catch {
             return failure(.simulationFailed, error.localizedDescription, backend: backend.identifier)
         }
@@ -503,7 +614,18 @@ public enum PortableSimulationPlatform {
     /// out-of-band error format.
     public static func execute(_ data: Data) -> Response {
         do { return execute(try decodeRequest(data)) }
-        catch {
+        catch let error as PlatformError {
+            return Response(
+                protocolVersion: currentContractVersion,
+                requestID: "",
+                status: .failure,
+                backend: nil,
+                implementationVersion: nil,
+                provenance: nil,
+                result: nil,
+                error: Failure(code: error.code, message: error.localizedDescription)
+            )
+        } catch {
             return Response(
                 protocolVersion: currentContractVersion,
                 requestID: "",
@@ -519,7 +641,7 @@ public enum PortableSimulationPlatform {
 
     public static func decodeRequest(_ data: Data) throws -> Request {
         guard data.count <= limits.maximumRequestBytes else {
-            throw PlatformError.invalidRequest("request exceeds \(limits.maximumRequestBytes) bytes")
+            throw PlatformError.resourceLimit("request exceeds \(limits.maximumRequestBytes) bytes")
         }
         do {
             let object = try JSONSerialization.jsonObject(with: data)
@@ -541,25 +663,33 @@ public enum PortableSimulationPlatform {
 
     private enum PlatformError: LocalizedError {
         case invalidRequest(String)
-        var code: ErrorCode { .invalidRequest }
+        case resourceLimit(String)
+        var code: ErrorCode {
+            switch self {
+            case .invalidRequest: .invalidRequest
+            case .resourceLimit: .resourceLimit
+            }
+        }
         var errorDescription: String? {
-            switch self { case .invalidRequest(let message): message }
+            switch self {
+            case .invalidRequest(let message), .resourceLimit(let message): message
+            }
         }
     }
 
     private static func validateResourceBudget(_ request: Request) throws {
         let names = request.circuit.nodes.map(\.name) + request.circuit.devices.map(\.name)
         guard names.allSatisfy({ $0.utf8.count <= limits.maximumNameBytes }) else {
-            throw PlatformError.invalidRequest("circuit name exceeds \(limits.maximumNameBytes) UTF-8 bytes")
+            throw PlatformError.resourceLimit("circuit name exceeds \(limits.maximumNameBytes) UTF-8 bytes")
         }
         guard request.circuit.solver.maximumIterations <= limits.maximumSolverIterations else {
-            throw PlatformError.invalidRequest("solver exceeds the \(limits.maximumSolverIterations)-iteration limit")
+            throw PlatformError.resourceLimit("solver exceeds the \(limits.maximumSolverIterations)-iteration limit")
         }
         let waveformPoints = request.circuit.devices.reduce(into: 0) { count, device in
             count += device.source?.transient?.points.count ?? 0
         }
         guard waveformPoints <= limits.maximumWaveformPoints else {
-            throw PlatformError.invalidRequest("circuit exceeds the \(limits.maximumWaveformPoints)-waveform-point limit")
+            throw PlatformError.resourceLimit("circuit exceeds the \(limits.maximumWaveformPoints)-waveform-point limit")
         }
         guard request.circuit.initialConditions.nodeVoltages.count <= request.circuit.nodes.count,
               request.circuit.initialConditions.elementCurrents.count <= request.circuit.devices.count else {

@@ -96,7 +96,7 @@ public struct TransientSolver: Sendable {
         record(operatingPoint)
 
         for step in 1...stepCount {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             let time = startTime + Double(step) * timestep
             let solution = try circuit.solveTransientStep(
                 timestep: timestep,

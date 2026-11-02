@@ -177,7 +177,7 @@ public struct NumericCoreEngineBackend: SimulationEngineBackend {
         points.reserveCapacity(values.count)
         var previousState: [Double]?
         for value in values {
-            try Task.checkCancellation()
+            try SimulationExecutionDeadline.check()
             var swept = ir
             swept.devices[sourceIndex].source?.dcValue = value
             let pointBridge = try Bridge(ir: swept)
@@ -493,7 +493,7 @@ private extension NumericCoreEngineBackend {
             var nodeSeries = [[FreqPoint]](repeating: [], count: circuit.nodeCount)
             var componentSeries = [[FreqPoint]](repeating: [], count: circuit.elements.count)
             for point in sweep.points {
-                try Task.checkCancellation()
+                try SimulationExecutionDeadline.check()
                 let voltages = try complexNodeVoltages(point)
                 for node in 1..<circuit.nodeCount {
                     nodeSeries[node].append(freqPoint(point.frequency, voltages[node]))
@@ -623,7 +623,7 @@ private extension NumericCoreEngineBackend {
             var states: [[Double]] = []
             states.reserveCapacity(times.count)
             for time in times {
-                try Task.checkCancellation()
+                try SimulationExecutionDeadline.check()
                 guard let state = integrated.state(at: time) else {
                     throw CircuitSimulationError.invalidTransientSettings
                 }

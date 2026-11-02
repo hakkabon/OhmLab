@@ -28,17 +28,23 @@ the canonical backend identity, its implementation version, and a fully typed
 simulation-result projection. Failure responses contain a stable error code and
 human-readable message. Malformed JSON, unknown protocol versions, unknown
 backends, invalid Circuit IR, and unsupported analysis/backend combinations
-fail atomically; partial results are never returned.
+fail atomically; partial results are never returned. Budget and deadline
+failures use the machine-readable `resource-limit` and `timeout` codes rather
+than a generic `simulation-failed`.
 
 JSON encoding uses sorted keys and SI values. Requests are limited to 16 MiB,
 100,000 nodes, 200,000 devices, 100,000 requested analysis samples, 100,000
 embedded waveform points, 1,024 UTF-8 bytes per circuit name, and 10,000
 solver iterations. These are rejection ceilings, not performance claims. In
 particular, the native backend's dense matrix implementation is intended for
-interactive circuits rather than circuits near the node ceiling. Hosts should
-set smaller deployment-specific limits when latency or memory budgets require
-it. A host executes each request against an isolated backend instance and does
-not mutate OhmLab's process-wide application backend.
+interactive circuits rather than circuits near the node ceiling. The manifest
+therefore also publishes a `backendLimits` entry per qualified backend with the
+executable dense envelope (currently 512 MNA unknowns, 513 Circuit IR nodes,
+and the protocol device ceiling). The portable executor enforces that envelope
+before allocating a matrix and returns `resource-limit` when it is exceeded.
+Hosts should set smaller deployment-specific limits when latency or memory
+budgets require it. A host executes each request against an isolated backend
+instance and does not mutate OhmLab's process-wide application backend.
 
 The normative request and response schemas are
 [`schemas/portable-simulation-request-v1.schema.json`](schemas/portable-simulation-request-v1.schema.json),
@@ -59,8 +65,9 @@ file or host search path.
 
 ## Discovery and qualification
 
-`ohm platform manifest [--pretty]` reports the media type, limits, contract
-versions, supported protocol analyses, and qualified backends.
+`ohm platform manifest [--pretty]` reports the media type, global limits,
+per-backend dense envelopes, contract versions, supported protocol analyses,
+and qualified backends.
 
 `ohm platform run [--pretty]` reads exactly one request from standard input and
 writes exactly one response to standard output. It exits zero for a successful

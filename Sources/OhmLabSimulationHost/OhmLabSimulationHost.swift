@@ -34,7 +34,7 @@ public enum OhmLabSimulationHost {
         do {
             try policy.validate()
             guard data.count <= policy.maximumRequestBytes else {
-                return failure(requestID: "", code: .invalidRequest, message: "request exceeds host byte budget")
+                return failure(requestID: "", code: .resourceLimit, message: "request exceeds host byte budget")
             }
             let request = try PortableSimulationPlatform.decodeRequest(data)
             return await execute(request, policy: policy, cancellationToken: cancellationToken)
@@ -54,12 +54,12 @@ public enum OhmLabSimulationHost {
         }
         guard request.circuit.nodes.count <= policy.maximumNodes,
               request.circuit.devices.count <= policy.maximumDevices else {
-            return failure(requestID: request.requestID, code: .invalidRequest,
+            return failure(requestID: request.requestID, code: .resourceLimit,
                            message: "request exceeds host circuit budget")
         }
         guard let encoded = try? PortableSimulationPlatform.encode(request),
               encoded.count <= policy.maximumRequestBytes else {
-            return failure(requestID: request.requestID, code: .invalidRequest,
+            return failure(requestID: request.requestID, code: .resourceLimit,
                            message: "request exceeds host byte budget")
         }
         guard cancellationToken?.isCancelled != true, !Task.isCancelled else {
@@ -67,19 +67,17 @@ public enum OhmLabSimulationHost {
                            message: "simulation cancelled")
         }
 
-        let response: PortableSimulationPlatform.Response
-        if policy.timeoutMilliseconds == nil && cancellationToken == nil {
-            response = PortableSimulationPlatform.execute(request)
-        } else {
-            response = await race(
-                request: request,
-                timeoutMilliseconds: policy.timeoutMilliseconds,
-                cancellationToken: cancellationToken
-            )
-        }
+        // Always run the solver in a child task. That keeps a long, blocking
+        // solve off the caller's executor (for example the main actor) even
+        // when no deadline or external token was supplied.
+        let response = await race(
+            request: request,
+            timeoutMilliseconds: policy.timeoutMilliseconds,
+            cancellationToken: cancellationToken
+        )
         guard let resultData = try? PortableSimulationPlatform.encode(response),
               resultData.count <= policy.maximumResultBytes else {
-            return failure(requestID: request.requestID, code: .simulationFailed,
+            return failure(requestID: request.requestID, code: .resourceLimit,
                            message: "result exceeds host byte budget", backend: response.backend)
         }
         return response
@@ -154,26 +152,54 @@ public enum OhmLabSimulationHost {
         timeoutMilliseconds: Int?,
         cancellationToken: SimulationCancellationToken?
     ) async -> PortableSimulationPlatform.Response {
-        let outcome = await withTaskGroup(of: RaceOutcome.self, returning: RaceOutcome.self) { group in
-            group.addTask { .response(PortableSimulationPlatform.execute(request)) }
-            group.addTask {
-                let clock = ContinuousClock()
-                let deadline = timeoutMilliseconds.map { clock.now.advanced(by: .milliseconds($0)) }
-                while true {
-                    if Task.isCancelled || cancellationToken?.isCancelled == true { return .cancelled }
-                    if let deadline, clock.now >= deadline { return .timedOut }
-                    do { try await clock.sleep(for: .milliseconds(5)) }
-                    catch { return .cancelled }
+        let clock = ContinuousClock()
+        let started = clock.now
+        let deadline = timeoutMilliseconds.map { started.advanced(by: .milliseconds($0)) }
+
+        let outcome = await SimulationExecutionDeadline.$instant.withValue(deadline) {
+            await withTaskGroup(of: RaceOutcome.self, returning: RaceOutcome.self) { group in
+                group.addTask { .response(PortableSimulationPlatform.execute(request)) }
+                group.addTask {
+                    while true {
+                        if Task.isCancelled || cancellationToken?.isCancelled == true {
+                            return .cancelled
+                        }
+                        guard let deadline else {
+                            do { try await clock.sleep(for: .milliseconds(5)) }
+                            catch { return .cancelled }
+                            continue
+                        }
+                        let now = clock.now
+                        if now >= deadline { return .timedOut }
+                        let remaining = now.duration(to: deadline)
+                        do {
+                            try await clock.sleep(for: min(remaining, .milliseconds(5)))
+                        } catch {
+                            return .cancelled
+                        }
+                    }
                 }
+
+                let first = await group.next() ?? .cancelled
+                group.cancelAll()
+                // Drain the remaining child. The solver observes cancellation
+                // and the deadline at its cooperative checkpoints, so this
+                // bounds how long a timeout response waits for the solver.
+                while await group.next() != nil {}
+
+                // A solver result that arrives after the deadline is still a
+                // deadline failure: the policy is a wall-clock promise, not
+                // just a hint to the scheduler.
+                if case .response = first, let deadline, clock.now > deadline {
+                    return .timedOut
+                }
+                return first
             }
-            let first = await group.next() ?? .cancelled
-            group.cancelAll()
-            return first
         }
         switch outcome {
         case .response(let response): return response
         case .timedOut:
-            return failure(requestID: request.requestID, code: .simulationFailed,
+            return failure(requestID: request.requestID, code: .timeout,
                            message: "simulation deadline exceeded", backend: request.backend)
         case .cancelled:
             return failure(requestID: request.requestID, code: .simulationFailed,
