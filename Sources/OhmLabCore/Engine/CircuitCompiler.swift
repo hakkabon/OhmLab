@@ -67,7 +67,7 @@ public enum CircuitCompiler {
 
         // One shared, deterministic node mapping. Every ground symbol collapses
         // to node 0, matching SPICE.
-        let nodeMap = NodeMap.build(from: nets)
+        let nodeMap = try NodeMap.build(from: nets)
         var nodeNames = nodeMap.nodeNames
         let nodeIndexByNet = nodeMap.nodeIndexByNetID
 

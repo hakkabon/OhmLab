@@ -148,7 +148,7 @@ public enum SpiceNetlistBuilder {
                 }
             }
 
-            let nodeMap = NodeMap.build(from: nets)
+            let nodeMap = try NodeMap.build(from: nets)
             var nodeByPin: [PinRef: String] = [:]
             for net in nets {
                 guard let node = nodeMap.nodeNameByNetID[net.id] else { continue }

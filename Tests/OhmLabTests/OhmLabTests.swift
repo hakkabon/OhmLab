@@ -138,6 +138,135 @@ import Testing
     #expect(outNet?.connectedPins.contains(PinRef(symbolId: resistor.id, pinId: "2")) == true)
 }
 
+@Test func connectivityMergesSameNamedLabels() {
+    let first = SymbolInstance(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000061")!,
+        descriptorId: "resistor",
+        refDes: "R1",
+        position: GridPoint(0, 0)
+    )
+    let second = SymbolInstance(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000062")!,
+        descriptorId: "resistor",
+        refDes: "R2",
+        position: GridPoint(20, 0)
+    )
+    let wires = [
+        WireSegment(points: [GridPoint(2, 0), GridPoint(4, 0)]),
+        WireSegment(points: [GridPoint(22, 0), GridPoint(24, 0)]),
+    ]
+    // Same node, different spelling: SPICE node names are case-insensitive.
+    let labels = [
+        NetLabel(name: "OUT", position: GridPoint(4, 0)),
+        NetLabel(name: "out", position: GridPoint(24, 0)),
+    ]
+
+    let nets = ConnectivityBuilder.build(symbols: [first, second], wires: wires, labels: labels)
+    let firstPin = net(containing: PinRef(symbolId: first.id, pinId: "2"), in: nets)
+    let secondPin = net(containing: PinRef(symbolId: second.id, pinId: "2"), in: nets)
+
+    #expect(firstPin?.id == secondPin?.id)
+    #expect(nets.filter { $0.name.uppercased() == "OUT" }.count == 1)
+}
+
+@Test func netlistBuilderMergesSameNamedLabels() throws {
+    let source = SymbolInstance(
+        descriptorId: "voltage-source",
+        refDes: "V1",
+        position: GridPoint(0, 0),
+        parameters: ["dcVoltage": 5, "acMagnitude": 1, "acPhaseDegrees": 0]
+    )
+    let first = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R1",
+        position: GridPoint(10, 0),
+        parameters: ["resistance": 1_000]
+    )
+    let second = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R2",
+        position: GridPoint(20, 0),
+        parameters: ["resistance": 1_000]
+    )
+    let ground = SymbolInstance(
+        descriptorId: "ground",
+        refDes: "GND1",
+        position: GridPoint(-2, 1)
+    )
+    let loadGround = SymbolInstance(
+        descriptorId: "ground",
+        refDes: "GND2",
+        position: GridPoint(22, 1)
+    )
+    let wires = [
+        // Two physically separate pieces of the same labelled node.
+        WireSegment(points: [GridPoint(2, 0), GridPoint(4, 0)]),
+        WireSegment(points: [GridPoint(6, 0), GridPoint(8, 0)]),
+        WireSegment(points: [GridPoint(12, 0), GridPoint(18, 0)]),
+    ]
+    let labels = [
+        NetLabel(name: "OUT", position: GridPoint(4, 0)),
+        NetLabel(name: "OUT", position: GridPoint(6, 0)),
+    ]
+    let snapshot = SchematicSnapshot(
+        symbols: [source, first, second, ground, loadGround],
+        wires: wires,
+        netLabels: labels
+    )
+
+    let netlist = try SpiceNetlistBuilder.build(snapshot: snapshot)
+    let lines = netlist.split(separator: "\n").map(String.init)
+    let sourceLine = try #require(lines.first { $0.hasPrefix("V1 ") })
+    let firstResistorLine = try #require(lines.first { $0.hasPrefix("R1 ") })
+    let sourceNodes = sourceLine.split(separator: " ").map(String.init)
+    let firstResistorNodes = firstResistorLine.split(separator: " ").map(String.init)
+
+    #expect(sourceNodes[2] == "OUT")
+    #expect(firstResistorNodes[1] == "OUT")
+
+    let settings = AnalysisSettings(
+        runDC: true,
+        runAC: false,
+        acStartFrequency: 1,
+        acStopFrequency: 1_000_000,
+        acPointsPerDecade: 20
+    )
+    let result = try SimulationEngine.solve(snapshot: snapshot, settings: settings)
+    let dc = try #require(result.dc)
+    let out = try #require(dc.nodes.first { $0.name == "OUT" })
+    #expect(abs(abs(out.voltage) - 5) < 1e-9)
+    let firstDrop = try #require(dc.components.first { $0.name == "R1" })
+    #expect(abs(abs(firstDrop.voltage) - 2.5) < 1e-9)
+}
+
+@Test func schematicExportRejectsANetNamedZero() {
+    let resistor = SymbolInstance(
+        descriptorId: "resistor",
+        refDes: "R1",
+        position: GridPoint(0, 0),
+        parameters: ["resistance": 1_000]
+    )
+    let ground = SymbolInstance(
+        descriptorId: "ground",
+        refDes: "GND1",
+        position: GridPoint(-2, 1)
+    )
+    let wire = WireSegment(points: [GridPoint(2, 0), GridPoint(4, 0)])
+    let label = NetLabel(name: "0", position: GridPoint(4, 0))
+    let snapshot = SchematicSnapshot(
+        symbols: [resistor, ground],
+        wires: [wire],
+        netLabels: [label]
+    )
+
+    #expect(throws: NodeMapError.self) {
+        _ = try SpiceNetlistBuilder.build(snapshot: snapshot)
+    }
+    #expect(throws: NodeMapError.self) {
+        _ = try CircuitCompiler.compile(snapshot: snapshot)
+    }
+}
+
 // MARK: - Component registry and editing
 
 @Test @MainActor func componentRegistryProvidesTypedPassiveDefaults() {
@@ -499,19 +628,50 @@ import Testing
     #expect(parsed.circuit.elements[0].nodeA == parsed.circuit.elements[1].nodeA)
 }
 
-@Test func nodeMapReservesZeroAndDeduplicatesNames() {
+@Test func nodeMapMapsGroundToZeroAndKeepsLabelNames() throws {
+    let nets = [
+        Net(id: 4, name: "0", connectedPins: [], isGround: true),
+        Net(id: 2, name: "OUT", connectedPins: []),
+    ]
+    let map = try NodeMap.build(from: nets)
+
+    #expect(map.nodeNames == ["0", "OUT"])
+    #expect(map.nodeNameByNetID[4] == "0")
+    #expect(map.nodeNameByNetID[2] == "OUT")
+}
+
+@Test func nodeMapRejectsANonGroundNetNamedZero() {
     let nets = [
         Net(id: 1, name: "0", connectedPins: []),
-        Net(id: 2, name: "OUT", connectedPins: []),
-        Net(id: 3, name: "OUT", connectedPins: []),
-        Net(id: 4, name: "0", connectedPins: [], isGround: true)
+        Net(id: 4, name: "0", connectedPins: [], isGround: true),
     ]
-    let map = NodeMap.build(from: nets)
 
-    #expect(map.nodeNames[0] == "0")
-    #expect(map.nodeNameByNetID[4] == "0")
-    #expect(map.nodeNameByNetID[1] != "0")
-    #expect(Set([map.nodeNameByNetID[2], map.nodeNameByNetID[3]]).count == 2)
+    #expect(throws: NodeMapError.reservedGroundName(netID: 1)) {
+        _ = try NodeMap.build(from: nets)
+    }
+}
+
+@Test func nodeMapRejectsDuplicateNamesCaseInsensitively() {
+    let nets = [
+        Net(id: 2, name: "OUT", connectedPins: []),
+        Net(id: 3, name: "out", connectedPins: []),
+    ]
+
+    #expect(throws: NodeMapError.duplicateName(name: "out", netIDs: [2, 3])) {
+        _ = try NodeMap.build(from: nets)
+    }
+}
+
+@Test func nodeMapRejectsAGeneratedNameCollision() {
+    // Net 2 is unlabelled, so it would be named "N2"; net 3 claims that name.
+    let nets = [
+        Net(id: 2, name: "", connectedPins: []),
+        Net(id: 3, name: "N2", connectedPins: []),
+    ]
+
+    #expect(throws: NodeMapError.duplicateName(name: "N2", netIDs: [2, 3])) {
+        _ = try NodeMap.build(from: nets)
+    }
 }
 
 @Test func analysisSettingsDecodeLegacyJSONWithoutSweepType() throws {

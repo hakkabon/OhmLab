@@ -73,16 +73,20 @@ public enum ConnectivityBuilder {
             }
         }
 
-        // Bit-select labels (`DATA[3]`) name a member net. Members are global by
-        // name (like SPICE), so merge every same-named tap.
-        var rootByBitName: [String: GridPoint] = [:]
-        for label in activeLabels where label.isBitSelect {
-            let key = label.name.uppercased()
+        // Labels name nodes globally (like SPICE): every same-named tap is one
+        // net, whether it is a plain label (`OUT`) or a bus member (`DATA[3]`).
+        // Names are matched case-insensitively because SPICE node names are.
+        // Bus-declaration labels (`DATA[7:0]`) were filtered out above; they
+        // name a bundle, not an electrical node.
+        var rootByName: [String: GridPoint] = [:]
+        for label in activeLabels {
+            let key = label.name.trimmingCharacters(in: .whitespaces).uppercased()
+            guard !key.isEmpty else { continue }
             let root = unionFind.find(label.position)
-            if let existing = rootByBitName[key] {
+            if let existing = rootByName[key] {
                 unionFind.union(existing, root)
             } else {
-                rootByBitName[key] = root
+                rootByName[key] = root
             }
         }
 

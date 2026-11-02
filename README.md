@@ -179,7 +179,7 @@ Unlike traditional tools where the SPICE netlist is the source of truth (which l
 This layer represents the visual document that is saved to disk. It contains all geometric and visual context:
 *   **Symbols:** Component references, grid-aligned positions, rotations, and mirroring.
 *   **Wires:** Orthogonal, grid-aligned point arrays representing physical traces.
-*   **Junctions & Labels:** Explicit connection dots and named net labels (e.g. `VCC`, `IN`).
+*   **Junctions & Labels:** Explicit connection dots and named net labels (e.g. `VCC`, `IN`). Same-named labels are one global net, matched case-insensitively like SPICE nodes, so two separately drawn `OUT` labels connect without a wire.
 *   **Parameters:** Typed SI values stored on each component instance, with engineering-unit labels shown in the editor.
 
 ### Layer 2: The Connectivity Model (The Graph)
@@ -191,7 +191,7 @@ Derived entirely from Layer 1, this layer answers the question: *"What is electr
 
 ### Layer 3: The Netlist Layer (The Projection)
 This layer translates the Connectivity Model into a SPICE dialect (R, C, L, V, I, D, Q, M, J).
-*   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets. `gnd`, `ground`, and `agnd` are normalized to node `0` (a note is recorded), and node names are trimmed of stray whitespace.
+*   **Node Mapping:** Assigns node IDs/names (labels preserved) to nets. `gnd`, `ground`, and `agnd` are normalized to node `0` (a note is recorded), and node names are trimmed of stray whitespace. Node names must be unique: if two distinct nets still resolve to the same name — or a non-ground net claims the reserved name `0` — the projection reports the conflict instead of silently renaming a node.
 *   **Value Parsing:** Converts strings like `4.7k` or `10u` into floating-point values, and evaluates `{…}` expressions over `.param` values.
 *   **Import/Export:** A `.ac`- and `.dc`-aware netlist reader lets you edit SPICE directly; the schematic projects back to a readable SPICE netlist.
 
@@ -271,7 +271,7 @@ Simulation and export **flatten** the hierarchy by projecting the snapshot to a 
 
 ### Buses
 
-A label of the form `DATA[7:0]` **declares** a bus with that bit range; a label of the form `DATA[3]` is a **member** (bit-select) that names a single bit. Bus **wires** (drawn distinctly, in blue) bundle the members and only route; they carry no conduction of their own. Member nets merge globally by name — every `DATA[3]` tap is the same net — and expand to ordinary labelled nets when projected to SPICE, so a bus round-trips through the netlist dialect as `DATA[3]` node names. Declaration labels are names only and are dropped from connectivity. Diagnostics flag member labels with no declaration and members outside a declared range.
+A label of the form `DATA[7:0]` **declares** a bus with that bit range; a label of the form `DATA[3]` is a **member** (bit-select) that names a single bit. Bus **wires** (drawn distinctly, in blue) bundle the members and only route; they carry no conduction of their own. Labels merge globally by name — every `DATA[3]` tap is the same net, exactly as plain labels like `OUT` are — and expand to ordinary labelled nets when projected to SPICE, so a bus round-trips through the netlist dialect as `DATA[3]` node names. Declaration labels are names only and are dropped from connectivity. Diagnostics flag member labels with no declaration and members outside a declared range.
 
 ### Netlist dialect & analysis cards
 
