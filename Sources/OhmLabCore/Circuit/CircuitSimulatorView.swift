@@ -100,7 +100,7 @@ struct CircuitSimulatorView: View {
                 Label("Import", systemImage: "square.and.arrow.down.on.square")
             }
             .buttonStyle(.bordered)
-            .help("Import a KiCad schematic (.kicad_sch) or a SPICE netlist (.cir, .net, .sp).")
+            .help("Import a KiCad project (.kicad_pro), schematic (.kicad_sch), or SPICE netlist (.cir, .net, .sp).")
             .fileImporter(
                 isPresented: $isImporting,
                 allowedContentTypes: [.item],
@@ -198,7 +198,7 @@ struct CircuitSimulatorView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Label(
-                            "Imported \(source.kind == .kicadSchematic ? "KiCad schematic" : "SPICE netlist")",
+                            "Imported \(source.kind.label)",
                             systemImage: "square.and.arrow.down"
                         )
                         Text(source.fileName)

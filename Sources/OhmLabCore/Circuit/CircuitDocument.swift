@@ -28,7 +28,17 @@ final class CircuitDocument: ObservableObject, Identifiable {
     /// Where the current netlist text came from, when it was imported rather
     /// than typed. Cleared as soon as the netlist is edited by hand.
     struct ImportSource: Equatable {
-        enum Kind: Equatable { case spiceNetlist, kicadSchematic }
+        enum Kind: Equatable {
+            case spiceNetlist, kicadSchematic, kicadProject
+
+            var label: String {
+                switch self {
+                case .spiceNetlist: "SPICE netlist"
+                case .kicadSchematic: "KiCad schematic"
+                case .kicadProject: "KiCad project"
+                }
+            }
+        }
         let fileName: String
         let kind: Kind
         /// Directory containing the imported file; relative includes resolve
@@ -390,7 +400,12 @@ final class CircuitDocument: ObservableObject, Identifiable {
     /// the import directory.
     func netlistForExport() throws -> String {
         if usesSchematic {
-            return try SpiceNetlistBuilder.build(from: schematic)
+            return try SpiceNetlistBuilder.export(
+                snapshot: schematic.snapshot(),
+                title: name,
+                analysis: settings,
+                libraryTexts: modelLibraries.map(\.rawText)
+            )
         }
         if let resolvedNetlistText { return resolvedNetlistText }
         return SpiceIncludePipeline.inline(
@@ -409,12 +424,27 @@ final class CircuitDocument: ObservableObject, Identifiable {
         let ext = url.pathExtension.lowercased()
         let directory = url.deletingLastPathComponent()
         let source: ImportSource
+        var importedURL = url
         if KiCadInterchange.schematicExtensions.contains(ext) {
-            let text = try KiCadInterchange.exportedNetlistText(at: url)
+            let root = KiCadProjectInterchange.rootSchematic(for: url) ?? url
+            importedURL = root
+            let text = try KiCadInterchange.exportedNetlistText(at: root)
+            source = ImportSource(
+                fileName: root.lastPathComponent,
+                kind: root == url ? .kicadSchematic : .kicadProject,
+                directory: root.deletingLastPathComponent()
+            )
+            importNetlist(text, source: source)
+        } else if ext == KiCadProjectInterchange.projectExtension {
+            guard let root = KiCadProjectInterchange.rootSchematic(for: url) else {
+                throw KiCadInterchangeError.unsupportedFormat(url.lastPathComponent)
+            }
+            importedURL = root
+            let text = try KiCadInterchange.exportedNetlistText(at: root)
             source = ImportSource(
                 fileName: url.lastPathComponent,
-                kind: .kicadSchematic,
-                directory: directory
+                kind: .kicadProject,
+                directory: root.deletingLastPathComponent()
             )
             importNetlist(text, source: source)
         } else if KiCadInterchange.netlistExtensions.contains(ext) {
@@ -431,7 +461,7 @@ final class CircuitDocument: ObservableObject, Identifiable {
         } else {
             throw KiCadInterchangeError.unsupportedFormat(url.lastPathComponent)
         }
-        name = url.deletingPathExtension().lastPathComponent
+        name = importedURL.deletingPathExtension().lastPathComponent
     }
 
     /// Resolves includes and records parser/inlining warnings. Also captures the

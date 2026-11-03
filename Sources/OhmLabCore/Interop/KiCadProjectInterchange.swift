@@ -30,18 +30,138 @@ public enum KiCadProjectInterchange {
     public static let projectExtension = "kicad_pro"
     public static let schematicExtension = "kicad_sch"
 
-    /// The top-level `.kicad_sch` for `url`, whether `url` is a project or a
-    /// schematic. Returns nil when `url` is neither.
+    /// The conventional top-level `.kicad_sch` for `url`, whether `url` is a
+    /// project or a schematic. Returns nil when `url` is neither.
+    ///
+    /// A project normally stores its root sheet beside itself under the same
+    /// stem. When that file is absent, the directory is scanned for the sheet
+    /// no other sheet references, which is the root of the hierarchy.
     public static func topSchematic(for url: URL) -> URL? {
         switch url.pathExtension.lowercased() {
         case schematicExtension:
             return url
         case projectExtension:
-            let stem = url.deletingPathExtension()
-            return stem.appendingPathExtension(schematicExtension)
+            let conventional = url.deletingPathExtension()
+                .appendingPathExtension(schematicExtension)
+            if FileManager.default.fileExists(atPath: conventional.path) {
+                return conventional
+            }
+            return discoverRootSchematic(in: url.deletingLastPathComponent())
+                ?? conventional
         default:
             return nil
         }
+    }
+
+    /// Resolves the root schematic for any file in a KiCad project. A
+    /// `.kicad_pro` resolves through `topSchematic`; a `.kicad_sch` is walked
+    /// up to the sheet that references it, so opening a child sheet still
+    /// imports the whole project. Falls back to `url` when no unambiguous root
+    /// exists.
+    public static func rootSchematic(for url: URL) -> URL? {
+        switch url.pathExtension.lowercased() {
+        case projectExtension:
+            return topSchematic(for: url)
+        case schematicExtension:
+            if let project = projectFile(for: url),
+               let root = topSchematic(for: project) {
+                return root
+            }
+            return rootReachable(from: url, in: url.deletingLastPathComponent()) ?? url
+        default:
+            return nil
+        }
+    }
+
+    /// Sheet files referenced by `url`'s `(property "Sheetfile" "...")`
+    /// entries, resolved against the schematic's directory.
+    static func sheetReferences(in url: URL) -> [URL] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let directory = url.deletingLastPathComponent()
+        let marker = "\"Sheetfile\""
+        var references: [URL] = []
+        var searchStart = text.startIndex
+        while let markerRange = text.range(of: marker, range: searchStart..<text.endIndex) {
+            var index = markerRange.upperBound
+            while index < text.endIndex, text[index].isWhitespace {
+                index = text.index(after: index)
+            }
+            guard index < text.endIndex, text[index] == "\"" else {
+                searchStart = markerRange.upperBound
+                continue
+            }
+            let valueStart = text.index(after: index)
+            guard let valueEnd = text[valueStart...].firstIndex(of: "\"") else { break }
+            let path = String(text[valueStart..<valueEnd])
+            if !path.isEmpty, !path.contains("${") {
+                let resolved = path.hasPrefix("/")
+                    ? URL(fileURLWithPath: path)
+                    : directory.appendingPathComponent(path)
+                references.append(resolved.standardizedFileURL)
+            }
+            searchStart = text.index(after: valueEnd)
+        }
+        return references
+    }
+
+    private static func projectFile(for schematic: URL) -> URL? {
+        let directory = schematic.deletingLastPathComponent()
+        let stem = schematic.deletingPathExtension().lastPathComponent
+        let preferred = directory.appendingPathComponent(stem)
+            .appendingPathExtension(projectExtension)
+        if FileManager.default.fileExists(atPath: preferred.path) {
+            return preferred
+        }
+        let projects = files(in: directory, extension: projectExtension)
+        return projects.count == 1 ? projects[0] : nil
+    }
+
+    private static func discoverRootSchematic(in directory: URL) -> URL? {
+        let schematics = files(in: directory, extension: schematicExtension)
+        guard !schematics.isEmpty else { return nil }
+        let referenced = Set(schematics.flatMap { sheetReferences(in: $0) })
+        let roots = schematics.filter {
+            !referenced.contains($0.standardizedFileURL)
+        }
+        if roots.count == 1 { return roots[0] }
+        let directoryStem = directory.lastPathComponent
+        return roots.first {
+            $0.deletingPathExtension().lastPathComponent == directoryStem
+        }
+    }
+
+    private static func rootReachable(from target: URL, in directory: URL) -> URL? {
+        let schematics = files(in: directory, extension: schematicExtension)
+        guard !schematics.isEmpty else { return nil }
+        let references = Dictionary(uniqueKeysWithValues: schematics.map {
+            ($0.standardizedFileURL, sheetReferences(in: $0))
+        })
+        let referenced = Set(references.values.flatMap { $0 })
+        let roots = schematics.filter {
+            !referenced.contains($0.standardizedFileURL)
+        }
+        let targetURL = target.standardizedFileURL
+        for root in roots {
+            var visited: Set<URL> = []
+            var queue = [root.standardizedFileURL]
+            while let current = queue.popLast() {
+                if current == targetURL { return root }
+                guard visited.insert(current).inserted else { continue }
+                queue.append(contentsOf: references[current] ?? [])
+            }
+        }
+        return nil
+    }
+
+    private static func files(in directory: URL, extension fileExtension: String) -> [URL] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return contents
+            .filter { $0.pathExtension.lowercased() == fileExtension }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     #if os(macOS)
@@ -52,7 +172,7 @@ public enum KiCadProjectInterchange {
         executable: URL? = nil,
         now: Date = Date()
     ) throws -> ProjectBundle {
-        guard let schematic = topSchematic(for: url) else {
+        guard let schematic = rootSchematic(for: url) else {
             throw KiCadProjectError.unrecognizedProject(url.lastPathComponent)
         }
         let netlist = try KiCadCLIClient.exportSpiceNetlist(from: schematic, executable: executable)
@@ -65,7 +185,7 @@ public enum KiCadProjectInterchange {
         executable: URL? = nil,
         now: Date = Date()
     ) throws -> ProjectBundle {
-        guard topSchematic(for: url) != nil else {
+        guard rootSchematic(for: url) != nil else {
             throw KiCadProjectError.unrecognizedProject(url.lastPathComponent)
         }
         throw KiCadProjectError.requiresKiCad(url.lastPathComponent)
@@ -150,6 +270,11 @@ public enum KiCadProjectInterchange {
                 return text
             }
         }
-        return try SpiceNetlistBuilder.build(snapshot: document.schematic)
+        return try SpiceNetlistBuilder.export(
+            snapshot: document.schematic,
+            title: document.name,
+            analysis: document.analysis,
+            libraryTexts: (document.modelLibraries ?? []).map(\.text)
+        )
     }
 }

@@ -3613,6 +3613,114 @@ private var sampleNetlistDocument: CircuitFile {
         #expect(!netlist.contains("stale-text-should-be-ignored"))
         #expect(netlist.contains("R1"))
     }
+
+    @Test @MainActor func schematicExportCarriesTitleAnalysisAndLibraries() throws {
+        let document = CircuitDocument()
+        document.name = "Divider"
+        document.settings = AnalysisSettings(
+            runDC: true,
+            runAC: true,
+            runTransient: true,
+            acStartFrequency: 10,
+            acStopFrequency: 1_000_000,
+            acPointsPerDecade: 5,
+            acSweepType: .dec,
+            tranStep: 1e-5,
+            tranStop: 1e-3,
+            tranStart: 0,
+            runDCSweep: true,
+            dcSweepSource: "V1",
+            dcSweepStart: 0,
+            dcSweepStop: 5,
+            dcSweepStep: 0.5
+        )
+        document.modelLibraries = [
+            try SpiceModelLibrary.parse(".model QN NPN(IS=1e-14 BF=100)", name: "QN")
+        ]
+        let source = SymbolInstance(
+            descriptorId: "voltage-source", refDes: "V1", position: GridPoint(0, 0),
+            parameters: ["dcVoltage": 5, "acMagnitude": 1, "acPhaseDegrees": 0]
+        )
+        let resistor = SymbolInstance(
+            descriptorId: "resistor", refDes: "R1", position: GridPoint(4, 0),
+            parameters: ["resistance": 1_000]
+        )
+        let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+        document.schematic.replaceContents(with: SchematicSnapshot(
+            symbols: [source, resistor, ground]
+        ))
+
+        let netlist = try document.netlistForExport()
+        #expect(netlist.hasPrefix(".title \"Divider\""))
+        #expect(netlist.contains("\n.op\n"))
+        #expect(netlist.contains(".ac DEC 5 10 1000000"))
+        #expect(netlist.contains(".tran 1E-05 0.001"))
+        #expect(netlist.contains(".dc V1 0 5 0.5"))
+        #expect(netlist.contains(".model QN NPN(IS=1e-14 BF=100)"))
+        #expect(netlist.hasSuffix(".end"))
+        #expect(netlist.components(separatedBy: ".end").count == 2)
+    }
+
+    @Test func schematicExportSanitizesTitleAndLibraryEndCards() throws {
+        let source = SymbolInstance(
+            descriptorId: "voltage-source", refDes: "V1", position: GridPoint(0, 0),
+            parameters: ["dcVoltage": 5, "acMagnitude": 1, "acPhaseDegrees": 0]
+        )
+        let ground = SymbolInstance(descriptorId: "ground", refDes: "GND1", position: GridPoint(-2, 1))
+        let netlist = try SpiceNetlistBuilder.export(
+            snapshot: SchematicSnapshot(symbols: [source, ground]),
+            title: "A \"quoted\"\nname",
+            libraryTexts: [".model X D(IS=1e-14)\n.end\n.title ignored"]
+        )
+        #expect(netlist.hasPrefix(".title \"A 'quoted' name\""))
+        #expect(netlist.contains(".model X D(IS=1e-14)"))
+        #expect(!netlist.contains(".title ignored"))
+        #expect(netlist.components(separatedBy: ".end").count == 2)
+    }
+
+    @Test func kiCadRootSchematicResolvesThroughProjectAndReferences() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let project = directory.appendingPathComponent("Board.kicad_pro")
+        let root = directory.appendingPathComponent("Main.kicad_sch")
+        let child = directory.appendingPathComponent("Child.kicad_sch")
+        try Data("{}".utf8).write(to: project)
+        try """
+        (kicad_sch (version 20231120)
+          (sheet (at 0 0) (size 10 10)
+            (property "Sheetname" "Child")
+            (property "Sheetfile" "Child.kicad_sch")))
+        """.write(to: root, atomically: true, encoding: .utf8)
+        try "(kicad_sch (version 20231120))".write(to: child, atomically: true, encoding: .utf8)
+
+        #expect(KiCadProjectInterchange.topSchematic(for: project)?.lastPathComponent
+            == "Main.kicad_sch")
+        #expect(KiCadProjectInterchange.rootSchematic(for: project)?.lastPathComponent
+            == "Main.kicad_sch")
+        #expect(KiCadProjectInterchange.rootSchematic(for: root)?.lastPathComponent
+            == "Main.kicad_sch")
+        #expect(KiCadProjectInterchange.rootSchematic(for: child)?.lastPathComponent
+            == "Main.kicad_sch")
+    }
+
+    @Test func kiCadRootSchematicFollowsReferencesWithoutProjectFile() throws {
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let root = directory.appendingPathComponent("Main.kicad_sch")
+        let child = directory.appendingPathComponent("Child.kicad_sch")
+        try """
+        (kicad_sch (version 20231120)
+          (sheet (at 0 0) (size 10 10)
+            (property "Sheetname" "Child")
+            (property "Sheetfile" "Child.kicad_sch")))
+        """.write(to: root, atomically: true, encoding: .utf8)
+        try "(kicad_sch (version 20231120))".write(to: child, atomically: true, encoding: .utf8)
+
+        #expect(KiCadProjectInterchange.rootSchematic(for: child)?.lastPathComponent
+            == "Main.kicad_sch")
+        #expect(KiCadProjectInterchange.sheetReferences(in: root).map(\.lastPathComponent)
+            == ["Child.kicad_sch"])
+    }
 }
 
 // MARK: - Project sync (Phase 16)

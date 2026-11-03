@@ -50,7 +50,32 @@ public enum SpiceNetlistBuilder {
 
     public static func build(snapshot: SchematicSnapshot) throws -> String {
         var emitter = Emitter(snapshot: snapshot)
-        return try emitter.build()
+        return try emitter.build(export: nil)
+    }
+
+    /// Projects a schematic for hand-off to another SPICE tool. Unlike the
+    /// engine-facing `build` methods, the exported text carries a `.title`,
+    /// the document's analysis cards, and any imported model-library
+    /// definitions, so the `.cir` file is self-contained and runs the same way
+    /// in KiCad or ngspice.
+    public static func export(
+        snapshot: SchematicSnapshot,
+        title: String? = nil,
+        analysis: AnalysisSettings? = nil,
+        libraryTexts: [String] = []
+    ) throws -> String {
+        var emitter = Emitter(snapshot: snapshot)
+        return try emitter.build(export: ExportMetadata(
+            title: title,
+            analysis: analysis,
+            libraryTexts: libraryTexts
+        ))
+    }
+
+    private struct ExportMetadata {
+        let title: String?
+        let analysis: AnalysisSettings?
+        let libraryTexts: [String]
     }
 
     private struct Emitter {
@@ -72,7 +97,7 @@ public enum SpiceNetlistBuilder {
             catalog = SubcircuitCatalog(sheets: snapshot.sheets)
         }
 
-        mutating func build() throws -> String {
+        mutating func build(export: ExportMetadata?) throws -> String {
             var elementLines: [String] = []
             var modelLines: [String] = []
             try emitElements(in: root, isRoot: true, lines: &elementLines, models: &modelLines)
@@ -82,12 +107,106 @@ public enum SpiceNetlistBuilder {
                 try emitDefinition(child, definitions: &definitions, models: &modelLines)
             }
 
-            var lines = ["* Generated from OhmLab schematic"]
+            var lines: [String] = []
+            if let title = export?.title.flatMap(Self.titleCard) {
+                lines.append(title)
+            }
+            lines.append("* Generated from OhmLab schematic")
             lines += elementLines
             lines += definitions
             lines += modelLines
+            if let export {
+                lines += Self.libraryLines(export.libraryTexts)
+                if let analysis = export.analysis {
+                    lines += analysisCards(analysis)
+                }
+            }
             lines.append(".end")
             return lines.joined(separator: "\n")
+        }
+
+        /// SPICE treats the first line as the title, so an explicit `.title`
+        /// card must stay on one line and must not contain a quote.
+        private static func titleCard(_ raw: String) -> String? {
+            let cleaned = raw
+                .replacingOccurrences(of: "\"", with: "'")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { return nil }
+            return ".title \"\(cleaned)\""
+        }
+
+        /// Library text is inlined rather than referenced so the exported file
+        /// does not depend on the original library paths. `.end` and `.title`
+        /// cards are dropped because the exporter owns those lines.
+        private static func libraryLines(_ texts: [String]) -> [String] {
+            var seen: Set<String> = []
+            var lines: [String] = []
+            for text in texts {
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      seen.insert(text).inserted else { continue }
+                for line in text.components(separatedBy: .newlines) {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
+                    guard trimmed != ".end",
+                          !trimmed.hasPrefix(".end "),
+                          trimmed != ".title",
+                          !trimmed.hasPrefix(".title ") else { continue }
+                    lines.append(line)
+                }
+            }
+            return lines
+        }
+
+        private func analysisCards(_ settings: AnalysisSettings) -> [String] {
+            var cards: [String] = []
+            if settings.runDC {
+                cards.append(".op")
+            }
+            if settings.runAC,
+               settings.acStartFrequency.isFinite,
+               settings.acStopFrequency.isFinite,
+               settings.acStartFrequency > 0,
+               settings.acStopFrequency > settings.acStartFrequency,
+               settings.acPointsPerDecade > 0 {
+                let sweep: String
+                switch settings.acSweepType {
+                case .dec: sweep = "DEC"
+                case .oct: sweep = "OCT"
+                case .lin: sweep = "LIN"
+                }
+                cards.append(
+                    ".ac \(sweep) \(settings.acPointsPerDecade) "
+                        + "\(spiceNumber(settings.acStartFrequency)) "
+                        + "\(spiceNumber(settings.acStopFrequency))"
+                )
+            }
+            if settings.runTransient,
+               settings.tranStep.isFinite,
+               settings.tranStop.isFinite,
+               settings.tranStart.isFinite,
+               settings.tranStep > 0,
+               settings.tranStop > settings.tranStart,
+               settings.tranStart >= 0 {
+                var card = ".tran \(spiceNumber(settings.tranStep)) \(spiceNumber(settings.tranStop))"
+                if settings.tranStart > 0 {
+                    card += " \(spiceNumber(settings.tranStart))"
+                }
+                cards.append(card)
+            }
+            let source = settings.dcSweepSource.trimmingCharacters(in: .whitespacesAndNewlines)
+            if settings.runDCSweep,
+               !source.isEmpty,
+               settings.dcSweepStart.isFinite,
+               settings.dcSweepStop.isFinite,
+               settings.dcSweepStep.isFinite,
+               settings.dcSweepStep > 0,
+               settings.dcSweepStop != settings.dcSweepStart {
+                cards.append(
+                    ".dc \(source) \(spiceNumber(settings.dcSweepStart)) "
+                        + "\(spiceNumber(settings.dcSweepStop)) \(spiceNumber(settings.dcSweepStep))"
+                )
+            }
+            return cards
         }
 
         private func referencedChildren(in sheet: Sheet) -> [Sheet] {
