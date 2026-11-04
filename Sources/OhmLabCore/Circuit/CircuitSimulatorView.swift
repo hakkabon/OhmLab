@@ -481,7 +481,9 @@ struct CircuitSimulatorView: View {
                                 set: { _ in document.toggleRunOverlay(id: run.id) }
                             ))
                             .labelsHidden()
+                            #if os(macOS)
                             .toggleStyle(.checkbox)
+                            #endif
                             Text(run.label)
                                 .font(.callout)
                             Spacer()

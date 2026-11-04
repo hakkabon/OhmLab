@@ -39,6 +39,25 @@ qualification must publish and exercise the same limit. Mixed-scale solves,
 physical residual certification, singular failure, and pre-solve budget
 rejection are release-blocking evidence.
 
+For the 2.9 release, the product version is **2.9.0** everywhere:
+`OhmLabRelease.version`, `ohm --version`, the Rust host's `PRODUCT_VERSION`,
+`scripts/release-check.sh`, `scripts/health-check.sh`, and the packaged
+`Info.plist` must agree. The
+production boundary remains **v8**; 2.5–2.9 are product/interchange releases
+and must not silently change the numerical contract versions.
+
+The 2.9 release gate also requires:
+
+- the committed KiCad fixture corpus under
+  `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` to pass without `kicad-cli`;
+- root-sheet resolution, `Sheetfile` hierarchy traversal, model-library
+  inlining, project-bundle import, and self-contained schematic export to be
+  covered by tests;
+- `docs/compatibility/kicad.md` to describe the tiered claim that CI actually
+  proves;
+- an iOS/iPadOS Simulator build job in CI so the declared platform target is
+  built, not just documented.
+
 `scripts/package-release.sh [output-directory]` creates a host-architecture
 macOS archive containing `OhmLab.app`, the `ohm` CLI, licence, README, contract
 documents, release metadata, and a SHA-256 checksum. Without credentials it
@@ -56,6 +75,12 @@ architecture separately until the project adopts a universal-binary build.
 
 Compatibility rules for the 2.x line:
 
+- The current product version is **2.9.0**. Keep the version string in
+  `OhmLabRelease.version` and the release/health scripts in lockstep; the tag,
+  CLI output, and packaged metadata must match.
+- 2.5–2.9 do not introduce a new production boundary. Production boundary v8
+  remains current until a later contract explicitly changes the numerical or
+  portable execution guarantees.
 - Do not change production-boundary, Circuit IR, result, capability, or
   nonlinear-convergence, or portable-simulation versions in a patch release.
 - Production boundary v4 is required for 2.0 because the portable process

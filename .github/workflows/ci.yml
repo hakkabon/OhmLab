@@ -30,6 +30,24 @@ jobs:
       - run: swift test
       - run: ./scripts/health-check.sh
 
+  ipados:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift package resolve
+      # The pinned NumericCore XCFramework ships arm64 iOS and arm64
+      # iOS-simulator slices only, so restrict the generic build to arm64
+      # instead of asking for a universal simulator binary.
+      - run: >
+          xcodebuild
+          -scheme OhmLab
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath "$RUNNER_TEMP/ohmlab-derived-data"
+          ARCHS=arm64
+          ONLY_ACTIVE_ARCH=NO
+          CODE_SIGNING_ALLOWED=NO
+          build
+
   artifact:
     runs-on: macos-14
     needs: [swift, rust-host]

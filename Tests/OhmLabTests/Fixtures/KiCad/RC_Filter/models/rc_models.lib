@@ -1,0 +1,1 @@
+.model DMOD D(IS=1e-14 N=1 RS=0.01)

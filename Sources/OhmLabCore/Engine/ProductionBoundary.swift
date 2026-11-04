@@ -3,7 +3,7 @@ import OhmLabSimulationProtocol
 
 /// Product version shipped on the stable production boundary.
 public enum OhmLabRelease {
-    public static let version = "2.4.0"
+    public static let version = "2.9.0"
     public static let productionBoundaryVersion = 8
 }
 

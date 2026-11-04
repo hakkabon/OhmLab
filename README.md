@@ -4,9 +4,35 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
+## 2.9.0 Release Status
+
+OhmLab **2.9.0** is the current tagged release. `OhmLabRelease.version`, the
+`ohm --version` output, the extracted Rust host manifest, the release gate, and
+the packaging metadata all report the same version. The production boundary
+remains **v8**: 2.5–2.9 are product and interchange releases, not a new
+numerical contract.
+
+The 2.5–2.9 line hardened the path between real designs and the simulator:
+
+* **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
+  `.tran` `UIC`/`tmax`, and `.lib` section support.
+* **2.6** inlined `.include`/`.lib` files at import time and threaded the import
+  directory through persistence and export.
+* **2.7** made same-named net labels global (matching SPICE node semantics) and
+  rejected node-name collisions instead of silently renaming nets.
+* **2.8** enforced host deadlines and published per-backend dense-solver limits
+  in the portable platform manifest.
+* **2.9** made schematic exports self-contained and resolved KiCad root sheets
+  from projects, top schematics, and any child sheet.
+
+The KiCad fixture corpus under
+`Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
+root/child/grandchild hierarchy, a simulation model library, and a golden
+`kicad-cli` netlist. It runs in CI without requiring KiCad to be installed.
+
 ## 0.8 Convergence Contract
 
-OhmLab 0.8 establishes a versioned boundary between circuit frontends and numerical engines:
+OhmLab 0.8 established the versioned boundary between circuit frontends and numerical engines; it remains the current boundary:
 
 * **Circuit IR v1** is a Codable, validated, engine-neutral representation of topology, devices, sources, model values, solver controls, and initial conditions. Schematics and SPICE lower into this IR; they are not solver ABIs. See [`docs/contracts/circuit-ir-v1.md`](docs/contracts/circuit-ir-v1.md).
 * **Backend capabilities** declare supported analyses, devices, and input/execution features in a deterministic machine-readable matrix. Undeclared capabilities fail closed.
@@ -296,7 +322,7 @@ Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel w
 
 ### KiCad interchange
 
-The precise 0.8 compatibility promise is documented in [`docs/compatibility/kicad.md`](docs/compatibility/kicad.md): current support is SPICE-level simulation interoperability, not lossless KiCad schematic round-tripping.
+The tiered 2.9 compatibility promise is documented in [`docs/compatibility/kicad.md`](docs/compatibility/kicad.md): current support is **KiCad Netlist Interop** (SPICE-level simulation interoperability), not lossless KiCad schematic round-tripping. Direct `.kicad_sch` parsing/writing is the next KiCad Interop phase.
 
 Interchange is netlist-level: OhmLab does not parse `.kicad_sch` itself, it borrows KiCad's exporter.
 
@@ -305,7 +331,7 @@ Interchange is netlist-level: OhmLab does not parse `.kicad_sch` itself, it borr
 *   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and the **Export** button writes it to a `.cir` file through the system save/share sheet on both macOS and iPadOS. Schematic exports are self-contained: they carry a `.title` card with the document name, one card per enabled analysis (`.op`, `.ac`, `.tran`, `.dc`), and the text of every imported model library, so the file runs the same way outside OhmLab without the original library paths. Library `.end`/`.title` cards are dropped so the exporter owns them, and only one `.end` is emitted.
 *   **Clipboard** — **Copy**/**Paste** on the netlist editor move netlists to and from the system pasteboard.
 
-Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements OhmLab does not support, so it is reported as an unsupported element rather than simulated.
+Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements OhmLab does not support, so it is reported as an unsupported element rather than simulated. KiCad import requires macOS because it invokes `kicad-cli`; iPadOS can import ordinary SPICE netlists and export self-contained netlists. The committed `RC_Filter` fixture proves root-sheet discovery, hierarchy references, model-library inlining, and netlist parsing without requiring KiCad in CI.
 
 ## Projects & Collaboration
 
@@ -500,6 +526,6 @@ Documents are managed by a SwiftUI `DocumentGroup` (`CircuitFileDocument` + `Doc
 - macOS 14+
 - iPadOS 17+
 - Xcode 15+ / Swift 6
-- KiCad 9+ (optional) — enables importing `.kicad_sch` schematics via its `kicad-cli`
+- KiCad 9+ (optional; tested with 10.0.7) — enables importing `.kicad_sch` schematics via its `kicad-cli`
 
 The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses a SwiftUI `DocumentGroup`, so circuits are real documents that open in place and autosave (including to iCloud Drive when the host app is entitled).
