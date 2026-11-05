@@ -245,14 +245,42 @@ public enum CircuitCompiler {
                     parameter: "emission coefficient",
                     symbol: symbol
                 )
-                elements.append(.init(
-                    kind: .diode,
-                    nodeA: a,
-                    nodeB: b,
-                    value: 0,
-                    diode: .init(saturationCurrent: saturation, emissionCoefficient: emission),
-                    name: symbol.refDes
-                ))
+                let seriesResistance = symbol.parameters["seriesResistance"] ?? 0
+                guard seriesResistance >= 0 else {
+                    throw CircuitCompileError.invalidParameter(reference: symbol.refDes, parameter: "series resistance")
+                }
+                let parameters = LinearCircuit.DiodeParameters(
+                    saturationCurrent: saturation,
+                    emissionCoefficient: emission
+                )
+                if seriesResistance > 0 {
+                    let internalNode = nodeNames.count
+                    nodeNames.append("\(symbol.refDes)_SER")
+                    elements.append(.init(
+                        kind: .resistor,
+                        nodeA: a,
+                        nodeB: internalNode,
+                        value: seriesResistance,
+                        name: "R\(symbol.refDes)_SER"
+                    ))
+                    elements.append(.init(
+                        kind: .diode,
+                        nodeA: internalNode,
+                        nodeB: b,
+                        value: 0,
+                        diode: parameters,
+                        name: symbol.refDes
+                    ))
+                } else {
+                    elements.append(.init(
+                        kind: .diode,
+                        nodeA: a,
+                        nodeB: b,
+                        value: 0,
+                        diode: parameters,
+                        name: symbol.refDes
+                    ))
+                }
             case .npnTransistor, .pnpTransistor:
                 let (collector, base, emitter) = try threeTerminalNodes(for: symbol, descriptor: descriptor)
                 let saturation = try positive(

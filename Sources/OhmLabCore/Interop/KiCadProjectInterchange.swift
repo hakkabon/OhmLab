@@ -1,13 +1,13 @@
 // KiCadProjectInterchange.swift
 // Project-level interchange with KiCad.
 //
-// OhmLab does not parse `.kicad_sch`/`.kicad_pro` natively; it borrows KiCad's
-// own exporter (`kicad-cli sch export netlist --format spice`) and stores the
-// resulting netlist as the project's sheet. `kicad-cli` flattens the KiCad
-// sheet hierarchy into a single top-level netlist, so an imported project is a
-// faithful, engine-ready circuit. Export writes a valid `.ohmlabproj` bundle
-// plus per-sheet SPICE netlists (and a `top.cir` entry point) that KiCad and
-// ngspice read directly.
+// Import reads `.kicad_sch` natively through `KiCadSchematicReader`, preserving
+// KiCad UUIDs, references, values, hierarchy, and model-library references.
+// When direct reading fails on macOS, the import falls back to KiCad's own
+// exporter (`kicad-cli sch export netlist --format spice`) and stores the
+// flattened netlist instead. Export writes a valid `.ohmlabproj` bundle plus
+// per-sheet SPICE netlists (and a `top.cir` entry point) that KiCad and ngspice
+// read directly.
 
 import Foundation
 
@@ -164,9 +164,11 @@ public enum KiCadProjectInterchange {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    #if os(macOS)
-    /// Imports a KiCad project (or top schematic) into a single-sheet OhmLab
-    /// project whose sheet holds the flattened SPICE netlist.
+    /// Imports a KiCad project (or top schematic) into an OhmLab project.
+    ///
+    /// Direct `.kicad_sch` reading is the default on every platform. On macOS,
+    /// if the native reader cannot parse the project, import falls back to
+    /// `kicad-cli` and stores the flattened SPICE netlist.
     public static func importProject(
         at url: URL,
         executable: URL? = nil,
@@ -175,22 +177,69 @@ public enum KiCadProjectInterchange {
         guard let schematic = rootSchematic(for: url) else {
             throw KiCadProjectError.unrecognizedProject(url.lastPathComponent)
         }
-        let netlist = try KiCadCLIClient.exportSpiceNetlist(from: schematic, executable: executable)
         let name = url.deletingPathExtension().lastPathComponent
-        return makeImportedBundle(name: name, netlist: netlist, sourceURL: url, topSchematic: schematic, now: now)
-    }
-    #else
-    public static func importProject(
-        at url: URL,
-        executable: URL? = nil,
-        now: Date = Date()
-    ) throws -> ProjectBundle {
-        guard rootSchematic(for: url) != nil else {
-            throw KiCadProjectError.unrecognizedProject(url.lastPathComponent)
+        do {
+            let read = try KiCadSchematicReader.readProject(at: schematic)
+            return makeSchematicBundle(
+                name: name,
+                read: read,
+                sourceURL: url,
+                topSchematic: schematic,
+                now: now
+            )
+        } catch {
+            #if os(macOS)
+            let netlist = try KiCadCLIClient.exportSpiceNetlist(from: schematic, executable: executable)
+            return makeImportedBundle(
+                name: name,
+                netlist: netlist,
+                sourceURL: url,
+                topSchematic: schematic,
+                now: now
+            )
+            #else
+            throw KiCadProjectError.requiresKiCad(url.lastPathComponent)
+            #endif
         }
-        throw KiCadProjectError.requiresKiCad(url.lastPathComponent)
     }
-    #endif
+
+    /// Builds a schematic-backed bundle for a directly read KiCad project. The
+    /// root sheet becomes the active document; child sheets live in the
+    /// snapshot's hierarchy.
+    static func makeSchematicBundle(
+        name: String,
+        read: KiCadSchematicReadResult,
+        sourceURL: URL,
+        topSchematic: URL,
+        now: Date
+    ) -> ProjectBundle {
+        let baseDirectory = topSchematic.deletingLastPathComponent()
+        let libraries = read.modelLibraries.map {
+            StoredModelLibrary(name: $0.name, text: $0.rawText)
+        }
+        let document = CircuitFile(
+            name: name,
+            schematic: read.snapshot,
+            analysis: .default,
+            usesSchematic: true,
+            modelLibraries: libraries,
+            importBaseDirectory: baseDirectory.path
+        )
+        let sheet = ProjectSheet(id: "top", name: name, fileName: "Sheets/top.ohmlab")
+        var manifest = ProjectManifest(
+            name: name,
+            sheets: [sheet],
+            activeSheetID: sheet.id,
+            modelLibraries: libraries,
+            kicadSource: KiCadSource(
+                projectPath: sourceURL.path,
+                topSchematic: topSchematic.path,
+                importedAt: ISO8601DateFormatter().string(from: now)
+            )
+        )
+        manifest.metadata["source"] = "kicad"
+        return ProjectBundle(manifest: manifest, documents: [sheet.id: document])
+    }
 
     /// Builds the bundle for an imported netlist. Split out so the mapping to a
     /// `ProjectBundle` is testable without running KiCad.

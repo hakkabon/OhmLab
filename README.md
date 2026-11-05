@@ -4,15 +4,15 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 2.9.0 Release Status
+## 3.0.0 Release Status
 
-OhmLab **2.9.0** is the current tagged release. `OhmLabRelease.version`, the
+OhmLab **3.0.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
 the packaging metadata all report the same version. The production boundary
-remains **v8**: 2.5–2.9 are product and interchange releases, not a new
-numerical contract.
+remains **v8**: 3.0 is a product and interchange release, not a new numerical
+contract.
 
-The 2.5–2.9 line hardened the path between real designs and the simulator:
+The 2.5–3.0 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -24,11 +24,16 @@ The 2.5–2.9 line hardened the path between real designs and the simulator:
   in the portable platform manifest.
 * **2.9** made schematic exports self-contained and resolved KiCad root sheets
   from projects, top schematics, and any child sheet.
+* **3.0** reads `.kicad_sch` natively on every platform, preserving KiCad UUIDs,
+  references, values, hierarchy, and model-library references, and derives
+  connectivity directly from KiCad wires, junctions, labels, and pins. macOS
+  keeps `kicad-cli` as a fallback only.
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
 root/child/grandchild hierarchy, a simulation model library, and a golden
-`kicad-cli` netlist. It runs in CI without requiring KiCad to be installed.
+`kicad-cli` netlist. The direct-reader tests assert that its DC solution matches
+that golden export, and they run in CI without requiring KiCad to be installed.
 
 ## 0.8 Convergence Contract
 
@@ -258,7 +263,7 @@ Simulation is reached through `SimulationEngine`, a façade that dispatches to a
 *   **Plot Export:** Any plot can be exported as a PNG image or a long-format CSV directly from its panel.
 *   **Multi-run Overlays:** A **Runs** list keeps the last several simulation results; toggle any of them to overlay on the live plots (transient, AC, DC sweep, and FFT), or clear the list.
 *   **Diagnostics as Guidance:** The document is validated continuously — missing ground, duplicate/invalid references, invalid values, floating pins, and shorts are reported inline with the affected component named. **Every sheet** is checked, with child-sheet findings tagged by sheet name (top-level-only checks such as "needs a ground" are skipped inside subcircuits); unbound subcircuit ports, missing sheets, and bus range mistakes are flagged too.
-*   **KiCad / ngspice Interchange:** Import a SPICE netlist (or, on macOS, a KiCad `.kicad_pro`/`.kicad_sch` via `kicad-cli`); export a self-contained netlist KiCad and ngspice accept.
+*   **KiCad / ngspice Interchange:** Import a SPICE netlist, or read a KiCad `.kicad_pro`/`.kicad_sch` hierarchy natively on macOS and iPadOS (macOS keeps `kicad-cli` as a fallback); export a self-contained netlist KiCad and ngspice accept.
 *   **Document-Based Lifecycle:** The app is built on a SwiftUI `DocumentGroup`, so documents open in place, autosave to their own location (including iCloud Drive), and get the standard New/Open/Save/Save As/Revert commands on macOS and iPadOS.
 *   **Hierarchical Sheets:** A document holds named sheets (the root plus any number of subcircuits). A subcircuit-instance symbol references a sheet, exposes its ports as pins, and can be double-clicked to descend into it; a breadcrumb walks back up. Simulation and export flatten the tree.
 *   **Buses:** `DATA[7:0]` declares a bus, a thick blue bus wire carries its labels, and member labels (`DATA[3]`) tap individual bits. Members merge by name and expand to ordinary nets at simulation/export; bus-declaration labels are names only and carry no conduction.
@@ -322,16 +327,18 @@ Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel w
 
 ### KiCad interchange
 
-The tiered 2.9 compatibility promise is documented in [`docs/compatibility/kicad.md`](docs/compatibility/kicad.md): current support is **KiCad Netlist Interop** (SPICE-level simulation interoperability), not lossless KiCad schematic round-tripping. Direct `.kicad_sch` parsing/writing is the next KiCad Interop phase.
+The tiered 3.0 compatibility promise is documented in [`docs/compatibility/kicad.md`](docs/compatibility/kicad.md): current support is **KiCad Schematic Interop** for reading, plus **KiCad Netlist Interop** for simulation. Writing `.kicad_sch` is not yet promised.
 
-Interchange is netlist-level: OhmLab does not parse `.kicad_sch` itself, it borrows KiCad's exporter.
+OhmLab reads `.kicad_sch` directly. It parses the S-expression format itself, walks the `Sheetfile` hierarchy, maps supported library symbols, and derives connectivity from KiCad's own wires, junctions, labels, and pin positions. KiCad UUIDs, reference designators, values, sheet structure, and model-library references are preserved.
 
-*   **Import** — the **Import** button in the simulator header (or dragging a file onto the window) accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or (macOS) a `.kicad_pro` project or `.kicad_sch` schematic, which is converted with `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). A project resolves its root sheet even when it is not named after the `.kicad_pro` file, and opening a child sheet walks up to the sheet that references it, so the whole hierarchy is imported either way. The resulting SPICE text is loaded into the netlist editor and can be run directly; anything the engine cannot model is reported in **Diagnostics** rather than blocking the import. A banner records where the netlist came from and lists non-fatal parser notes; editing the netlist by hand clears it.
-*   **Draw Schematic** — the button in the netlist editor header runs the auto-layout importer (`SchematicImporter`), turning the current netlist into an editable schematic: devices are placed on a grid, each pin is routed orthogonally to a per-net rail, nets are labelled with their original node names, and `.subckt` blocks become child sheets with `X` instances drawn as subcircuit symbols. The router never lets crossing wires merge (connectivity forms only at shared vertices), and the original netlist text is retained so nothing is lost if a drawing does not round-trip perfectly.
+*   **Import** — the **Import** button in the simulator header (or dragging a file onto the window) accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or a `.kicad_pro` project or `.kicad_sch` schematic. A project resolves its root sheet even when it is not named after the `.kicad_pro` file, and opening a child sheet walks up to the sheet that references it, so the whole hierarchy is imported either way. On macOS, if direct reading fails, import falls back to `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). The imported schematic becomes editable, and anything the reader cannot model is reported in **Diagnostics** rather than blocking the import. A banner records where the design came from and lists non-fatal notes; editing the netlist by hand clears it.
+*   **Draw Schematic** — the button in the netlist editor header runs the auto-layout importer (`SchematicImporter`), turning a SPICE netlist into an editable schematic: devices are placed on a grid, each pin is routed orthogonally to a per-net rail, nets are labelled with their original node names, and `.subckt` blocks become child sheets with `X` instances drawn as subcircuit symbols. The router never lets crossing wires merge (connectivity forms only at shared vertices), and the original netlist text is retained so nothing is lost if a drawing does not round-trip perfectly.
 *   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and the **Export** button writes it to a `.cir` file through the system save/share sheet on both macOS and iPadOS. Schematic exports are self-contained: they carry a `.title` card with the document name, one card per enabled analysis (`.op`, `.ac`, `.tran`, `.dc`), and the text of every imported model library, so the file runs the same way outside OhmLab without the original library paths. Library `.end`/`.title` cards are dropped so the exporter owns them, and only one `.end` is emitted.
 *   **Clipboard** — **Copy**/**Paste** on the netlist editor move netlists to and from the system pasteboard.
 
-Known limits: a `.kicad_sch` that contains only connectors/mechanical symbols exports single-node elements OhmLab does not support, so it is reported as an unsupported element rather than simulated. KiCad import requires macOS because it invokes `kicad-cli`; iPadOS can import ordinary SPICE netlists and export self-contained netlists. The committed `RC_Filter` fixture proves root-sheet discovery, hierarchy references, model-library inlining, and netlist parsing without requiring KiCad in CI.
+The reader maps common KiCad device libraries (`Device:R`, `C`, `L`, `D`, voltage/current sources, transistors, and ground symbols) and reads simulation model references from the schematic. It preserves component positions and attaches net labels directly to OhmLab pins rather than copying KiCad wire geometry, which guarantees connectivity while keeping the imported schematic editable. Unsupported symbols are skipped with a warning naming the affected reference.
+
+Known limits: KiCad symbols with no OhmLab equivalent (connectors, mechanical parts, custom devices) are reported and skipped rather than simulated. Writing `.kicad_sch` back out is not supported yet; export remains SPICE-level. The committed `RC_Filter` fixture proves direct hierarchy traversal, UUID/reference/value preservation, model-library inlining, connectivity from KiCad geometry, and DC equivalence with the golden `kicad-cli` netlist without requiring KiCad in CI.
 
 ## Projects & Collaboration
 
@@ -339,7 +346,7 @@ Multi-sheet work is stored as a **project bundle** (`.ohmlabproj`): a folder hol
 
 ### KiCad project interop
 
-*   **Import** — `KiCadProjectInterchange.importProject(at:)` accepts a `.kicad_pro`, its top `.kicad_sch`, or any child sheet, resolves the root schematic, and runs `kicad-cli sch export netlist --format spice`. Resolution prefers `<stem>.kicad_sch`, then the sheet no other sheet references, then walks `(property "Sheetfile" …)` references upward when given a child. `kicad-cli` flattens the KiCad sheet hierarchy, so the result is a single, engine-ready netlist stored as the project's sheet; the source paths and an import timestamp are recorded in the manifest.
+*   **Import** — `KiCadProjectInterchange.importProject(at:)` accepts a `.kicad_pro`, its top `.kicad_sch`, or any child sheet, resolves the root schematic, and reads the whole hierarchy with `KiCadSchematicReader`. Resolution prefers `<stem>.kicad_sch`, then the sheet no other sheet references, then walks `(property "Sheetfile" …)` references upward when given a child. The reader preserves KiCad UUIDs, references, values, hierarchy, and model-library references; on macOS a direct-read failure falls back to `kicad-cli`. The resulting schematic-backed bundle records the source paths and an import timestamp in the manifest.
 *   **Export** — `KiCadProjectInterchange.exportProject(_:to:)` writes a valid `.ohmlabproj` and, alongside it, one SPICE netlist per sheet under `netlists/` plus the active sheet as `top.cir`, so KiCad and ngspice can consume the project directly. Netlists generated from schematic-mode sheets are self-contained, with `.title`, analysis cards, and inlined model-library definitions; netlist-mode sheets keep their original text.
 
 ### Sync
@@ -383,7 +390,7 @@ Sources/
 │   │   ├── CircuitFileDocument.swift # FileDocument for the DocumentGroup scene
 │   │   ├── CloudDocumentStore.swift  # Optional iCloud ubiquity-container access
 │   │   └── ZipArchive.swift          # Minimal stored ZIP for .ohmlabzip bundles
-│   ├── Interop/                  # KiCad/ngspice interchange (kicad-cli bridge)
+│   ├── Interop/                  # KiCad direct reader and SPICE interchange
 │   ├── Project/                  # .ohmlabproj bundle model + store (+ a .ohmlabzip archive)
 │   ├── Sync/                     # Provider-agnostic ProjectSync engine + backends
 │   ├── Analysis/                 # Monte Carlo, worst-case corners, optimiser, probes
@@ -448,7 +455,7 @@ scripts/health-check.sh
 7. Interact with any result plot: drag to pan, pinch/scroll to zoom, double-tap or press **Fit** to auto-scale, and enable **Cursors** for two draggable markers with Δx/Δy readouts. Use each panel's **Export** menu for PNG or CSV, and the **Runs** list to overlay earlier results.
 
 ### Netlist
-Enter or paste SPICE (R, C, L, V, I, D, Q, M, J with `.ac dec|oct|lin`, `.tran`, `.dc`, `.step param`, and `.four`), or use **Import** to load a SPICE netlist (or a KiCad `.kicad_sch` on macOS), then **Run**. Vendor model files can be loaded as libraries so their `.model`/`.subckt` cards are visible without an explicit `.include` (cards written in the netlist itself still take precedence). Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. JFETs use `J<name> <drain> <gate> <source> <model>` with a `.model JNJF NJF(VTO=-2 BETA=1m LAMBDA=0)` (or `PJF(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Parameter (`.param`/`{…}`), include (`.include`/`.lib`), and initial-condition (`.ic`) cards are supported; unsupported cards are reported rather than ignored. Device models accept SPICE's temperature parameters (`XTI`, `EG`, `XTB` for diodes/transistors; `BEX`, `TCV` for MOSFETs and JFETs) and the operating temperature is set with `.temp` or `.options temp=…`. Press **Draw Schematic** to auto-layout the netlist as an editable schematic (with `.subckt` blocks reconstructed as subcircuit-instance symbols).
+Enter or paste SPICE (R, C, L, V, I, D, Q, M, J with `.ac dec|oct|lin`, `.tran`, `.dc`, `.step param`, and `.four`), or use **Import** to load a SPICE netlist or a KiCad `.kicad_pro`/`.kicad_sch` hierarchy, then **Run**. Vendor model files can be loaded as libraries so their `.model`/`.subckt` cards are visible without an explicit `.include` (cards written in the netlist itself still take precedence). Sources keep separate `DC`, `AC`, and transient values (`V1 1 0 DC 5 AC 1`, `V1 1 0 PULSE(0 5 0 1n 1n 1 2)`, `SIN(...)`, `PWL(...)`). Diodes reference a `.model` card (`D1 2 0 DMOD` / `.model DMOD D(IS=1e-14 N=1 RS=10)`); a model's series resistance expands to an internal series resistor. Transistors use `Q<name> <collector> <base> <emitter> <model>` with a `.model QNPN NPN(IS=1e-15 BF=100 BR=1)` (or `PNP(...)`) card. MOSFETs use `M<name> <drain> <gate> <source> <bulk> <model>` with a `.model MNMOS NMOS(VTO=1 KP=1m LAMBDA=0.02)` (or `PMOS(...)`) card. JFETs use `J<name> <drain> <gate> <source> <model>` with a `.model JNJF NJF(VTO=-2 BETA=1m LAMBDA=0)` (or `PJF(...)`) card. Subcircuits use a `.subckt <name> <ports…> … .ends` block with `X` instances, optionally parameterised (`X2 in out DIV RA=2k`). Parameter (`.param`/`{…}`), include (`.include`/`.lib`), and initial-condition (`.ic`) cards are supported; unsupported cards are reported rather than ignored. Device models accept SPICE's temperature parameters (`XTI`, `EG`, `XTB` for diodes/transistors; `BEX`, `TCV` for MOSFETs and JFETs) and the operating temperature is set with `.temp` or `.options temp=…`. Press **Draw Schematic** to auto-layout the netlist as an editable schematic (with `.subckt` blocks reconstructed as subcircuit-instance symbols).
 
 ## Headless / Batch Mode (`ohm`)
 
@@ -526,6 +533,6 @@ Documents are managed by a SwiftUI `DocumentGroup` (`CircuitFileDocument` + `Doc
 - macOS 14+
 - iPadOS 17+
 - Xcode 15+ / Swift 6
-- KiCad 9+ (optional; tested with 10.0.7) — enables importing `.kicad_sch` schematics via its `kicad-cli`
+- KiCad 9+ (optional; tested with 10.0.7) — enables importing `.kicad_sch` schematics via its `kicad-cli` fallback on macOS. Direct `.kicad_sch` reading works on every platform.
 
 The Swift package declares macOS 14+ and iOS 17+ deployment targets. The iOS target is intended for iPadOS; the app uses a SwiftUI `DocumentGroup`, so circuits are real documents that open in place and autosave (including to iCloud Drive when the host app is entitled).

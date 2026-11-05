@@ -178,7 +178,8 @@ public final class ComponentRegistry: @unchecked Sendable {
                 pins: twoTerminalPins,
                 parameters: [
                     ComponentParameterDescriptor(id: "saturationCurrent", name: "Saturation current", unit: "A", defaultValue: 1e-14),
-                    ComponentParameterDescriptor(id: "emissionCoefficient", name: "Emission coefficient", unit: "", defaultValue: 1)
+                    ComponentParameterDescriptor(id: "emissionCoefficient", name: "Emission coefficient", unit: "", defaultValue: 1),
+                    ComponentParameterDescriptor(id: "seriesResistance", name: "Series resistance", unit: "Ω", defaultValue: 0)
                 ]
             ),
             "npn-transistor": ComponentDescriptor(

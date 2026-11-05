@@ -437,6 +437,7 @@ public enum SchematicImporter {
             if let name = modelName, let model = context.models.diodeModels[name] {
                 parameters["saturationCurrent"] = model.saturationCurrent
                 parameters["emissionCoefficient"] = model.emissionCoefficient
+                parameters["seriesResistance"] = model.seriesResistance
             } else if let name = modelName {
                 warnings.append("\(node): model \(name) was not found; diode uses editor defaults.")
             }

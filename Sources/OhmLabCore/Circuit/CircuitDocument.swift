@@ -394,6 +394,36 @@ final class CircuitDocument: ObservableObject, Identifiable {
         return result.warnings
     }
 
+    /// Loads a directly read KiCad schematic hierarchy into the editor. The
+    /// snapshot keeps KiCad's UUIDs, references, values, hierarchy, and model
+    /// libraries; the projected netlist is retained for export and for tools
+    /// that still read netlist text.
+    @discardableResult
+    func importKiCadSchematic(
+        _ result: KiCadSchematicReadResult,
+        source: ImportSource? = nil
+    ) -> [String] {
+        applyingImport = true
+        netlistText = (try? SpiceNetlistBuilder.export(
+            snapshot: result.snapshot,
+            title: source?.fileName ?? name,
+            analysis: .default,
+            libraryTexts: result.modelLibraries.map(\.rawText)
+        )) ?? ""
+        if let source {
+            importSource = source
+            importBaseDirectory = source.directory
+        }
+        applyingImport = false
+        schematic.replaceContents(with: result.snapshot)
+        modelLibraries = result.modelLibraries
+        usesSchematic = true
+        refreshImportWarnings()
+        importWarnings = result.warnings + importWarnings
+        refreshDiagnostics()
+        return result.warnings
+    }
+
     /// The SPICE netlist to hand to another tool: the projection when editing a
     /// schematic, otherwise the include-resolved netlist. When the resolved
     /// text is unavailable (for example after a hand edit), it is rebuilt from
@@ -415,8 +445,8 @@ final class CircuitDocument: ObservableObject, Identifiable {
         ).text
     }
 
-    /// Imports either a KiCad schematic (`.kicad_sch`, macOS via `kicad-cli`) or
-    /// a SPICE netlist file, loading the result into the netlist editor.
+    /// Imports either a KiCad schematic/project (read directly, with a
+    /// `kicad-cli` fallback on macOS) or a SPICE netlist file.
     ///
     /// Import never blocks on parse errors: the netlist text is loaded as-is and
     /// the diagnostics panel reports anything the engine cannot run.
@@ -428,25 +458,23 @@ final class CircuitDocument: ObservableObject, Identifiable {
         if KiCadInterchange.schematicExtensions.contains(ext) {
             let root = KiCadProjectInterchange.rootSchematic(for: url) ?? url
             importedURL = root
-            let text = try KiCadInterchange.exportedNetlistText(at: root)
             source = ImportSource(
                 fileName: root.lastPathComponent,
                 kind: root == url ? .kicadSchematic : .kicadProject,
                 directory: root.deletingLastPathComponent()
             )
-            importNetlist(text, source: source)
+            try importKiCadDesign(at: root, source: source)
         } else if ext == KiCadProjectInterchange.projectExtension {
             guard let root = KiCadProjectInterchange.rootSchematic(for: url) else {
                 throw KiCadInterchangeError.unsupportedFormat(url.lastPathComponent)
             }
             importedURL = root
-            let text = try KiCadInterchange.exportedNetlistText(at: root)
             source = ImportSource(
                 fileName: url.lastPathComponent,
                 kind: .kicadProject,
                 directory: root.deletingLastPathComponent()
             )
-            importNetlist(text, source: source)
+            try importKiCadDesign(at: root, source: source)
         } else if KiCadInterchange.netlistExtensions.contains(ext) {
             source = ImportSource(
                 fileName: url.lastPathComponent,
@@ -462,6 +490,23 @@ final class CircuitDocument: ObservableObject, Identifiable {
             throw KiCadInterchangeError.unsupportedFormat(url.lastPathComponent)
         }
         name = importedURL.deletingPathExtension().lastPathComponent
+    }
+
+    /// Reads a KiCad schematic hierarchy directly. On macOS a direct-read
+    /// failure falls back to `kicad-cli`; elsewhere the reader's error is
+    /// reported so the user sees the actual parse problem.
+    private func importKiCadDesign(at root: URL, source: ImportSource) throws {
+        do {
+            let result = try KiCadSchematicReader.readProject(at: root)
+            importKiCadSchematic(result, source: source)
+        } catch {
+            #if os(macOS)
+            let text = try KiCadInterchange.exportedNetlistText(at: root)
+            importNetlist(text, source: source)
+            #else
+            throw error
+            #endif
+        }
     }
 
     /// Resolves includes and records parser/inlining warnings. Also captures the

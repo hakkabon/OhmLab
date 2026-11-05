@@ -431,11 +431,15 @@ public enum SpiceNetlistBuilder {
                     try validate(saturation, parameter: "saturation current", symbol: symbol)
                     let emission = try parameter("emissionCoefficient", descriptor: descriptor, symbol: symbol)
                     try validate(emission, parameter: "emission coefficient", symbol: symbol)
+                    let seriesResistance = symbol.parameters["seriesResistance"] ?? 0
+                    try validate(seriesResistance, parameter: "series resistance", symbol: symbol, allowsZero: true)
                     let modelName = modelName(base: "DMOD\(symbol.refDes.dropFirst())")
                     lines.append("\(symbol.refDes) \(firstNode) \(secondNode) \(modelName)")
-                    models.append(
-                        ".model \(modelName) D(IS=\(spiceNumber(saturation)) N=\(spiceNumber(emission)))"
-                    )
+                    var model = ".model \(modelName) D(IS=\(spiceNumber(saturation)) N=\(spiceNumber(emission))"
+                    if seriesResistance > 0 {
+                        model += " RS=\(spiceNumber(seriesResistance))"
+                    }
+                    models.append(model + ")")
                 case .npnTransistor, .pnpTransistor, .nmosTransistor, .pmosTransistor,
                      .njfTransistor, .pjfTransistor, .ground, .subcircuit:
                     break // handled above
