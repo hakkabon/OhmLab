@@ -218,7 +218,8 @@ private final class Reader {
             }
 
             let reference = uniqueReference(
-                preferred: mapping.isGround ? "GND" : placed.reference,
+                preferred: placed.properties[KiCadRoundTrip.referenceProperty]
+                    ?? (mapping.isGround ? "GND" : placed.reference),
                 descriptor: mapping.descriptor,
                 used: &usedReferences,
                 original: placed.reference
@@ -254,7 +255,11 @@ private final class Reader {
                 continue
             }
             let childPorts = sheet.pins.map {
-                SheetPort(name: $0.name, isInput: $0.shape.lowercased() != "output")
+                SheetPort(
+                    id: stableUUID(for: "\(fileURL.path)/sheet/\(sheet.name)/port/\($0.name)"),
+                    name: $0.name,
+                    isInput: $0.shape.lowercased() != "output"
+                )
             }
             let child: Sheet
             do {
@@ -264,13 +269,17 @@ private final class Reader {
             }
             childSheets.append(child)
 
-            let reference = "X\(nextSubcircuitIndex)"
+            let reference = sheet.properties[KiCadRoundTrip.referenceProperty]
+                ?? "X\(nextSubcircuitIndex)"
             nextSubcircuitIndex += 1
+            let position = sheet.properties[KiCadRoundTrip.positionProperty]
+                .flatMap(KiCadRoundTrip.decode(position:))
+                ?? sheet.at.point.grid
             let symbol = SymbolInstance(
                 id: sheet.uuid ?? stableUUID(for: "\(fileURL.path)/sheet/\(sheet.name)"),
                 descriptorId: SubcircuitInstance.descriptorId,
                 refDes: reference,
-                position: sheet.at.point.grid,
+                position: position,
                 sheetRef: child.id
             )
             let descriptor = SubcircuitInstance.descriptor(for: symbol, sheet: child)
@@ -320,13 +329,20 @@ private final class Reader {
         content.symbols = placed.map(\.symbol)
         var seenLabels: Set<LabelKey> = []
 
+        // Synthesised labels need deterministic identities so that reading the
+        // same KiCad file twice (and therefore writing it twice) produces the
+        // same bytes.
+        func labelID(_ name: String, _ point: GridPoint) -> UUID {
+            stableUUID(for: "\(fileURL.path)/\(sheetName)/label/\(name)/\(point.x)/\(point.y)")
+        }
+
         for entry in placed {
             let netByPin = netNames[entry.symbol.id] ?? [:]
             for pin in entry.descriptor.pins {
                 guard let net = netByPin[pin.id] else { continue }
                 let location = PinGeometry.location(of: pin, on: entry.symbol)
                 appendLabel(
-                    NetLabel(name: net, position: location),
+                    NetLabel(id: labelID(net, location), name: net, position: location),
                     to: &content.labels,
                     seen: &seenLabels
                 )
@@ -345,6 +361,7 @@ private final class Reader {
         )
         for _ in groundNets.subtracting(representedGroundNets) {
             let ground = SymbolInstance(
+                id: stableUUID(for: "\(fileURL.path)/\(sheetName)/ground/\(nextGroundIndex)"),
                 descriptorId: "ground",
                 refDes: "GND\(nextGroundIndex)",
                 position: GridPoint(2, 2 + nextGroundIndex * 2)
@@ -353,8 +370,9 @@ private final class Reader {
             content.symbols.append(ground)
             if let descriptor = ComponentRegistry.shared.descriptor(for: "ground"),
                let pin = descriptor.pins.first {
+                let location = PinGeometry.location(of: pin, on: ground)
                 appendLabel(
-                    NetLabel(name: "0", position: PinGeometry.location(of: pin, on: ground)),
+                    NetLabel(id: labelID("0", location), name: "0", position: location),
                     to: &content.labels,
                     seen: &seenLabels
                 )
@@ -366,8 +384,9 @@ private final class Reader {
         let labelNames = Set(content.labels.map { $0.name.uppercased() })
         for (index, port) in ports.enumerated() where !labelNames.contains(port.name.uppercased()) {
             warnings.append("Sheet \(sheetName) has no hierarchical label for port \(port.name).")
+            let location = GridPoint(-4 - index, 2)
             appendLabel(
-                NetLabel(name: port.name, position: GridPoint(-4 - index, 2)),
+                NetLabel(id: labelID(port.name, location), name: port.name, position: location),
                 to: &content.labels,
                 seen: &seenLabels
             )
@@ -403,6 +422,38 @@ private final class Reader {
 
         func descriptor(_ id: String) -> ComponentDescriptor? {
             ComponentRegistry.shared.descriptor(for: id)
+        }
+
+        // Round-trip metadata written by OhmLab is authoritative: it preserves
+        // the exact descriptor, parameters, and pin order even when KiCad's own
+        // properties cannot express them (for example a MOSFET's full model).
+        if let descriptorId = placed.properties[KiCadRoundTrip.descriptorProperty],
+           let roundTripped = descriptor(descriptorId) {
+            var parameters = roundTripped.defaultParameterValues
+            if let encoded = placed.properties[KiCadRoundTrip.parametersProperty] {
+                parameters.merge(KiCadRoundTrip.decode(parameters: encoded)) { _, new in new }
+            }
+            var pinNumbers: [String: String] = [:]
+            let roles = KiCadSymbolLibrary.pinRoles(for: roundTripped)
+            if !roles.isEmpty {
+                pinNumbers = self.pinNumbers(
+                    descriptor: roundTripped,
+                    library: library,
+                    symbol: placed,
+                    simPins: simPins,
+                    roles: roles
+                )
+            } else {
+                for (index, pin) in roundTripped.pins.enumerated() {
+                    pinNumbers[pin.id] = String(index + 1)
+                }
+            }
+            return SymbolMapping(
+                descriptor: roundTripped,
+                parameters: parameters,
+                pinNumbers: pinNumbers,
+                isGround: roundTripped.symbol == .ground
+            )
         }
 
         // Ground / power symbols.
@@ -474,7 +525,12 @@ private final class Reader {
         if referencePrefix == "V" || symbolName.hasPrefix("v") {
             guard let descriptor = descriptor("voltage-source") else { return nil }
             var parameters = descriptor.defaultParameterValues
-            parameters.merge(sourceParameters(from: placed.value, symbolName: symbolName, dcKey: "dcVoltage")) { _, new in new }
+            parameters.merge(sourceParameters(
+                from: placed.value,
+                simParams: placed.properties["Sim.Params"],
+                symbolName: symbolName,
+                dcKey: "dcVoltage"
+            )) { _, new in new }
             return SymbolMapping(
                 descriptor: descriptor,
                 parameters: parameters,
@@ -485,7 +541,12 @@ private final class Reader {
         if referencePrefix == "I" || symbolName.hasPrefix("i") {
             guard let descriptor = descriptor("current-source") else { return nil }
             var parameters = descriptor.defaultParameterValues
-            parameters.merge(sourceParameters(from: placed.value, symbolName: symbolName, dcKey: "dcCurrent")) { _, new in new }
+            parameters.merge(sourceParameters(
+                from: placed.value,
+                simParams: placed.properties["Sim.Params"],
+                symbolName: symbolName,
+                dcKey: "dcCurrent"
+            )) { _, new in new }
             return SymbolMapping(
                 descriptor: descriptor,
                 parameters: parameters,
@@ -669,7 +730,12 @@ private final class Reader {
         return try? SpiceNetlistParser.parseNumber(trimmed, line: 0)
     }
 
-    private func sourceParameters(from raw: String, symbolName: String, dcKey: String) -> [String: Double] {
+    private func sourceParameters(
+        from raw: String,
+        simParams: String?,
+        symbolName: String,
+        dcKey: String
+    ) -> [String: Double] {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let upper = trimmed.uppercased()
         var dc = number(from: trimmed) ?? 0
@@ -683,7 +749,41 @@ private final class Reader {
             ac = dc
             dc = 0
         }
-        return [dcKey: dc, "acMagnitude": ac, "acPhaseDegrees": 0]
+        var phase = 0.0
+        if let simParams {
+            for (key, value) in simParameterPairs(simParams) {
+                switch key {
+                case "dc": dc = value
+                case "ac": ac = value
+                case "phase": phase = value
+                default: break
+                }
+            }
+        }
+        return [dcKey: dc, "acMagnitude": ac, "acPhaseDegrees": phase]
+    }
+
+    /// Parses KiCad's `Sim.Params` property. KiCad writes space-separated
+    /// `key=value` pairs, but older files sometimes use `key value`.
+    private func simParameterPairs(_ text: String) -> [(String, Double)] {
+        let tokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var result: [(String, Double)] = []
+        var index = 0
+        while index < tokens.count {
+            let token = tokens[index]
+            if let equals = token.firstIndex(of: "=") {
+                let key = String(token[token.startIndex..<equals]).lowercased()
+                let valueText = String(token[token.index(after: equals)...])
+                if let value = number(from: valueText) {
+                    result.append((key, value))
+                }
+            } else if index + 1 < tokens.count, let value = number(from: tokens[index + 1]) {
+                result.append((token.lowercased(), value))
+                index += 1
+            }
+            index += 1
+        }
+        return result
     }
 
     private func numbers(in text: String) -> [Double] {

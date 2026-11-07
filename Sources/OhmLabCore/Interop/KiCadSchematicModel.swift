@@ -111,6 +111,7 @@ struct KiCadSheet: Equatable, Sendable {
     var file: String
     var pins: [KiCadSheetPin]
     var page: String?
+    var properties: [String: String]
 }
 
 struct KiCadSchematicFile: Equatable, Sendable {
@@ -391,7 +392,8 @@ struct KiCadSchematicFile: Equatable, Sendable {
             name: name,
             file: file,
             pins: pins,
-            page: page
+            page: page,
+            properties: properties
         )
     }
 }

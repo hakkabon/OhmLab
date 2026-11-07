@@ -301,6 +301,19 @@ public enum KiCadProjectInterchange {
             let topURL = directory.appendingPathComponent("top.cir")
             try netlist(for: active).write(to: topURL, atomically: true, encoding: .utf8)
             written.append(topURL)
+
+            // A schematic-backed project also gets a real KiCad project so the
+            // round trip works in both directions.
+            if active.usesSchematic == true,
+               !active.schematic.symbols.isEmpty || !active.schematic.sheets.isEmpty {
+                let kicadDirectory = directory.appendingPathComponent("KiCad", isDirectory: true)
+                let result = try KiCadSchematicWriter.writeProject(
+                    snapshot: active.schematic,
+                    name: bundle.manifest.name,
+                    to: kicadDirectory
+                )
+                written.append(contentsOf: result.files)
+            }
         }
         return written
     }

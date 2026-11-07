@@ -4,15 +4,15 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 3.0.0 Release Status
+## 3.1.0 Release Status
 
-OhmLab **3.0.0** is the current release. `OhmLabRelease.version`, the
+OhmLab **3.1.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
 the packaging metadata all report the same version. The production boundary
-remains **v8**: 3.0 is a product and interchange release, not a new numerical
+remains **v8**: 3.1 is a product and interchange release, not a new numerical
 contract.
 
-The 2.5–3.0 line hardened the path between real designs and the simulator:
+The 2.5–3.1 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -28,12 +28,19 @@ The 2.5–3.0 line hardened the path between real designs and the simulator:
   references, values, hierarchy, and model-library references, and derives
   connectivity directly from KiCad wires, junctions, labels, and pins. macOS
   keeps `kicad-cli` as a fallback only.
+* **3.1** writes a complete `.kicad_sch` project from an OhmLab schematic:
+  per-sheet schematics, a project-local symbol library, generated SPICE model
+  cards, a `sym-lib-table`, and a `.kicad_pro`. Round-trips preserve component
+  UUIDs, references, values, parameters, hierarchy, and ports, and the output is
+  deterministic; `kicad-cli` accepts the generated root and agrees on source
+  and diode node order.
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
 root/child/grandchild hierarchy, a simulation model library, and a golden
 `kicad-cli` netlist. The direct-reader tests assert that its DC solution matches
-that golden export, and they run in CI without requiring KiCad to be installed.
+that golden export, the writer tests assert a deterministic round-trip with the
+same DC solution, and they run in CI without requiring KiCad to be installed.
 
 ## 0.8 Convergence Contract
 
@@ -327,18 +334,20 @@ Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel w
 
 ### KiCad interchange
 
-The tiered 3.0 compatibility promise is documented in [`docs/compatibility/kicad.md`](docs/compatibility/kicad.md): current support is **KiCad Schematic Interop** for reading, plus **KiCad Netlist Interop** for simulation. Writing `.kicad_sch` is not yet promised.
+The tiered 3.1 compatibility promise is documented in [`docs/compatibility/kicad.md`](docs/compatibility/kicad.md): current support is **KiCad Schematic Interop** for reading and writing the OhmLab-modelled subset, plus **KiCad Netlist Interop** for simulation.
 
 OhmLab reads `.kicad_sch` directly. It parses the S-expression format itself, walks the `Sheetfile` hierarchy, maps supported library symbols, and derives connectivity from KiCad's own wires, junctions, labels, and pin positions. KiCad UUIDs, reference designators, values, sheet structure, and model-library references are preserved.
 
 *   **Import** — the **Import** button in the simulator header (or dragging a file onto the window) accepts a `.cir`/`.net`/`.sp`/`.spi`/`.ckt`/`.txt` netlist, or a `.kicad_pro` project or `.kicad_sch` schematic. A project resolves its root sheet even when it is not named after the `.kicad_pro` file, and opening a child sheet walks up to the sheet that references it, so the whole hierarchy is imported either way. On macOS, if direct reading fails, import falls back to `kicad-cli sch export netlist --format spice` (`KiCadCLIClient` finds the CLI via an explicit path, the standard app-bundle locations, then `PATH`). The imported schematic becomes editable, and anything the reader cannot model is reported in **Diagnostics** rather than blocking the import. A banner records where the design came from and lists non-fatal notes; editing the netlist by hand clears it.
 *   **Draw Schematic** — the button in the netlist editor header runs the auto-layout importer (`SchematicImporter`), turning a SPICE netlist into an editable schematic: devices are placed on a grid, each pin is routed orthogonally to a per-net rail, nets are labelled with their original node names, and `.subckt` blocks become child sheets with `X` instances drawn as subcircuit symbols. The router never lets crossing wires merge (connectivity forms only at shared vertices), and the original netlist text is retained so nothing is lost if a drawing does not round-trip perfectly.
-*   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and the **Export** button writes it to a `.cir` file through the system save/share sheet on both macOS and iPadOS. Schematic exports are self-contained: they carry a `.title` card with the document name, one card per enabled analysis (`.op`, `.ac`, `.tran`, `.dc`), and the text of every imported model library, so the file runs the same way outside OhmLab without the original library paths. Library `.end`/`.title` cards are dropped so the exporter owns them, and only one `.end` is emitted.
+*   **Export** — the **Projected SPICE Netlist** panel produces a plain SPICE netlist KiCad and ngspice accept as-is, and the **Export** button writes it to a `.cir` file through the system save/share sheet on both macOS and iPadOS. Schematic exports are self-contained: they carry a `.title` card with the document name, one card per enabled analysis (`.op`, `.ac`, `.tran`, `.dc`), and the text of every imported model library, so the file runs the same way outside OhmLab without the original library paths. Library `.end`/`.title` cards are dropped so the exporter owns them, and only one `.end` is emitted. A schematic-backed project export also writes a complete KiCad project under `KiCad/`: one `.kicad_sch` per sheet, a project-local `OhmLab.kicad_sym`, generated `models/ohmlab_models.lib` cards, `sym-lib-table`, and a `.kicad_pro`.
 *   **Clipboard** — **Copy**/**Paste** on the netlist editor move netlists to and from the system pasteboard.
 
 The reader maps common KiCad device libraries (`Device:R`, `C`, `L`, `D`, voltage/current sources, transistors, and ground symbols) and reads simulation model references from the schematic. It preserves component positions and attaches net labels directly to OhmLab pins rather than copying KiCad wire geometry, which guarantees connectivity while keeping the imported schematic editable. Unsupported symbols are skipped with a warning naming the affected reference.
 
-Known limits: KiCad symbols with no OhmLab equivalent (connectors, mechanical parts, custom devices) are reported and skipped rather than simulated. Writing `.kicad_sch` back out is not supported yet; export remains SPICE-level. The committed `RC_Filter` fixture proves direct hierarchy traversal, UUID/reference/value preservation, model-library inlining, connectivity from KiCad geometry, and DC equivalence with the golden `kicad-cli` netlist without requiring KiCad in CI.
+The writer emits the inverse mapping and round-trips component UUIDs, references, values, parameters, hierarchy, and sheet ports. It places labels directly on KiCad pins so connectivity does not depend on reproducing wire routing, uses KiCad's own diode and source pin conventions so exported netlists agree on anode/cathode and positive/negative node order, and produces deterministic output.
+
+Known limits: KiCad symbols with no OhmLab equivalent (connectors, mechanical parts, custom devices) are reported and skipped rather than simulated. Writing `.kicad_sch` is not a lossless reproduction of an arbitrary KiCad project: wire geometry, page settings, annotations, unsupported symbols, and subcircuit-instance rotation are not carried through, and output net names remain sheet-local rather than hierarchical. The committed `RC_Filter` fixture proves direct hierarchy traversal, UUID/reference/value preservation, model-library inlining, connectivity from KiCad geometry, deterministic writing, and DC equivalence with the golden `kicad-cli` netlist without requiring KiCad in CI.
 
 ## Projects & Collaboration
 

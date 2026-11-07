@@ -39,14 +39,14 @@ qualification must publish and exercise the same limit. Mixed-scale solves,
 physical residual certification, singular failure, and pre-solve budget
 rejection are release-blocking evidence.
 
-For the 3.0 release, the product version is **3.0.0** everywhere:
+For the 3.1 release, the product version is **3.1.0** everywhere:
 `OhmLabRelease.version`, `ohm --version`, the Rust host's `PRODUCT_VERSION`,
 `scripts/release-check.sh`, `scripts/health-check.sh`, and the packaged
-`Info.plist` must agree. The production boundary remains **v8**; 3.0 is a
+`Info.plist` must agree. The production boundary remains **v8**; 3.1 is a
 product/interchange release and must not silently change the numerical contract
 versions.
 
-The 3.0 release gate also requires:
+The 3.1 release gate also requires:
 
 - the committed KiCad fixture corpus under
   `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` to pass without `kicad-cli`;
@@ -56,6 +56,11 @@ The 3.0 release gate also requires:
   fixture;
 - project-bundle import from a directly read hierarchy and self-contained
   schematic export to be covered by tests;
+- `.kicad_sch` writing to emit a complete project (per-sheet schematics, symbol
+  library, model library, `sym-lib-table`, and `.kicad_pro`), preserve
+  identities and parameters on round-trip, and produce deterministic bytes;
+- the writer's diode and source pin conventions to be validated against a local
+  `kicad-cli` when it is available, without making CI depend on it;
 - `docs/compatibility/kicad.md` to describe the tiered claim that CI actually
   proves;
 - an iOS/iPadOS Simulator build job in CI so the declared platform target is
@@ -78,10 +83,10 @@ architecture separately until the project adopts a universal-binary build.
 
 Compatibility rules for the 3.x line:
 
-- The current product version is **3.0.0**. Keep the version string in
+- The current product version is **3.1.0**. Keep the version string in
   `OhmLabRelease.version` and the release/health scripts in lockstep; the tag,
   CLI output, and packaged metadata must match.
-- 3.0 does not introduce a new production boundary. Production boundary v8
+- 3.1 does not introduce a new production boundary. Production boundary v8
   remains current until a later contract explicitly changes the numerical or
   portable execution guarantees.
 - Do not change production-boundary, Circuit IR, result, capability, or
