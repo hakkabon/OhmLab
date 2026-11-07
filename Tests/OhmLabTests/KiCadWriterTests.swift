@@ -324,6 +324,35 @@ struct KiCadWriterTests {
         }
     }
 
+    @Test func projectExportWritesAKiCadDirectory() throws {
+        let bundle = try KiCadProjectInterchange.importProject(at: projectURL)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let written = try KiCadProjectInterchange.exportProject(bundle, to: directory)
+        let kicadDirectory = directory.appendingPathComponent("KiCad", isDirectory: true)
+
+        for name in [
+            "RC_Filter.kicad_sch",
+            "filter.kicad_sch",
+            "load.kicad_sch",
+            "OhmLab.kicad_sym",
+            "sym-lib-table",
+            "RC_Filter.kicad_pro"
+        ] {
+            #expect(
+                FileManager.default.fileExists(
+                    atPath: kicadDirectory.appendingPathComponent(name).path
+                ),
+                "missing \(name)"
+            )
+            #expect(written.contains { $0.lastPathComponent == name })
+        }
+        #expect(FileManager.default.fileExists(
+            atPath: kicadDirectory.appendingPathComponent("models/ohmlab_models.lib").path
+        ))
+    }
+
     // MARK: - Optional local KiCad validation
 
     @Test func kicadCliAcceptsTheGeneratedProject() throws {
