@@ -422,9 +422,8 @@ struct NativeMNAEngine: SimulationEngineBackend {
         snapshot: SchematicSnapshot,
         settings: AnalysisSettings
     ) throws -> CircuitSimResult {
-        let circuit = try CircuitCompiler.compile(snapshot: snapshot)
-        let axes = try Self.sweepAxes(from: settings)
-        return try Self.solve(circuit: circuit, settings: settings, sweepAxes: axes)
+        let circuit = try CircuitIRCompiler.compile(snapshot: snapshot)
+        return try solve(circuit: circuit, settings: settings)
     }
 
     func solve(circuit ir: CircuitIR, settings: AnalysisSettings) throws -> CircuitSimResult {
@@ -482,6 +481,14 @@ struct NativeMNAEngine: SimulationEngineBackend {
             baseDirectory: baseDirectory
         )
 
+        // Normalize every SPICE input through the shared Circuit IR before it
+        // reaches the native solver. Schematic and netlist frontends then share
+        // one validated model, terminal convention, and node mapping.
+        let circuit = try CircuitIR(
+            linearCircuit: parsed.circuit,
+            initialConditions: parsed.initialConditions
+        ).makeLinearCircuit()
+
         // Prefer analysis settings entered in the UI; fall back to the `.ac`
         // card when the UI settings are left at their defaults and none supplied.
         var effective = settings
@@ -518,7 +525,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
             // The stepped parameter is exposed by re-parsing; run the base
             // analyses without a sweep so the step runner owns the result.
             var result = try Self.solve(
-                circuit: parsed.circuit,
+                circuit: circuit,
                 settings: effective,
                 initialConditions: parsed.initialConditions,
                 useInitialConditionsOnly: parsed.analysis.tranUseInitialConditions,
@@ -542,7 +549,7 @@ struct NativeMNAEngine: SimulationEngineBackend {
         }
 
         var result = try Self.solve(
-            circuit: parsed.circuit,
+            circuit: circuit,
             settings: effective,
             initialConditions: parsed.initialConditions,
             useInitialConditionsOnly: parsed.analysis.tranUseInitialConditions,
@@ -855,10 +862,14 @@ struct NativeMNAEngine: SimulationEngineBackend {
                 libraries: libraries,
                 baseDirectory: baseDirectory
             )
-            var circuit = parsed.circuit
+            var steppedCircuit = parsed.circuit
             if step.isTemperature {
-                circuit.solverOptions.temperatureCelsius = stepValue
+                steppedCircuit.solverOptions.temperatureCelsius = stepValue
             }
+            let circuit = try CircuitIR(
+                linearCircuit: steppedCircuit,
+                initialConditions: parsed.initialConditions
+            ).makeLinearCircuit()
             let sources = Set(circuit.sourceNames.map { $0.uppercased() })
             for axis in axes where !sources.contains(axis.name.uppercased()) {
                 throw CircuitSimulationError.unknownSweepSource(axis.name)

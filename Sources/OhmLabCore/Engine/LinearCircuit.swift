@@ -1154,7 +1154,7 @@ public struct LinearCircuit: Sendable {
         let dimension = nodeRows + branches.count
         guard dimension > 0 else { throw CircuitSolveError.noNodes }
 
-        var matrix = [[Complex]](repeating: [Complex](repeating: .zero, count: dimension), count: dimension)
+        var matrix = SparseMatrix<Complex>(rows: dimension, columns: dimension)
         var rhs = [Complex](repeating: .zero, count: dimension)
 
         func row(_ node: Int) -> Int? {
@@ -1162,11 +1162,11 @@ public struct LinearCircuit: Sendable {
         }
 
         func stampAdmittance(a: Int, b: Int, y: Complex) {
-            if let i = row(a) { matrix[i][i] = matrix[i][i] + y }
-            if let j = row(b) { matrix[j][j] = matrix[j][j] + y }
+            if let i = row(a) { matrix.add(y, row: i, column: i) }
+            if let j = row(b) { matrix.add(y, row: j, column: j) }
             if let i = row(a), let j = row(b) {
-                matrix[i][j] = matrix[i][j] - y
-                matrix[j][i] = matrix[j][i] - y
+                matrix.add(-y, row: i, column: j)
+                matrix.add(-y, row: j, column: i)
             }
         }
 
@@ -1188,7 +1188,7 @@ public struct LinearCircuit: Sendable {
             for i in nodes.indices where i < jacobian.count {
                 for j in nodes.indices where j < jacobian[i].count {
                     if let r = row(nodes[i]), let c = row(nodes[j]) {
-                        matrix[r][c] = matrix[r][c] + Complex(jacobian[i][j], 0)
+                        matrix.add(Complex(jacobian[i][j], 0), row: r, column: c)
                     }
                 }
                 if !incremental, let r = row(nodes[i]), i < currents.count {
@@ -1259,17 +1259,17 @@ public struct LinearCircuit: Sendable {
         for (offset, branch) in branches.enumerated() {
             let k = nodeRows + offset
             if let i = row(branch.element.nodeA) {
-                matrix[i][k] = matrix[i][k] + .one
-                matrix[k][i] = matrix[k][i] + .one
+                matrix.add(.one, row: i, column: k)
+                matrix.add(.one, row: k, column: i)
             }
             if let j = row(branch.element.nodeB) {
-                matrix[j][k] = matrix[j][k] - .one
-                matrix[k][j] = matrix[k][j] - .one
+                matrix.add(-.one, row: j, column: k)
+                matrix.add(-.one, row: k, column: j)
             }
             rhs[k] = branch.voltage
         }
 
-        let x = try ComplexLinearSolver.solve(matrix, rhs)
+        let x = try SparseLinearSolver.solve(matrix, rhs)
 
         var nodeVoltages = [Complex](repeating: .zero, count: nodeCount)
         for node in 1..<nodeCount {

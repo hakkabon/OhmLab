@@ -474,7 +474,7 @@ public extension CircuitIR {
     }
 }
 
-/// The single frontend entry point for lowering SPICE into Circuit IR v1.
+/// The single frontend entry point for lowering a schematic into Circuit IR v1.
 public enum CircuitIRCompiler {
     public static func compile(
         netlist: String,
@@ -487,6 +487,14 @@ public enum CircuitIRCompiler {
             baseDirectory: baseDirectory
         )
         return try CircuitIR(linearCircuit: parsed.circuit, initialConditions: parsed.initialConditions)
+    }
+
+    /// Lowers a schematic through the same projection the native compiler uses,
+    /// then normalizes it into Circuit IR. Backends therefore see one shared
+    /// representation regardless of whether the frontend was SPICE or a
+    /// schematic.
+    public static func compile(snapshot: SchematicSnapshot) throws -> CircuitIR {
+        try CircuitIR(linearCircuit: CircuitCompiler.compile(snapshot: snapshot))
     }
 }
 
