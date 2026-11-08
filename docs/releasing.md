@@ -39,12 +39,24 @@ qualification must publish and exercise the same limit. Mixed-scale solves,
 physical residual certification, singular failure, and pre-solve budget
 rejection are release-blocking evidence.
 
-For the 3.1 release, the product version is **3.1.0** everywhere:
+For the 3.2 release, the product version is **3.2.0** everywhere:
 `OhmLabRelease.version`, `ohm --version`, the Rust host's `PRODUCT_VERSION`,
 `scripts/release-check.sh`, `scripts/health-check.sh`, and the packaged
-`Info.plist` must agree. The production boundary remains **v8**; 3.1 is a
-product/interchange release and must not silently change the numerical contract
-versions.
+`Info.plist` must agree. The production boundary remains **v8**; 3.2 changes the
+native solver implementation and the internal shared-IR path, not the published
+numerical or portable contract versions.
+
+The 3.2 release gate additionally requires:
+
+- sparse matrix assembly and sparse LU to agree with the dense solver on the
+  existing DC/AC/transient corpus, including singular-matrix rejection;
+- repeated sparse solves to be deterministic;
+- the native backend to solve a circuit with more than 512 MNA unknowns,
+  proving the dense envelope is no longer an internal limitation;
+- schematic and netlist frontends to normalize through Circuit IR v1 before the
+  native solve;
+- `docs/contracts/sparse-circuit-core-v1.md` to describe the scope, evidence,
+  and explicit non-claims of the sparse core.
 
 The 3.1 release gate also requires:
 
@@ -83,12 +95,13 @@ architecture separately until the project adopts a universal-binary build.
 
 Compatibility rules for the 3.x line:
 
-- The current product version is **3.1.0**. Keep the version string in
+- The current product version is **3.2.0**. Keep the version string in
   `OhmLabRelease.version` and the release/health scripts in lockstep; the tag,
   CLI output, and packaged metadata must match.
-- 3.1 does not introduce a new production boundary. Production boundary v8
+- 3.2 does not introduce a new production boundary. Production boundary v8
   remains current until a later contract explicitly changes the numerical or
-  portable execution guarantees.
+  portable execution guarantees. The native sparse core and shared-IR routing
+  are implementation changes inside that boundary.
 - Do not change production-boundary, Circuit IR, result, capability, or
   nonlinear-convergence, or portable-simulation versions in a patch release.
 - Production boundary v4 is required for 2.0 because the portable process

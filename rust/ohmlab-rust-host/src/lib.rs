@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const PRODUCT_VERSION: &str = "3.1.0";
+pub const PRODUCT_VERSION: &str = "3.2.0";
 pub const IMPLEMENTATION_VERSION: &str = "rust-numeric-core-0.34.0-native.3";
 pub const BACKEND: &str = "rust-numeric-core";
 pub const PROTOCOL_VERSION: u32 = 1;

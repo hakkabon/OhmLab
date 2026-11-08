@@ -4,15 +4,15 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 3.1.0 Release Status
+## 3.2.0 Release Status
 
-OhmLab **3.1.0** is the current release. `OhmLabRelease.version`, the
+OhmLab **3.2.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
 the packaging metadata all report the same version. The production boundary
-remains **v8**: 3.1 is a product and interchange release, not a new numerical
-contract.
+remains **v8**: 3.2 changes the native solver implementation and the internal
+frontend/backend path, not the published numerical or portable contract.
 
-The 2.5–3.1 line hardened the path between real designs and the simulator:
+The 2.5–3.2 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -34,6 +34,11 @@ The 2.5–3.1 line hardened the path between real designs and the simulator:
   UUIDs, references, values, parameters, hierarchy, and ports, and the output is
   deterministic; `kicad-cli` accepts the generated root and agrees on source
   and diode node order.
+* **3.2** replaces the native MNA engine's dense matrix assembly with a
+  pure-Swift sparse matrix and sparse LU solver, and routes both schematic and
+  netlist inputs through the shared Circuit IR before every native solve.
+  Existing DC/AC/transient results are unchanged, and the native backend now
+  solves chains beyond the published 512-unknown dense envelope.
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
@@ -205,15 +210,35 @@ iteration, then certify the unscaled physical KCL and branch-equation residuals
 before publishing a result. Non-finite, unconverged, or tolerance-violating
 solutions fail closed. DC sweeps retain certified warm starts between points.
 
-The current linear algebra remains dense, so the honest qualified envelope is
-512 MNA unknowns per solve. Larger circuits are rejected before allocation or
-iteration; the broader protocol node/device ceilings do not override this
-solver-specific limit. `ohm qualify-scale [--json]` exercises mixed-scale
-networks, a 128-section ladder, sweep continuation, singular rejection, and
-the dense budget. See
+The NumericCore linear algebra remains dense, so its honest qualified envelope
+is 512 MNA unknowns per solve. Larger NumericCore requests are rejected before
+allocation or iteration; the broader protocol node/device ceilings do not
+override this solver-specific limit. `ohm qualify-scale [--json]` exercises
+mixed-scale networks, a 128-section ladder, sweep continuation, singular
+rejection, and the dense budget. See
 [`docs/contracts/scale-and-numerical-robustness-v1.md`](docs/contracts/scale-and-numerical-robustness-v1.md)
 and
 [`docs/contracts/native-rust-portability-v3.md`](docs/contracts/native-rust-portability-v3.md).
+
+## 3.2 Sparse Circuit Core and Shared IR
+
+The native MNA engine now assembles its nodal equations as a sparse matrix and
+solves them with a pure-Swift sparse LU factorization with partial pivoting.
+Assembly coalesces coordinate stamps, elimination creates fill-in only where it
+is actually needed, and row/column traversal is deterministic so repeated runs
+produce identical results. Singular systems are rejected at the same absolute
+pivot threshold as the previous dense solver.
+
+Schematic and SPICE inputs now both normalize through Circuit IR v1 before the
+native solver sees them. The IR schema, terminal conventions, and public
+result contract are unchanged; the change is that there is now one validated
+model path for every native frontend. Sparse and shared-IR equivalence,
+determinism, and a native chain larger than 512 unknowns are covered by
+`Tests/OhmLabTests/SparseCircuitCoreTests.swift`. The 512-unknown ceiling
+remains the published NumericCore/portable dense envelope; the native sparse
+core is an internal implementation detail and does not change production
+boundary v8. See
+[`docs/contracts/sparse-circuit-core-v1.md`](docs/contracts/sparse-circuit-core-v1.md).
 
 ## Architecture: The Four-Layer Model
 
