@@ -67,6 +67,10 @@ struct DiodeModelDefinition {
     var seriesResistance = 0.0
     var activationEnergy = 1.11
     var saturationCurrentTemperatureExponent = 3.0
+    var junctionCapacitance = 0.0
+    var junctionPotential = 1.0
+    var gradingCoefficient = 0.5
+    var transitTime = 0.0
 }
 
 /// A parsed BJT model from a `.model … NPN(…)`/`PNP(…)` card.
@@ -78,6 +82,16 @@ struct BJTModelDefinition {
     var activationEnergy = 1.11
     var saturationCurrentTemperatureExponent = 3.0
     var betaTemperatureExponent = 0.0
+    var forwardEarlyVoltage = 0.0
+    var reverseEarlyVoltage = 0.0
+    var baseEmitterCapacitance = 0.0
+    var baseCollectorCapacitance = 0.0
+    var baseEmitterPotential = 0.75
+    var baseCollectorPotential = 0.75
+    var baseEmitterGrading = 0.33
+    var baseCollectorGrading = 0.33
+    var forwardTransitTime = 0.0
+    var reverseTransitTime = 0.0
 }
 
 /// A parsed MOSFET model from a `.model … NMOS(…)`/`PMOS(…)` card.
@@ -90,6 +104,11 @@ struct MOSFETModelDefinition {
     var surfacePotential = 0.6
     var mobilityTemperatureExponent = -1.5
     var thresholdTemperatureCoefficient = 0.0
+    var gateSourceOverlapCapacitance = 0.0
+    var gateDrainOverlapCapacitance = 0.0
+    var gateBulkOverlapCapacitance = 0.0
+    var bulkDrainCapacitance = 0.0
+    var bulkSourceCapacitance = 0.0
 }
 
 /// A parsed JFET model from a `.model … NJF(…)`/`PJF(…)` card.
@@ -103,6 +122,8 @@ struct JFETModelDefinition {
     var thresholdTemperatureCoefficient = 0.0
     var activationEnergy = 1.11
     var saturationCurrentTemperatureExponent = 3.0
+    var gateSourceCapacitance = 0.0
+    var gateDrainCapacitance = 0.0
 }
 
 /// A raw line of a `.subckt` body, kept with its source line number.
@@ -223,6 +244,8 @@ public struct ParsedSpiceNetlist: Sendable {
     public var warnings: [String]
     /// Starting conditions from any `.ic` cards.
     public var initialConditions: InitialConditions
+    /// `.nodeset` Newton starting hints, keyed by node name.
+    public var nodeSet: [String: Double]
 }
 
 /// Resolves an `.include`/`.lib` path to its file contents, or `nil` when the
@@ -326,6 +349,8 @@ public enum SpiceNetlistParser {
         private let parameterOverrides: [String: Double]
         /// `.ic` starting conditions.
         private var initialConditions = InitialConditions()
+        /// `.nodeset` Newton starting hints.
+        private var nodeSet: [String: Double] = [:]
         private var warnings: [String] = []
         private var aliasedGrounds: Set<String> = []
 
@@ -459,11 +484,13 @@ public enum SpiceNetlistParser {
                 circuit: LinearCircuit(
                     nodeNames: nodeNames,
                     elements: elements,
-                    solverOptions: solverOptions.sanitized()
+                    solverOptions: solverOptions.sanitized(),
+                    nodeSet: nodeSet
                 ),
                 analysis: analysis,
                 warnings: warnings,
-                initialConditions: initialConditions
+                initialConditions: initialConditions,
+                nodeSet: nodeSet
             )
         }
 
@@ -548,6 +575,8 @@ public enum SpiceNetlistParser {
                 try processStep(tokens: tokens, line: line, text: text)
             case ".ic":
                 try processInitialConditions(tokens: tokens, line: line, text: text)
+            case ".nodeset":
+                try processNodeSet(tokens: tokens, line: line, text: text)
             case ".options", ".option":
                 applyOptions(tokens: tokens, line: line)
             case ".temp":
@@ -623,6 +652,28 @@ public enum SpiceNetlistParser {
                 case "I": initialConditions.elementCurrents[inner] = value
                 default: throw SpiceParseError.malformed(line: line, text: text)
                 }
+            }
+        }
+
+        /// Parses `.nodeset V(node)=value …`. Unlike `.ic`, a node set is only
+        /// a starting hint for the Newton iteration; it never overrides the
+        /// solved operating point.
+        private func processNodeSet(tokens: [String], line: Int, text: String) throws {
+            for token in tokens.dropFirst() {
+                let pair = token.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2 else { throw SpiceParseError.malformed(line: line, text: text) }
+                let lhs = String(pair[0])
+                let value = try SpiceNetlistParser.evaluateValue(
+                    String(pair[1]), params: globalParameters, line: line, text: text
+                )
+                guard lhs.count >= 3,
+                      let openParen = lhs.firstIndex(of: "("),
+                      lhs.hasSuffix(")"),
+                      lhs[lhs.startIndex].uppercased() == "V" else {
+                    throw SpiceParseError.malformed(line: line, text: text)
+                }
+                let name = String(lhs[lhs.index(after: openParen)..<lhs.index(before: lhs.endIndex)])
+                nodeSet[name] = value
             }
         }
 
@@ -993,7 +1044,11 @@ public enum SpiceNetlistParser {
                     emissionCoefficient: definition.emissionCoefficient,
                     area: pending.area,
                     saturationCurrentTemperatureExponent: definition.saturationCurrentTemperatureExponent,
-                    activationEnergy: definition.activationEnergy
+                    activationEnergy: definition.activationEnergy,
+                    junctionCapacitance: definition.junctionCapacitance,
+                    junctionPotential: definition.junctionPotential,
+                    gradingCoefficient: definition.gradingCoefficient,
+                    transitTime: definition.transitTime
                 )
                 if definition.seriesResistance > 0 {
                     let internalNode = nodeNames.count
@@ -1042,7 +1097,17 @@ public enum SpiceNetlistParser {
                         reverseBeta: definition.reverseBeta,
                         saturationCurrentTemperatureExponent: definition.saturationCurrentTemperatureExponent,
                         activationEnergy: definition.activationEnergy,
-                        betaTemperatureExponent: definition.betaTemperatureExponent
+                        betaTemperatureExponent: definition.betaTemperatureExponent,
+                        forwardEarlyVoltage: definition.forwardEarlyVoltage,
+                        reverseEarlyVoltage: definition.reverseEarlyVoltage,
+                        baseEmitterCapacitance: definition.baseEmitterCapacitance,
+                        baseCollectorCapacitance: definition.baseCollectorCapacitance,
+                        baseEmitterPotential: definition.baseEmitterPotential,
+                        baseCollectorPotential: definition.baseCollectorPotential,
+                        baseEmitterGrading: definition.baseEmitterGrading,
+                        baseCollectorGrading: definition.baseCollectorGrading,
+                        forwardTransitTime: definition.forwardTransitTime,
+                        reverseTransitTime: definition.reverseTransitTime
                     ),
                     name: pending.name
                 ))
@@ -1067,7 +1132,12 @@ public enum SpiceNetlistParser {
                         bodyEffect: definition.bodyEffect,
                         surfacePotential: definition.surfacePotential,
                         mobilityTemperatureExponent: definition.mobilityTemperatureExponent,
-                        thresholdTemperatureCoefficient: definition.thresholdTemperatureCoefficient
+                        thresholdTemperatureCoefficient: definition.thresholdTemperatureCoefficient,
+                        gateSourceOverlapCapacitance: definition.gateSourceOverlapCapacitance,
+                        gateDrainOverlapCapacitance: definition.gateDrainOverlapCapacitance,
+                        gateBulkOverlapCapacitance: definition.gateBulkOverlapCapacitance,
+                        bulkDrainCapacitance: definition.bulkDrainCapacitance,
+                        bulkSourceCapacitance: definition.bulkSourceCapacitance
                     ),
                     name: pending.name
                 ))
@@ -1092,7 +1162,9 @@ public enum SpiceNetlistParser {
                         mobilityTemperatureExponent: definition.mobilityTemperatureExponent,
                         thresholdTemperatureCoefficient: definition.thresholdTemperatureCoefficient,
                         saturationCurrentTemperatureExponent: definition.saturationCurrentTemperatureExponent,
-                        activationEnergy: definition.activationEnergy
+                        activationEnergy: definition.activationEnergy,
+                        gateSourceCapacitance: definition.gateSourceCapacitance,
+                        gateDrainCapacitance: definition.gateDrainCapacitance
                     ),
                     name: pending.name
                 ))
@@ -1549,6 +1621,10 @@ public enum SpiceNetlistParser {
             if let rs = values["RS"] { definition.seriesResistance = rs }
             if let eg = values["EG"] { definition.activationEnergy = eg }
             if let xti = values["XTI"] { definition.saturationCurrentTemperatureExponent = xti }
+            if let cjo = values["CJO"] { definition.junctionCapacitance = cjo }
+            if let vj = values["VJ"] { definition.junctionPotential = vj }
+            if let m = values["M"] { definition.gradingCoefficient = m }
+            if let tt = values["TT"] { definition.transitTime = tt }
             models[name] = definition
         case "NPN", "PNP":
             var definition = BJTModelDefinition()
@@ -1559,6 +1635,16 @@ public enum SpiceNetlistParser {
             if let eg = values["EG"] { definition.activationEnergy = eg }
             if let xti = values["XTI"] { definition.saturationCurrentTemperatureExponent = xti }
             if let xtb = values["XTB"] { definition.betaTemperatureExponent = xtb }
+            if let vaf = values["VAF"] { definition.forwardEarlyVoltage = vaf }
+            if let `var` = values["VAR"] { definition.reverseEarlyVoltage = `var` }
+            if let cje = values["CJE"] { definition.baseEmitterCapacitance = cje }
+            if let cjc = values["CJC"] { definition.baseCollectorCapacitance = cjc }
+            if let vje = values["VJE"] { definition.baseEmitterPotential = vje }
+            if let vjc = values["VJC"] { definition.baseCollectorPotential = vjc }
+            if let mje = values["MJE"] { definition.baseEmitterGrading = mje }
+            if let mjc = values["MJC"] { definition.baseCollectorGrading = mjc }
+            if let tf = values["TF"] { definition.forwardTransitTime = tf }
+            if let tr = values["TR"] { definition.reverseTransitTime = tr }
             bjtModels[name] = definition
         case "NMOS", "PMOS":
             var definition = MOSFETModelDefinition()
@@ -1571,6 +1657,11 @@ public enum SpiceNetlistParser {
             if let phi = values["PHI"] { definition.surfacePotential = phi }
             if let bex = values["BEX"] { definition.mobilityTemperatureExponent = bex }
             if let tcv = values["TCV"] { definition.thresholdTemperatureCoefficient = tcv }
+            if let cgso = values["CGSO"] { definition.gateSourceOverlapCapacitance = cgso }
+            if let cgdo = values["CGDO"] { definition.gateDrainOverlapCapacitance = cgdo }
+            if let cgbo = values["CGBO"] { definition.gateBulkOverlapCapacitance = cgbo }
+            if let cbd = values["CBD"] { definition.bulkDrainCapacitance = cbd }
+            if let cbs = values["CBS"] { definition.bulkSourceCapacitance = cbs }
             mosfetModels[name] = definition
         case "NJF", "PJF":
             var definition = JFETModelDefinition()
@@ -1584,6 +1675,8 @@ public enum SpiceNetlistParser {
             if let tcv = values["TCV"] { definition.thresholdTemperatureCoefficient = tcv }
             if let eg = values["EG"] { definition.activationEnergy = eg }
             if let xti = values["XTI"] { definition.saturationCurrentTemperatureExponent = xti }
+            if let cgs = values["CGS"] { definition.gateSourceCapacitance = cgs }
+            if let cgd = values["CGD"] { definition.gateDrainCapacitance = cgd }
             jfetModels[name] = definition
         default:
             throw SpiceParseError.unsupportedCard(line: line, text: text)

@@ -113,9 +113,12 @@ public struct LinearCircuit: Sendable {
         case pjf
     }
 
-    /// Simplified Ebers-Moll transport model. Early voltage is not modelled.
-    /// Temperature dependence follows SPICE: the saturation current scales with
-    /// `XTI`/`EG`, and the betas with `XTB`.
+    /// Simplified Ebers-Moll transport model with optional Early effect and
+    /// bias-dependent junction capacitances. A zero `forwardEarlyVoltage` or
+    /// `reverseEarlyVoltage` disables that Early term, so the historical
+    /// no-Early-effect behaviour remains the default. Temperature dependence
+    /// follows SPICE: the saturation current scales with `XTI`/`EG`, and the
+    /// betas with `XTB`.
     public struct BJTParameters: Sendable, Equatable {
         public var polarity: BJTPolarity
         public var saturationCurrent: Double
@@ -128,6 +131,26 @@ public struct LinearCircuit: Sendable {
         public var activationEnergy: Double
         /// `XTB`: beta temperature exponent.
         public var betaTemperatureExponent: Double
+        /// `VAF`: forward Early voltage in volts. Zero means no Early effect.
+        public var forwardEarlyVoltage: Double
+        /// `VAR`: reverse Early voltage in volts. Zero means no Early effect.
+        public var reverseEarlyVoltage: Double
+        /// `CJE`: zero-bias base-emitter depletion capacitance in farads.
+        public var baseEmitterCapacitance: Double
+        /// `CJC`: zero-bias base-collector depletion capacitance in farads.
+        public var baseCollectorCapacitance: Double
+        /// `VJE`: base-emitter built-in potential in volts.
+        public var baseEmitterPotential: Double
+        /// `VJC`: base-collector built-in potential in volts.
+        public var baseCollectorPotential: Double
+        /// `MJE`: base-emitter grading coefficient.
+        public var baseEmitterGrading: Double
+        /// `MJC`: base-collector grading coefficient.
+        public var baseCollectorGrading: Double
+        /// `TF`: forward transit time in seconds.
+        public var forwardTransitTime: Double
+        /// `TR`: reverse transit time in seconds.
+        public var reverseTransitTime: Double
 
         public init(
             polarity: BJTPolarity = .npn,
@@ -137,7 +160,17 @@ public struct LinearCircuit: Sendable {
             thermalVoltage: Double = 0.025_852,
             saturationCurrentTemperatureExponent: Double = 3,
             activationEnergy: Double = 1.11,
-            betaTemperatureExponent: Double = 0
+            betaTemperatureExponent: Double = 0,
+            forwardEarlyVoltage: Double = 0,
+            reverseEarlyVoltage: Double = 0,
+            baseEmitterCapacitance: Double = 0,
+            baseCollectorCapacitance: Double = 0,
+            baseEmitterPotential: Double = 0.75,
+            baseCollectorPotential: Double = 0.75,
+            baseEmitterGrading: Double = 0.33,
+            baseCollectorGrading: Double = 0.33,
+            forwardTransitTime: Double = 0,
+            reverseTransitTime: Double = 0
         ) {
             self.polarity = polarity
             self.saturationCurrent = saturationCurrent
@@ -147,6 +180,16 @@ public struct LinearCircuit: Sendable {
             self.saturationCurrentTemperatureExponent = saturationCurrentTemperatureExponent
             self.activationEnergy = activationEnergy
             self.betaTemperatureExponent = betaTemperatureExponent
+            self.forwardEarlyVoltage = forwardEarlyVoltage
+            self.reverseEarlyVoltage = reverseEarlyVoltage
+            self.baseEmitterCapacitance = baseEmitterCapacitance
+            self.baseCollectorCapacitance = baseCollectorCapacitance
+            self.baseEmitterPotential = baseEmitterPotential
+            self.baseCollectorPotential = baseCollectorPotential
+            self.baseEmitterGrading = baseEmitterGrading
+            self.baseCollectorGrading = baseCollectorGrading
+            self.forwardTransitTime = forwardTransitTime
+            self.reverseTransitTime = reverseTransitTime
         }
     }
 
@@ -155,9 +198,10 @@ public struct LinearCircuit: Sendable {
     /// characteristic derives the positive threshold from the polarity. Body
     /// effect is included through `bodyEffect` (GAMMA) and `surfacePotential`
     /// (PHI); a GAMMA of zero disables it. Channel-length modulation is
-    /// modelled by `lambda`. Temperature dependence follows SPICE: the
-    /// transconductance parameter scales with `BEX` and the threshold shifts
-    /// with `TCV`.
+    /// modelled by `lambda`. Constant overlap and bulk junction capacitances
+    /// (`CGSO`, `CGDO`, `CGBO`, `CBD`, `CBS`) participate in AC and transient
+    /// analysis. Temperature dependence follows SPICE: the transconductance
+    /// parameter scales with `BEX` and the threshold shifts with `TCV`.
     public struct MOSFETParameters: Sendable, Equatable {
         public var polarity: MOSFETPolarity
         public var thresholdVoltage: Double
@@ -169,6 +213,16 @@ public struct LinearCircuit: Sendable {
         public var mobilityTemperatureExponent: Double
         /// `TCV`: threshold-voltage temperature coefficient, in volts/°C.
         public var thresholdTemperatureCoefficient: Double
+        /// `CGSO`: gate-source overlap capacitance in farads.
+        public var gateSourceOverlapCapacitance: Double
+        /// `CGDO`: gate-drain overlap capacitance in farads.
+        public var gateDrainOverlapCapacitance: Double
+        /// `CGBO`: gate-bulk overlap capacitance in farads.
+        public var gateBulkOverlapCapacitance: Double
+        /// `CBD`: zero-bias bulk-drain capacitance in farads.
+        public var bulkDrainCapacitance: Double
+        /// `CBS`: zero-bias bulk-source capacitance in farads.
+        public var bulkSourceCapacitance: Double
 
         public init(
             polarity: MOSFETPolarity = .nmos,
@@ -178,7 +232,12 @@ public struct LinearCircuit: Sendable {
             bodyEffect: Double = 0,
             surfacePotential: Double = 0.6,
             mobilityTemperatureExponent: Double = -1.5,
-            thresholdTemperatureCoefficient: Double = 0
+            thresholdTemperatureCoefficient: Double = 0,
+            gateSourceOverlapCapacitance: Double = 0,
+            gateDrainOverlapCapacitance: Double = 0,
+            gateBulkOverlapCapacitance: Double = 0,
+            bulkDrainCapacitance: Double = 0,
+            bulkSourceCapacitance: Double = 0
         ) {
             self.polarity = polarity
             self.thresholdVoltage = thresholdVoltage
@@ -188,6 +247,11 @@ public struct LinearCircuit: Sendable {
             self.surfacePotential = surfacePotential
             self.mobilityTemperatureExponent = mobilityTemperatureExponent
             self.thresholdTemperatureCoefficient = thresholdTemperatureCoefficient
+            self.gateSourceOverlapCapacitance = gateSourceOverlapCapacitance
+            self.gateDrainOverlapCapacitance = gateDrainOverlapCapacitance
+            self.gateBulkOverlapCapacitance = gateBulkOverlapCapacitance
+            self.bulkDrainCapacitance = bulkDrainCapacitance
+            self.bulkSourceCapacitance = bulkSourceCapacitance
         }
     }
 
@@ -196,9 +260,10 @@ public struct LinearCircuit: Sendable {
     /// positive for a P-JFET). The drain characteristic uses the same
     /// square-law / linear split as the Level 1 MOSFET, but with no body
     /// terminal; the gate-channel junction carries a Shockley current
-    /// (`gateSaturationCurrent`). Temperature dependence scales the
-    /// transconductance parameter with `BEX` and shifts the threshold with
-    /// `TCV`, following the same scheme as the MOSFET.
+    /// (`gateSaturationCurrent`) and constant gate capacitances (`CGS`,
+    /// `CGD`) participate in AC and transient analysis. Temperature dependence
+    /// scales the transconductance parameter with `BEX` and shifts the
+    /// threshold with `TCV`, following the same scheme as the MOSFET.
     public struct JFETParameters: Sendable, Equatable {
         public var polarity: JFETPolarity
         public var thresholdVoltage: Double
@@ -215,6 +280,10 @@ public struct LinearCircuit: Sendable {
         public var saturationCurrentTemperatureExponent: Double
         /// `EG`: activation energy in electron-volts.
         public var activationEnergy: Double
+        /// `CGS`: gate-source capacitance in farads.
+        public var gateSourceCapacitance: Double
+        /// `CGD`: gate-drain capacitance in farads.
+        public var gateDrainCapacitance: Double
 
         public init(
             polarity: JFETPolarity = .njf,
@@ -226,7 +295,9 @@ public struct LinearCircuit: Sendable {
             mobilityTemperatureExponent: Double = -1.5,
             thresholdTemperatureCoefficient: Double = 0,
             saturationCurrentTemperatureExponent: Double = 3,
-            activationEnergy: Double = 1.11
+            activationEnergy: Double = 1.11,
+            gateSourceCapacitance: Double = 0,
+            gateDrainCapacitance: Double = 0
         ) {
             self.polarity = polarity
             self.thresholdVoltage = thresholdVoltage
@@ -238,10 +309,14 @@ public struct LinearCircuit: Sendable {
             self.thresholdTemperatureCoefficient = thresholdTemperatureCoefficient
             self.saturationCurrentTemperatureExponent = saturationCurrentTemperatureExponent
             self.activationEnergy = activationEnergy
+            self.gateSourceCapacitance = gateSourceCapacitance
+            self.gateDrainCapacitance = gateDrainCapacitance
         }
     }
 
     /// Shockley diode parameters. `saturationCurrent` is scaled by `area`.
+    /// Junction capacitance (`CJO`, `VJ`, `M`) and transit time (`TT`) add
+    /// bias-dependent reactive current in AC and transient analysis.
     /// Temperature dependence follows SPICE: the saturation current scales with
     /// `XTI`/`EG`.
     public struct DiodeParameters: Sendable, Equatable {
@@ -253,6 +328,14 @@ public struct LinearCircuit: Sendable {
         public var saturationCurrentTemperatureExponent: Double
         /// `EG`: activation energy in electron-volts.
         public var activationEnergy: Double
+        /// `CJO`: zero-bias junction capacitance in farads.
+        public var junctionCapacitance: Double
+        /// `VJ`: junction built-in potential in volts.
+        public var junctionPotential: Double
+        /// `M`: junction grading coefficient.
+        public var gradingCoefficient: Double
+        /// `TT`: transit time in seconds.
+        public var transitTime: Double
 
         public init(
             saturationCurrent: Double = 1e-14,
@@ -260,7 +343,11 @@ public struct LinearCircuit: Sendable {
             thermalVoltage: Double = 0.025_852,
             area: Double = 1,
             saturationCurrentTemperatureExponent: Double = 3,
-            activationEnergy: Double = 1.11
+            activationEnergy: Double = 1.11,
+            junctionCapacitance: Double = 0,
+            junctionPotential: Double = 1,
+            gradingCoefficient: Double = 0.5,
+            transitTime: Double = 0
         ) {
             self.saturationCurrent = saturationCurrent
             self.emissionCoefficient = emissionCoefficient
@@ -268,6 +355,10 @@ public struct LinearCircuit: Sendable {
             self.area = area
             self.saturationCurrentTemperatureExponent = saturationCurrentTemperatureExponent
             self.activationEnergy = activationEnergy
+            self.junctionCapacitance = junctionCapacitance
+            self.junctionPotential = junctionPotential
+            self.gradingCoefficient = gradingCoefficient
+            self.transitTime = transitTime
         }
     }
 
@@ -356,15 +447,21 @@ public struct LinearCircuit: Sendable {
     public var elements: [Element]
     /// Numerical controls (tolerances, `gmin`, temperature, iteration cap).
     public var solverOptions: SolverOptions
+    /// `.nodeset` starting voltages, keyed by node name. These are Newton
+    /// starting hints only: unlike `.ic` they do not override the solved
+    /// operating point, they give the first linearisation a better origin.
+    public var nodeSet: [String: Double]
 
     public init(
         nodeNames: [String],
         elements: [Element],
-        solverOptions: SolverOptions = .default
+        solverOptions: SolverOptions = .default,
+        nodeSet: [String: Double] = [:]
     ) {
         self.nodeNames = nodeNames
         self.elements = elements
         self.solverOptions = solverOptions.sanitized()
+        self.nodeSet = nodeSet.filter { $0.value.isFinite }
     }
 
     public var nodeCount: Int { nodeNames.count }
@@ -399,7 +496,8 @@ public struct LinearCircuit: Sendable {
             timestep: Double,
             time: Double,
             capacitorVoltage: [Double],
-            inductorCurrent: [Double]
+            inductorCurrent: [Double],
+            previousDeviceVoltages: [Int: [Double]]
         )
 
         /// Whether inductors are ideal shorts (a 0 V branch) and capacitors are
@@ -435,6 +533,24 @@ public struct LinearCircuit: Sendable {
 
     private var nonlinearIndices: [Int] {
         elements.indices.filter { LinearCircuit.isNonlinear(elements[$0].kind) }
+    }
+
+    /// Converts `.nodeset` node voltages into initial terminal voltages for
+    /// every nonlinear device. Missing terminals start at zero volts.
+    private func nodeSetDeviceState() -> [Int: [Double]] {
+        var lookup: [String: Double] = [:]
+        for (name, value) in nodeSet {
+            lookup[name.uppercased()] = value
+        }
+        var state: [Int: [Double]] = [:]
+        for index in nonlinearIndices {
+            let nodes = terminalNodes(for: elements[index])
+            state[index] = nodes.map { node in
+                guard node > 0, node < nodeNames.count else { return 0 }
+                return lookup[nodeNames[node].uppercased()] ?? 0
+            }
+        }
+        return state
     }
 
     /// Ordered terminal nodes of a nonlinear device. BJT order is
@@ -554,6 +670,68 @@ public struct LinearCircuit: Sendable {
         return (vto, beta, vt, isat)
     }
 
+    /// Depletion capacitance at a junction voltage. SPICE's `FC` fold-back is
+    /// applied at half the built-in potential so the capacitance stays finite
+    /// in strong forward bias. A zero zero-bias capacitance disables the
+    /// junction entirely.
+    private static func depletionCapacitance(
+        zeroBias: Double,
+        potential: Double,
+        grading: Double,
+        voltage: Double
+    ) -> Double {
+        guard zeroBias > 0, potential > 0, zeroBias.isFinite else { return 0 }
+        let foldBack = 0.5 * potential
+        let clamped = min(voltage, foldBack)
+        let ratio = max(1 - clamped / potential, 1e-6)
+        return zeroBias * pow(ratio, -max(grading, 0))
+    }
+
+    /// Total diode capacitance at a junction voltage: depletion plus
+    /// transit-time diffusion capacitance.
+    private func diodeReactiveCapacitance(_ model: DiodeParameters, voltage: Double) -> Double {
+        var capacitance = Self.depletionCapacitance(
+            zeroBias: model.junctionCapacitance,
+            potential: model.junctionPotential,
+            grading: model.gradingCoefficient,
+            voltage: voltage
+        )
+        guard model.transitTime > 0 else { return capacitance }
+        let (isat, vt) = diodeOperatingPoint(model)
+        guard vt > 0 else { return capacitance }
+        let conductance = isat * exp(min(voltage / vt, 80)) / vt
+        capacitance += model.transitTime * conductance
+        return capacitance
+    }
+
+    /// Base-emitter and base-collector capacitances of a BJT at a bias point.
+    /// `terminals` follows [base, collector, emitter].
+    private func bjtReactiveCapacitances(
+        _ model: BJTParameters,
+        terminals: [Double]
+    ) -> (baseEmitter: Double, baseCollector: Double) {
+        let sign = model.polarity == .pnp ? -1.0 : 1.0
+        let (isat, _, _, vt) = bjtOperatingPoint(model)
+        guard vt > 0 else { return (0, 0) }
+        let vbe = sign * (terminals[0] - terminals[2])
+        let vbc = sign * (terminals[0] - terminals[1])
+        let gmForward = isat * exp(min(vbe / vt, 80)) / vt
+        let gmReverse = isat * exp(min(vbc / vt, 80)) / vt
+        let baseEmitter = Self.depletionCapacitance(
+            zeroBias: model.baseEmitterCapacitance,
+            potential: model.baseEmitterPotential,
+            grading: model.baseEmitterGrading,
+            voltage: vbe
+        ) + model.forwardTransitTime * gmForward
+        let baseCollector = Self.depletionCapacitance(
+            zeroBias: model.baseCollectorCapacitance,
+            potential: model.baseCollectorPotential,
+            grading: model.baseCollectorGrading,
+            voltage: vbc
+        ) + model.reverseTransitTime * gmReverse
+        return (baseEmitter, baseCollector)
+    }
+
     /// Shockley current and small-signal conductance at a junction voltage. The
     /// saturation current and thermal voltage are evaluated at the operating
     /// temperature, and a `gmin` leakage conductance is included.
@@ -620,7 +798,19 @@ public struct LinearCircuit: Sendable {
         let isBR = isat / reverseBeta
         let ibe = isBF * cbe + gmin * vbe
         let ibc = isBR * cbc + gmin * vbc
-        let ict = isat * (cbe - cbc)
+
+        // Simplified Early effect: the transport current is scaled by
+        // `1 − Vbc/VAF − Vbe/VAR`. A zero Early voltage disables that term,
+        // preserving the historical behaviour.
+        let forwardEarly = model.forwardEarlyVoltage > 0
+            ? model.forwardEarlyVoltage : Double.infinity
+        let reverseEarly = model.reverseEarlyVoltage > 0
+            ? model.reverseEarlyVoltage : Double.infinity
+        let rawEarlyFactor = 1 - vbc / forwardEarly - vbe / reverseEarly
+        let earlyFactor = max(rawEarlyFactor, 1e-3)
+        let earlySlope = rawEarlyFactor > 1e-3 ? 1.0 : 0.0
+        let transport = isat * (cbe - cbc)
+        let ict = transport * earlyFactor
 
         // Terminal currents in the polarity-flipped frame.
         let baseCurrent = ibe + ibc
@@ -629,8 +819,10 @@ public struct LinearCircuit: Sendable {
 
         let gbe = isBF * ebe / vt + gmin
         let gbc = isBR * ebc / vt + gmin
-        let gm = isat * ebe / vt
-        let gmr = isat * ebc / vt
+        let gm = isat * ebe / vt * earlyFactor
+            - earlySlope * transport / reverseEarly
+        let gmr = isat * ebc / vt * earlyFactor
+            + earlySlope * transport / forwardEarly
 
         // Convert derivatives w.r.t. (vbe, vbc) into w.r.t. terminal voltages.
         func rows(_ dVbe: Double, _ dVbc: Double) -> [Double] {
@@ -960,7 +1152,8 @@ public struct LinearCircuit: Sendable {
                 timestep: timestep,
                 time: time,
                 capacitorVoltage: capacitorVoltage,
-                inductorCurrent: inductorCurrent
+                inductorCurrent: inductorCurrent,
+                previousDeviceVoltages: nonlinearState
             ),
             initialState: nonlinearState
         )
@@ -979,6 +1172,9 @@ public struct LinearCircuit: Sendable {
 
         let options = solverOptions
         var state = initialState
+        if state.isEmpty, !nodeSet.isEmpty {
+            state = nodeSetDeviceState()
+        }
         var solution = try assembleOnce(mode: mode, nonlinearState: state)
         for _ in 0..<options.maximumIterations {
             // Newton iterations are the innermost long-running loop for a DC
@@ -1046,7 +1242,14 @@ public struct LinearCircuit: Sendable {
                       model.area.isFinite,
                       model.area > 0,
                       model.activationEnergy.isFinite,
-                      model.saturationCurrentTemperatureExponent.isFinite else {
+                      model.saturationCurrentTemperatureExponent.isFinite,
+                      model.junctionCapacitance.isFinite,
+                      model.junctionCapacitance >= 0,
+                      model.junctionPotential.isFinite,
+                      model.junctionPotential > 0,
+                      model.gradingCoefficient.isFinite,
+                      model.transitTime.isFinite,
+                      model.transitTime >= 0 else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             case .bjt:
@@ -1061,7 +1264,25 @@ public struct LinearCircuit: Sendable {
                       model.thermalVoltage > 0,
                       model.activationEnergy.isFinite,
                       model.saturationCurrentTemperatureExponent.isFinite,
-                      model.betaTemperatureExponent.isFinite else {
+                      model.betaTemperatureExponent.isFinite,
+                      model.forwardEarlyVoltage.isFinite,
+                      model.forwardEarlyVoltage >= 0,
+                      model.reverseEarlyVoltage.isFinite,
+                      model.reverseEarlyVoltage >= 0,
+                      model.baseEmitterCapacitance.isFinite,
+                      model.baseEmitterCapacitance >= 0,
+                      model.baseCollectorCapacitance.isFinite,
+                      model.baseCollectorCapacitance >= 0,
+                      model.baseEmitterPotential.isFinite,
+                      model.baseEmitterPotential > 0,
+                      model.baseCollectorPotential.isFinite,
+                      model.baseCollectorPotential > 0,
+                      model.baseEmitterGrading.isFinite,
+                      model.baseCollectorGrading.isFinite,
+                      model.forwardTransitTime.isFinite,
+                      model.forwardTransitTime >= 0,
+                      model.reverseTransitTime.isFinite,
+                      model.reverseTransitTime >= 0 else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             case .mosfet:
@@ -1076,7 +1297,17 @@ public struct LinearCircuit: Sendable {
                       model.surfacePotential.isFinite,
                       model.surfacePotential > 0,
                       model.mobilityTemperatureExponent.isFinite,
-                      model.thresholdTemperatureCoefficient.isFinite else {
+                      model.thresholdTemperatureCoefficient.isFinite,
+                      model.gateSourceOverlapCapacitance.isFinite,
+                      model.gateSourceOverlapCapacitance >= 0,
+                      model.gateDrainOverlapCapacitance.isFinite,
+                      model.gateDrainOverlapCapacitance >= 0,
+                      model.gateBulkOverlapCapacitance.isFinite,
+                      model.gateBulkOverlapCapacitance >= 0,
+                      model.bulkDrainCapacitance.isFinite,
+                      model.bulkDrainCapacitance >= 0,
+                      model.bulkSourceCapacitance.isFinite,
+                      model.bulkSourceCapacitance >= 0 else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             case .jfet:
@@ -1093,7 +1324,11 @@ public struct LinearCircuit: Sendable {
                       model.mobilityTemperatureExponent.isFinite,
                       model.thresholdTemperatureCoefficient.isFinite,
                       model.activationEnergy.isFinite,
-                      model.saturationCurrentTemperatureExponent.isFinite else {
+                      model.saturationCurrentTemperatureExponent.isFinite,
+                      model.gateSourceCapacitance.isFinite,
+                      model.gateSourceCapacitance >= 0,
+                      model.gateDrainCapacitance.isFinite,
+                      model.gateDrainCapacitance >= 0 else {
                     throw CircuitSolveError.invalidElement(element.name)
                 }
             }
@@ -1118,7 +1353,7 @@ public struct LinearCircuit: Sendable {
             switch mode {
             case .dc:
                 return element.magnitude(isDC: true)
-            case .operatingPoint(let time), .transient(_, let time, _, _):
+            case .operatingPoint(let time), .transient(_, let time, _, _, _):
                 return element.transientValue(at: time)
             case .ac:
                 return element.magnitude(isDC: false)
@@ -1175,6 +1410,32 @@ public struct LinearCircuit: Sendable {
             if let j = row(b) { rhs[j] = rhs[j] + current }
         }
 
+        /// Stamps a device-internal capacitance. DC treats it as open; AC uses
+        /// `jωC`; transient uses the backward-Euler companion `C/Δt` plus a
+        /// history current from the previous terminal voltage.
+        func stampDeviceCapacitance(
+            a: Int,
+            b: Int,
+            capacitance: Double,
+            previousVoltage: Double
+        ) {
+            guard capacitance > 0, capacitance.isFinite else { return }
+            switch mode {
+            case .ac(let omega):
+                stampAdmittance(a: a, b: b, y: Complex(0, omega * capacitance))
+            case .transient(let timestep, _, _, _, _):
+                let conductance = capacitance / timestep
+                stampAdmittance(a: a, b: b, y: Complex(conductance, 0))
+                stampCurrentSource(
+                    a: a,
+                    b: b,
+                    current: Complex(-conductance * previousVoltage, 0)
+                )
+            case .dc, .operatingPoint:
+                break
+            }
+        }
+
         // Stamps an N-terminal nonlinear device from its terminal currents and
         // Jacobian at a linearisation point. `incremental` (AC) keeps only the
         // Jacobian, giving the small-signal model with no bias offset.
@@ -1209,7 +1470,7 @@ public struct LinearCircuit: Sendable {
                 switch mode {
                 case .ac(let omega):
                     stampAdmittance(a: element.nodeA, b: element.nodeB, y: Complex(0, omega * element.value))
-                case .transient(let timestep, _, let capacitorVoltage, _):
+                case .transient(let timestep, _, let capacitorVoltage, _, _):
                     // Backward Euler: i = G·v − G·v_prev, with G = C/Δt.
                     let conductance = element.value / timestep
                     stampAdmittance(a: element.nodeA, b: element.nodeB, y: Complex(conductance, 0))
@@ -1223,7 +1484,7 @@ public struct LinearCircuit: Sendable {
                 case .ac(let omega):
                     let admittance = Complex(1, 0) / Complex(0, omega * element.value)
                     stampAdmittance(a: element.nodeA, b: element.nodeB, y: admittance)
-                case .transient(let timestep, _, _, let inductorCurrent):
+                case .transient(let timestep, _, _, let inductorCurrent, _):
                     // Backward Euler: i = G·v + i_prev, with G = Δt/L.
                     let conductance = timestep / element.value
                     stampAdmittance(a: element.nodeA, b: element.nodeB, y: Complex(conductance, 0))
@@ -1253,6 +1514,78 @@ public struct LinearCircuit: Sendable {
                     voltages: voltages,
                     incremental: mode.isAC
                 )
+                let previous: [Double]
+                if case .transient(_, _, _, _, let previousDeviceVoltages) = mode {
+                    previous = previousDeviceVoltages[index] ?? voltages
+                } else {
+                    previous = voltages
+                }
+                switch element.kind {
+                case .diode:
+                    if let model = element.diode {
+                        let capacitance = diodeReactiveCapacitance(
+                            model,
+                            voltage: voltages[0] - voltages[1]
+                        )
+                        stampDeviceCapacitance(
+                            a: nodes[0],
+                            b: nodes[1],
+                            capacitance: capacitance,
+                            previousVoltage: previous[0] - previous[1]
+                        )
+                    }
+                case .bjt:
+                    if let model = element.bjt {
+                        let capacitances = bjtReactiveCapacitances(model, terminals: voltages)
+                        stampDeviceCapacitance(
+                            a: nodes[0],
+                            b: nodes[2],
+                            capacitance: capacitances.baseEmitter,
+                            previousVoltage: previous[0] - previous[2]
+                        )
+                        stampDeviceCapacitance(
+                            a: nodes[0],
+                            b: nodes[1],
+                            capacitance: capacitances.baseCollector,
+                            previousVoltage: previous[0] - previous[1]
+                        )
+                    }
+                case .mosfet:
+                    if let model = element.mosfet {
+                        let pairs: [(Int, Int, Double)] = [
+                            (1, 2, model.gateSourceOverlapCapacitance),
+                            (1, 0, model.gateDrainOverlapCapacitance),
+                            (1, 3, model.gateBulkOverlapCapacitance),
+                            (3, 0, model.bulkDrainCapacitance),
+                            (3, 2, model.bulkSourceCapacitance),
+                        ]
+                        for (first, second, capacitance) in pairs {
+                            stampDeviceCapacitance(
+                                a: nodes[first],
+                                b: nodes[second],
+                                capacitance: capacitance,
+                                previousVoltage: previous[first] - previous[second]
+                            )
+                        }
+                    }
+                case .jfet:
+                    if let model = element.jfet {
+                        stampDeviceCapacitance(
+                            a: nodes[0],
+                            b: nodes[2],
+                            capacitance: model.gateSourceCapacitance,
+                            previousVoltage: previous[0] - previous[2]
+                        )
+                        stampDeviceCapacitance(
+                            a: nodes[0],
+                            b: nodes[1],
+                            capacitance: model.gateDrainCapacitance,
+                            previousVoltage: previous[0] - previous[1]
+                        )
+                    }
+                default:
+                    break
+                }
             }
         }
 
@@ -1313,6 +1646,30 @@ public struct LinearCircuit: Sendable {
         func voltage(_ node: Int) -> Complex {
             node >= 0 && node < nodeVoltages.count ? nodeVoltages[node] : .zero
         }
+        /// Reactive current of a device-internal capacitance at a solved
+        /// terminal voltage. `previousVoltage` is only used by transient.
+        func reactiveCurrent(
+            capacitance: Double,
+            voltage: Complex,
+            previousVoltage: Double
+        ) -> Complex {
+            guard capacitance > 0, capacitance.isFinite else { return .zero }
+            switch mode {
+            case .ac(let omega):
+                return voltage * Complex(0, omega * capacitance)
+            case .transient(let timestep, _, _, _, _):
+                let conductance = capacitance / timestep
+                return (voltage - Complex(previousVoltage, 0)) * Complex(conductance, 0)
+            case .dc, .operatingPoint:
+                return .zero
+            }
+        }
+        func previousTerminals(_ index: Int, fallback: [Double]) -> [Double] {
+            if case .transient(_, _, _, _, let previousDeviceVoltages) = mode {
+                return previousDeviceVoltages[index] ?? fallback
+            }
+            return fallback
+        }
         return elements.enumerated().map { index, element in
             let v = voltage(element.nodeA) - voltage(element.nodeB)
             switch element.kind {
@@ -1322,7 +1679,7 @@ public struct LinearCircuit: Sendable {
                 switch mode {
                 case .ac(let omega):
                     return v * Complex(0, omega * element.value)
-                case .transient(let timestep, _, let capacitorVoltage, _):
+                case .transient(let timestep, _, let capacitorVoltage, _, _):
                     let conductance = element.value / timestep
                     return v * Complex(conductance, 0) + Complex(-conductance * capacitorVoltage[index], 0)
                 case .dc, .operatingPoint:
@@ -1332,7 +1689,7 @@ public struct LinearCircuit: Sendable {
                 switch mode {
                 case .ac(let omega):
                     return v / Complex(0, omega * element.value)
-                case .transient(let timestep, _, _, let inductorCurrent):
+                case .transient(let timestep, _, _, let inductorCurrent, _):
                     let conductance = timestep / element.value
                     return v * Complex(conductance, 0) + Complex(inductorCurrent[index], 0)
                 case .dc, .operatingPoint:
@@ -1349,13 +1706,35 @@ public struct LinearCircuit: Sendable {
                 return .zero
             case .diode:
                 if mode.isAC {
-                    // Small-signal current: g·Δv about the bias point.
+                    // Small-signal current: (g + jωC)·Δv about the bias point.
                     let bias = nonlinearState[index] ?? [0, 0]
                     let (_, conductance) = diodeCurrentAndConductance(element, voltage: bias[0] - bias[1])
-                    return v * Complex(conductance, 0)
+                    var current = v * Complex(conductance, 0)
+                    if let model = element.diode {
+                        let capacitance = diodeReactiveCapacitance(
+                            model,
+                            voltage: bias[0] - bias[1]
+                        )
+                        current = current + reactiveCurrent(
+                            capacitance: capacitance,
+                            voltage: v,
+                            previousVoltage: 0
+                        )
+                    }
+                    return current
                 }
                 let (current, _) = diodeCurrentAndConductance(element, voltage: v.re)
-                return Complex(current, 0)
+                var result = Complex(current, 0)
+                if let model = element.diode {
+                    let capacitance = diodeReactiveCapacitance(model, voltage: v.re)
+                    let previous = previousTerminals(index, fallback: [v.re, 0])
+                    result = result + reactiveCurrent(
+                        capacitance: capacitance,
+                        voltage: v,
+                        previousVoltage: previous[0] - previous[1]
+                    )
+                }
+                return result
             case .bjt:
                 // Terminal order is [base, collector, emitter]; report the
                 // collector current into the device.
@@ -1365,11 +1744,30 @@ public struct LinearCircuit: Sendable {
                     let characteristic = nonlinearCharacteristic(element, terminals: bias)
                     let solved = terminals.map { voltage($0).re }
                     let current = zip(characteristic.jacobian[1], solved).reduce(0.0) { $0 + $1.0 * $1.1 }
-                    return Complex(current, 0)
+                    var result = Complex(current, 0)
+                    if let model = element.bjt {
+                        let capacitances = bjtReactiveCapacitances(model, terminals: bias)
+                        result = result + reactiveCurrent(
+                            capacitance: capacitances.baseCollector,
+                            voltage: voltage(terminals[1]) - voltage(terminals[0]),
+                            previousVoltage: 0
+                        )
+                    }
+                    return result
                 }
                 let solved = terminals.map { voltage($0).re }
                 let characteristic = nonlinearCharacteristic(element, terminals: solved)
-                return Complex(characteristic.currents[1], 0)
+                var result = Complex(characteristic.currents[1], 0)
+                if let model = element.bjt {
+                    let capacitances = bjtReactiveCapacitances(model, terminals: solved)
+                    let previous = previousTerminals(index, fallback: solved)
+                    result = result + reactiveCurrent(
+                        capacitance: capacitances.baseCollector,
+                        voltage: voltage(terminals[1]) - voltage(terminals[0]),
+                        previousVoltage: previous[1] - previous[0]
+                    )
+                }
+                return result
             case .mosfet:
                 // Terminal order is [drain, gate, source, bulk]; report the
                 // drain current into the device.
@@ -1379,11 +1777,38 @@ public struct LinearCircuit: Sendable {
                     let characteristic = nonlinearCharacteristic(element, terminals: bias)
                     let solved = terminals.map { voltage($0).re }
                     let current = zip(characteristic.jacobian[0], solved).reduce(0.0) { $0 + $1.0 * $1.1 }
-                    return Complex(current, 0)
+                    var result = Complex(current, 0)
+                    if let model = element.mosfet {
+                        result = result + reactiveCurrent(
+                            capacitance: model.gateDrainOverlapCapacitance,
+                            voltage: voltage(terminals[0]) - voltage(terminals[1]),
+                            previousVoltage: 0
+                        )
+                        result = result + reactiveCurrent(
+                            capacitance: model.bulkDrainCapacitance,
+                            voltage: voltage(terminals[0]) - voltage(terminals[3]),
+                            previousVoltage: 0
+                        )
+                    }
+                    return result
                 }
                 let solved = terminals.map { voltage($0).re }
                 let characteristic = nonlinearCharacteristic(element, terminals: solved)
-                return Complex(characteristic.currents[0], 0)
+                var result = Complex(characteristic.currents[0], 0)
+                if let model = element.mosfet {
+                    let previous = previousTerminals(index, fallback: solved)
+                    result = result + reactiveCurrent(
+                        capacitance: model.gateDrainOverlapCapacitance,
+                        voltage: voltage(terminals[0]) - voltage(terminals[1]),
+                        previousVoltage: previous[0] - previous[1]
+                    )
+                    result = result + reactiveCurrent(
+                        capacitance: model.bulkDrainCapacitance,
+                        voltage: voltage(terminals[0]) - voltage(terminals[3]),
+                        previousVoltage: previous[0] - previous[3]
+                    )
+                }
+                return result
             case .jfet:
                 // Terminal order is [gate, drain, source]; report the drain
                 // current into the device.
@@ -1393,11 +1818,28 @@ public struct LinearCircuit: Sendable {
                     let characteristic = nonlinearCharacteristic(element, terminals: bias)
                     let solved = terminals.map { voltage($0).re }
                     let current = zip(characteristic.jacobian[1], solved).reduce(0.0) { $0 + $1.0 * $1.1 }
-                    return Complex(current, 0)
+                    var result = Complex(current, 0)
+                    if let model = element.jfet {
+                        result = result + reactiveCurrent(
+                            capacitance: model.gateDrainCapacitance,
+                            voltage: voltage(terminals[1]) - voltage(terminals[0]),
+                            previousVoltage: 0
+                        )
+                    }
+                    return result
                 }
                 let solved = terminals.map { voltage($0).re }
                 let characteristic = nonlinearCharacteristic(element, terminals: solved)
-                return Complex(characteristic.currents[1], 0)
+                var result = Complex(characteristic.currents[1], 0)
+                if let model = element.jfet {
+                    let previous = previousTerminals(index, fallback: solved)
+                    result = result + reactiveCurrent(
+                        capacitance: model.gateDrainCapacitance,
+                        voltage: voltage(terminals[1]) - voltage(terminals[0]),
+                        previousVoltage: previous[1] - previous[0]
+                    )
+                }
+                return result
             }
         }
     }

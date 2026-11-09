@@ -44,7 +44,7 @@ struct ProductionBoundaryTests {
     }
 
     @Test func releaseAndContractsRemainCompatibleAtTwoDotNine() {
-        #expect(OhmLabRelease.version == "3.2.0")
+        #expect(OhmLabRelease.version == "3.3.0")
         #expect(OhmLabRelease.productionBoundaryVersion == 8)
         #expect(CircuitIR.currentSchemaVersion == 1)
         #expect(SimulationResultContract.currentVersion == 1)
@@ -63,7 +63,7 @@ struct ProductionBoundaryTests {
         SimulationEngine.resetToDefaultBackend()
         let report = ProductionBoundary.report()
         #expect(report.ready)
-        #expect(report.productVersion == "3.2.0")
+        #expect(report.productVersion == "3.3.0")
         #expect(report.contracts.simulationHost == 1)
         #expect(report.contracts.nativeRustPortability == 3)
         #expect(report.contracts.numericCoreFeatureCompletion == 1)

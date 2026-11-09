@@ -27,3 +27,25 @@ analysis capabilities.
 An incompatible wire-format change requires `schemaVersion: 2`. Additive
 fields may be introduced in v1 only when old decoders have a documented,
 unambiguous default.
+
+## Additive model-depth fields (3.3)
+
+OhmLab 3.3 adds optional device-model fields without changing
+`schemaVersion: 1`:
+
+- diode `junctionCapacitance`, `junctionPotential`, `gradingCoefficient`, and
+  `transitTime` (`CJO`, `VJ`, `M`, `TT`);
+- BJT `forwardEarlyVoltage`, `reverseEarlyVoltage`, the base-emitter and
+  base-collector capacitances and potentials/gradings, and the forward/reverse
+  transit times (`VAF`, `VAR`, `CJE`, `CJC`, `VJE`, `VJC`, `MJE`, `MJC`, `TF`,
+  `TR`);
+- MOSFET `gateSourceOverlapCapacitance`, `gateDrainOverlapCapacitance`,
+  `gateBulkOverlapCapacitance`, `bulkDrainCapacitance`, and
+  `bulkSourceCapacitance` (`CGSO`, `CGDO`, `CGBO`, `CBD`, `CBS`);
+- JFET `gateSourceCapacitance` and `gateDrainCapacitance` (`CGS`, `CGD`);
+- an optional top-level `nodeSet` map of `.nodeset` starting hints.
+
+All of these are omitted from the encoding when they carry their historical
+default, so a v1 document that does not use them is byte-stable. A decoder
+that predates them ignores the optional keys; a backend that does not
+implement them must fail closed rather than silently dropping the values.

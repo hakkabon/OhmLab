@@ -12,6 +12,9 @@ public struct CircuitIR: Codable, Equatable, Sendable {
     public var devices: [Device]
     public var solver: SolverConfiguration
     public var initialConditions: Conditions
+    /// Optional `.nodeset` Newton starting hints. Omitted from the encoding
+    /// when empty, so older Circuit IR v1 documents and fixtures stay stable.
+    public var nodeSet: [String: Double]?
 
     public init(
         schemaVersion: Int = currentSchemaVersion,
@@ -19,7 +22,8 @@ public struct CircuitIR: Codable, Equatable, Sendable {
         nodes: [Node],
         devices: [Device],
         solver: SolverConfiguration = .init(),
-        initialConditions: Conditions = .init()
+        initialConditions: Conditions = .init(),
+        nodeSet: [String: Double]? = nil
     ) throws {
         self.schemaVersion = schemaVersion
         self.referenceNode = referenceNode
@@ -27,11 +31,12 @@ public struct CircuitIR: Codable, Equatable, Sendable {
         self.devices = devices
         self.solver = solver
         self.initialConditions = initialConditions
+        self.nodeSet = nodeSet
         try validate()
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, referenceNode, nodes, devices, solver, initialConditions
+        case schemaVersion, referenceNode, nodes, devices, solver, initialConditions, nodeSet
     }
 
     public init(from decoder: Decoder) throws {
@@ -42,7 +47,8 @@ public struct CircuitIR: Codable, Equatable, Sendable {
             nodes: container.decode([Node].self, forKey: .nodes),
             devices: container.decode([Device].self, forKey: .devices),
             solver: container.decode(SolverConfiguration.self, forKey: .solver),
-            initialConditions: container.decode(Conditions.self, forKey: .initialConditions)
+            initialConditions: container.decode(Conditions.self, forKey: .initialConditions),
+            nodeSet: container.decodeIfPresent([String: Double].self, forKey: .nodeSet)
         )
     }
 
@@ -153,6 +159,10 @@ public struct CircuitIR: Codable, Equatable, Sendable {
         public var area: Double
         public var saturationCurrentTemperatureExponent: Double
         public var activationEnergy: Double
+        public var junctionCapacitance: Double?
+        public var junctionPotential: Double?
+        public var gradingCoefficient: Double?
+        public var transitTime: Double?
     }
 
     public struct BJTModel: Codable, Equatable, Sendable {
@@ -165,6 +175,16 @@ public struct CircuitIR: Codable, Equatable, Sendable {
         public var saturationCurrentTemperatureExponent: Double
         public var activationEnergy: Double
         public var betaTemperatureExponent: Double
+        public var forwardEarlyVoltage: Double?
+        public var reverseEarlyVoltage: Double?
+        public var baseEmitterCapacitance: Double?
+        public var baseCollectorCapacitance: Double?
+        public var baseEmitterPotential: Double?
+        public var baseCollectorPotential: Double?
+        public var baseEmitterGrading: Double?
+        public var baseCollectorGrading: Double?
+        public var forwardTransitTime: Double?
+        public var reverseTransitTime: Double?
     }
 
     public struct MOSFETModel: Codable, Equatable, Sendable {
@@ -177,6 +197,11 @@ public struct CircuitIR: Codable, Equatable, Sendable {
         public var surfacePotential: Double
         public var mobilityTemperatureExponent: Double
         public var thresholdTemperatureCoefficient: Double
+        public var gateSourceOverlapCapacitance: Double?
+        public var gateDrainOverlapCapacitance: Double?
+        public var gateBulkOverlapCapacitance: Double?
+        public var bulkDrainCapacitance: Double?
+        public var bulkSourceCapacitance: Double?
     }
 
     public struct JFETModel: Codable, Equatable, Sendable {
@@ -191,6 +216,8 @@ public struct CircuitIR: Codable, Equatable, Sendable {
         public var thresholdTemperatureCoefficient: Double
         public var saturationCurrentTemperatureExponent: Double
         public var activationEnergy: Double
+        public var gateSourceCapacitance: Double?
+        public var gateDrainCapacitance: Double?
     }
 
     public struct SolverConfiguration: Codable, Equatable, Sendable {
@@ -237,6 +264,7 @@ public enum CircuitIRError: LocalizedError, Equatable {
     case invalidNodeNames
     case invalidDevice(String)
     case invalidWaveform(String)
+    case invalidNodeSet
 
     public var errorDescription: String? {
         switch self {
@@ -245,6 +273,7 @@ public enum CircuitIRError: LocalizedError, Equatable {
         case .invalidNodeNames: return "Circuit IR node names must be non-empty and unique."
         case .invalidDevice(let name): return "Circuit IR device \(name) is malformed."
         case .invalidWaveform(let name): return "Circuit IR source \(name) has a malformed waveform."
+        case .invalidNodeSet: return "Circuit IR nodeset values must be finite."
         }
     }
 }
@@ -258,7 +287,8 @@ public extension CircuitIR {
             initialConditions: .init(
                 nodeVoltages: initialConditions.nodeVoltages,
                 elementCurrents: initialConditions.elementCurrents
-            )
+            ),
+            nodeSet: linearCircuit.nodeSet.isEmpty ? nil : linearCircuit.nodeSet
         )
     }
 
@@ -280,6 +310,9 @@ public extension CircuitIR {
             solver.absoluteVoltageTolerance, solver.minimumConductance,
             solver.temperatureCelsius, solver.nominalTemperatureCelsius,
         ]
+        if let nodeSet, !nodeSet.values.allSatisfy({ $0.isFinite }) {
+            throw CircuitIRError.invalidNodeSet
+        }
         guard solverValues.allSatisfy(\.isFinite), solver.relativeTolerance > 0,
               solver.absoluteCurrentTolerance > 0, solver.absoluteVoltageTolerance > 0,
               solver.minimumConductance > 0, solver.maximumIterations > 0,
@@ -311,7 +344,11 @@ public extension CircuitIR {
                        model.area, model.saturationCurrentTemperatureExponent,
                        model.activationEnergy].allSatisfy(\.isFinite),
                       model.saturationCurrent > 0, model.emissionCoefficient > 0,
-                      model.thermalVoltage > 0, model.area > 0 else {
+                      model.thermalVoltage > 0, model.area > 0,
+                      Self.optionalAtLeast(model.junctionCapacitance, 0),
+                      Self.optionalAtLeast(model.junctionPotential, 0, strictlyPositive: true),
+                      Self.optionalFinite(model.gradingCoefficient),
+                      Self.optionalAtLeast(model.transitTime, 0) else {
                     throw CircuitIRError.invalidDevice(device.name)
                 }
             case .bjt:
@@ -320,7 +357,17 @@ public extension CircuitIR {
                        model.thermalVoltage, model.saturationCurrentTemperatureExponent,
                        model.activationEnergy, model.betaTemperatureExponent].allSatisfy(\.isFinite),
                       model.saturationCurrent > 0, model.forwardBeta > 0,
-                      model.reverseBeta > 0, model.thermalVoltage > 0 else {
+                      model.reverseBeta > 0, model.thermalVoltage > 0,
+                      Self.optionalAtLeast(model.forwardEarlyVoltage, 0),
+                      Self.optionalAtLeast(model.reverseEarlyVoltage, 0),
+                      Self.optionalAtLeast(model.baseEmitterCapacitance, 0),
+                      Self.optionalAtLeast(model.baseCollectorCapacitance, 0),
+                      Self.optionalAtLeast(model.baseEmitterPotential, 0, strictlyPositive: true),
+                      Self.optionalAtLeast(model.baseCollectorPotential, 0, strictlyPositive: true),
+                      Self.optionalFinite(model.baseEmitterGrading),
+                      Self.optionalFinite(model.baseCollectorGrading),
+                      Self.optionalAtLeast(model.forwardTransitTime, 0),
+                      Self.optionalAtLeast(model.reverseTransitTime, 0) else {
                     throw CircuitIRError.invalidDevice(device.name)
                 }
             case .mosfet:
@@ -331,7 +378,12 @@ public extension CircuitIR {
                        model.thresholdTemperatureCoefficient].allSatisfy(\.isFinite),
                       model.transconductanceParameter > 0,
                       model.channelLengthModulation >= 0, model.bodyEffect >= 0,
-                      model.surfacePotential > 0 else {
+                      model.surfacePotential > 0,
+                      Self.optionalAtLeast(model.gateSourceOverlapCapacitance, 0),
+                      Self.optionalAtLeast(model.gateDrainOverlapCapacitance, 0),
+                      Self.optionalAtLeast(model.gateBulkOverlapCapacitance, 0),
+                      Self.optionalAtLeast(model.bulkDrainCapacitance, 0),
+                      Self.optionalAtLeast(model.bulkSourceCapacitance, 0) else {
                     throw CircuitIRError.invalidDevice(device.name)
                 }
             case .jfet:
@@ -344,7 +396,9 @@ public extension CircuitIR {
                        model.activationEnergy].allSatisfy(\.isFinite),
                       model.transconductanceParameter > 0,
                       model.channelLengthModulation >= 0,
-                      model.gateSaturationCurrent > 0, model.thermalVoltage > 0 else {
+                      model.gateSaturationCurrent > 0, model.thermalVoltage > 0,
+                      Self.optionalAtLeast(model.gateSourceCapacitance, 0),
+                      Self.optionalAtLeast(model.gateDrainCapacitance, 0) else {
                     throw CircuitIRError.invalidDevice(device.name)
                 }
             }
@@ -391,11 +445,34 @@ public extension CircuitIR {
                              jfet: .init(device.jfet!), name: device.name)
             }
         }
-        return LinearCircuit(nodeNames: nodes.map(\.name), elements: elements, solverOptions: solver.native)
+        return LinearCircuit(
+            nodeNames: nodes.map(\.name),
+            elements: elements,
+            solverOptions: solver.native,
+            nodeSet: nodeSet ?? [:]
+        )
     }
 
     var nativeInitialConditions: InitialConditions {
         .init(nodeVoltages: initialConditions.nodeVoltages, elementCurrents: initialConditions.elementCurrents)
+    }
+
+    /// Optional additive model fields decode to `nil` at their historical
+    /// default. A decoded value must be finite and non-negative; potentials
+    /// must additionally be strictly positive so the depletion expression is
+    /// well defined.
+    private static func optionalFinite(_ value: Double?) -> Bool {
+        value?.isFinite ?? true
+    }
+
+    private static func optionalAtLeast(
+        _ value: Double?,
+        _ bound: Double,
+        strictlyPositive: Bool = false
+    ) -> Bool {
+        guard let value else { return true }
+        guard value.isFinite else { return false }
+        return strictlyPositive ? value > bound : value >= bound
     }
 
     private static func validate(_ waveform: TransientWaveform?, name: String) throws {
@@ -553,7 +630,11 @@ private extension CircuitIR.DiodeModel {
         self.init(saturationCurrent: value.saturationCurrent, emissionCoefficient: value.emissionCoefficient,
                   thermalVoltage: value.thermalVoltage, area: value.area,
                   saturationCurrentTemperatureExponent: value.saturationCurrentTemperatureExponent,
-                  activationEnergy: value.activationEnergy)
+                  activationEnergy: value.activationEnergy,
+                  junctionCapacitance: value.junctionCapacitance > 0 ? value.junctionCapacitance : nil,
+                  junctionPotential: value.junctionPotential != 1 ? value.junctionPotential : nil,
+                  gradingCoefficient: value.gradingCoefficient != 0.5 ? value.gradingCoefficient : nil,
+                  transitTime: value.transitTime > 0 ? value.transitTime : nil)
     }
 }
 private extension LinearCircuit.DiodeParameters {
@@ -561,7 +642,11 @@ private extension LinearCircuit.DiodeParameters {
         self.init(saturationCurrent: value.saturationCurrent, emissionCoefficient: value.emissionCoefficient,
                   thermalVoltage: value.thermalVoltage, area: value.area,
                   saturationCurrentTemperatureExponent: value.saturationCurrentTemperatureExponent,
-                  activationEnergy: value.activationEnergy)
+                  activationEnergy: value.activationEnergy,
+                  junctionCapacitance: value.junctionCapacitance ?? 0,
+                  junctionPotential: value.junctionPotential ?? 1,
+                  gradingCoefficient: value.gradingCoefficient ?? 0.5,
+                  transitTime: value.transitTime ?? 0)
     }
 }
 private extension CircuitIR.BJTModel {
@@ -570,7 +655,17 @@ private extension CircuitIR.BJTModel {
                   saturationCurrent: value.saturationCurrent, forwardBeta: value.forwardBeta,
                   reverseBeta: value.reverseBeta, thermalVoltage: value.thermalVoltage,
                   saturationCurrentTemperatureExponent: value.saturationCurrentTemperatureExponent,
-                  activationEnergy: value.activationEnergy, betaTemperatureExponent: value.betaTemperatureExponent)
+                  activationEnergy: value.activationEnergy, betaTemperatureExponent: value.betaTemperatureExponent,
+                  forwardEarlyVoltage: value.forwardEarlyVoltage > 0 ? value.forwardEarlyVoltage : nil,
+                  reverseEarlyVoltage: value.reverseEarlyVoltage > 0 ? value.reverseEarlyVoltage : nil,
+                  baseEmitterCapacitance: value.baseEmitterCapacitance > 0 ? value.baseEmitterCapacitance : nil,
+                  baseCollectorCapacitance: value.baseCollectorCapacitance > 0 ? value.baseCollectorCapacitance : nil,
+                  baseEmitterPotential: value.baseEmitterPotential != 0.75 ? value.baseEmitterPotential : nil,
+                  baseCollectorPotential: value.baseCollectorPotential != 0.75 ? value.baseCollectorPotential : nil,
+                  baseEmitterGrading: value.baseEmitterGrading != 0.33 ? value.baseEmitterGrading : nil,
+                  baseCollectorGrading: value.baseCollectorGrading != 0.33 ? value.baseCollectorGrading : nil,
+                  forwardTransitTime: value.forwardTransitTime > 0 ? value.forwardTransitTime : nil,
+                  reverseTransitTime: value.reverseTransitTime > 0 ? value.reverseTransitTime : nil)
     }
 }
 private extension LinearCircuit.BJTParameters {
@@ -579,7 +674,17 @@ private extension LinearCircuit.BJTParameters {
                   saturationCurrent: value.saturationCurrent, forwardBeta: value.forwardBeta,
                   reverseBeta: value.reverseBeta, thermalVoltage: value.thermalVoltage,
                   saturationCurrentTemperatureExponent: value.saturationCurrentTemperatureExponent,
-                  activationEnergy: value.activationEnergy, betaTemperatureExponent: value.betaTemperatureExponent)
+                  activationEnergy: value.activationEnergy, betaTemperatureExponent: value.betaTemperatureExponent,
+                  forwardEarlyVoltage: value.forwardEarlyVoltage ?? 0,
+                  reverseEarlyVoltage: value.reverseEarlyVoltage ?? 0,
+                  baseEmitterCapacitance: value.baseEmitterCapacitance ?? 0,
+                  baseCollectorCapacitance: value.baseCollectorCapacitance ?? 0,
+                  baseEmitterPotential: value.baseEmitterPotential ?? 0.75,
+                  baseCollectorPotential: value.baseCollectorPotential ?? 0.75,
+                  baseEmitterGrading: value.baseEmitterGrading ?? 0.33,
+                  baseCollectorGrading: value.baseCollectorGrading ?? 0.33,
+                  forwardTransitTime: value.forwardTransitTime ?? 0,
+                  reverseTransitTime: value.reverseTransitTime ?? 0)
     }
 }
 private extension CircuitIR.MOSFETModel {
@@ -590,7 +695,12 @@ private extension CircuitIR.MOSFETModel {
                   channelLengthModulation: value.channelLengthModulation,
                   bodyEffect: value.bodyEffect, surfacePotential: value.surfacePotential,
                   mobilityTemperatureExponent: value.mobilityTemperatureExponent,
-                  thresholdTemperatureCoefficient: value.thresholdTemperatureCoefficient)
+                  thresholdTemperatureCoefficient: value.thresholdTemperatureCoefficient,
+                  gateSourceOverlapCapacitance: value.gateSourceOverlapCapacitance > 0 ? value.gateSourceOverlapCapacitance : nil,
+                  gateDrainOverlapCapacitance: value.gateDrainOverlapCapacitance > 0 ? value.gateDrainOverlapCapacitance : nil,
+                  gateBulkOverlapCapacitance: value.gateBulkOverlapCapacitance > 0 ? value.gateBulkOverlapCapacitance : nil,
+                  bulkDrainCapacitance: value.bulkDrainCapacitance > 0 ? value.bulkDrainCapacitance : nil,
+                  bulkSourceCapacitance: value.bulkSourceCapacitance > 0 ? value.bulkSourceCapacitance : nil)
     }
 }
 private extension LinearCircuit.MOSFETParameters {
@@ -601,7 +711,12 @@ private extension LinearCircuit.MOSFETParameters {
                   channelLengthModulation: value.channelLengthModulation,
                   bodyEffect: value.bodyEffect, surfacePotential: value.surfacePotential,
                   mobilityTemperatureExponent: value.mobilityTemperatureExponent,
-                  thresholdTemperatureCoefficient: value.thresholdTemperatureCoefficient)
+                  thresholdTemperatureCoefficient: value.thresholdTemperatureCoefficient,
+                  gateSourceOverlapCapacitance: value.gateSourceOverlapCapacitance ?? 0,
+                  gateDrainOverlapCapacitance: value.gateDrainOverlapCapacitance ?? 0,
+                  gateBulkOverlapCapacitance: value.gateBulkOverlapCapacitance ?? 0,
+                  bulkDrainCapacitance: value.bulkDrainCapacitance ?? 0,
+                  bulkSourceCapacitance: value.bulkSourceCapacitance ?? 0)
     }
 }
 private extension CircuitIR.JFETModel {
@@ -614,7 +729,9 @@ private extension CircuitIR.JFETModel {
                   mobilityTemperatureExponent: value.mobilityTemperatureExponent,
                   thresholdTemperatureCoefficient: value.thresholdTemperatureCoefficient,
                   saturationCurrentTemperatureExponent: value.saturationCurrentTemperatureExponent,
-                  activationEnergy: value.activationEnergy)
+                  activationEnergy: value.activationEnergy,
+                  gateSourceCapacitance: value.gateSourceCapacitance > 0 ? value.gateSourceCapacitance : nil,
+                  gateDrainCapacitance: value.gateDrainCapacitance > 0 ? value.gateDrainCapacitance : nil)
     }
 }
 private extension LinearCircuit.JFETParameters {
@@ -627,6 +744,8 @@ private extension LinearCircuit.JFETParameters {
                   mobilityTemperatureExponent: value.mobilityTemperatureExponent,
                   thresholdTemperatureCoefficient: value.thresholdTemperatureCoefficient,
                   saturationCurrentTemperatureExponent: value.saturationCurrentTemperatureExponent,
-                  activationEnergy: value.activationEnergy)
+                  activationEnergy: value.activationEnergy,
+                  gateSourceCapacitance: value.gateSourceCapacitance ?? 0,
+                  gateDrainCapacitance: value.gateDrainCapacitance ?? 0)
     }
 }

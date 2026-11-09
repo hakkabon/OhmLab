@@ -19,3 +19,9 @@ there, documented in
 contract version. Native MNA remains the default and sole full-production
 backend; Swift-NumericCore remains the sole scoped nonlinear-production
 backend; the Rust host remains an external portable-protocol implementation.
+
+OhmLab 3.3 adds optional native device-model parameters (Early effect and
+junction/overlap/transit-time capacitances) and `.nodeset` Newton hints without
+changing any contract version. Defaults preserve the historical model, and the
+additive Circuit IR fields are documented in
+[`device-model-depth-v1.md`](device-model-depth-v1.md).

@@ -4,15 +4,15 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 3.2.0 Release Status
+## 3.3.0 Release Status
 
-OhmLab **3.2.0** is the current release. `OhmLabRelease.version`, the
+OhmLab **3.3.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
 the packaging metadata all report the same version. The production boundary
-remains **v8**: 3.2 changes the native solver implementation and the internal
-frontend/backend path, not the published numerical or portable contract.
+remains **v8**: 3.3 adds optional device-model parameters and a Newton starting
+hint, not a new result or portable-protocol contract.
 
-The 2.5–3.2 line hardened the path between real designs and the simulator:
+The 2.5–3.3 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -39,6 +39,12 @@ The 2.5–3.2 line hardened the path between real designs and the simulator:
   netlist inputs through the shared Circuit IR before every native solve.
   Existing DC/AC/transient results are unchanged, and the native backend now
   solves chains beyond the published 512-unknown dense envelope.
+* **3.3** deepens the native device models with the bipolar Early effect and
+  SPICE junction/overlap/transit-time capacitances for diodes, BJTs, MOSFETs,
+  and JFETs, so AC and transient analysis include the reactive behaviour real
+  parts exhibit. It also accepts `.nodeset` as a Newton starting hint. The new
+  parameters are optional and default to zero (or the historical model), so
+  existing netlists and results are unchanged.
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
@@ -220,6 +226,38 @@ rejection, and the dense budget. See
 and
 [`docs/contracts/native-rust-portability-v3.md`](docs/contracts/native-rust-portability-v3.md).
 
+## 3.3 Device Model Depth and Nodeset
+
+The native device models now carry the parameters that dominate small-signal
+and switching behaviour:
+
+* **Diode:** `CJO`, `VJ`, `M`, and `TT` add a bias-dependent depletion
+  capacitance plus a transit-time diffusion capacitance.
+* **BJT:** `VAF`/`VAR` add a simplified Early effect to the transport current,
+  and `CJE`/`CJC`/`VJE`/`VJC`/`MJE`/`MJC`/`TF`/`TR` add junction and
+  transit-time capacitances.
+* **MOSFET:** `CGSO`, `CGDO`, `CGBO`, `CBD`, and `CBS` add constant overlap and
+  bulk-junction capacitances.
+* **JFET:** `CGS` and `CGD` add constant gate capacitances.
+
+All capacitances are open at DC, become `jωC` in AC, and use a backward-Euler
+companion model in transient analysis. The Early effect is applied to the
+transport current only; base currents keep their historical Ebers-Moll form.
+Every parameter defaults to zero (or the previous model value), so circuits
+that do not mention it produce exactly the previous results.
+
+`.nodeset V(node)=value` is now parsed and carried through Circuit IR as an
+optional starting hint. It seeds the first Newton linearisation for nonlinear
+devices but never overrides the solved operating point; `.ic` remains the
+initial-condition mechanism for transient runs. `.noise`, `.disto`, and
+`.sens` are still accepted with a note because they would introduce result
+types the engine does not model.
+
+The NumericCore/portable paths keep their existing scoped device surface. A
+request that would change the result through a parameter the target backend
+does not implement fails closed rather than silently dropping it. See
+[`docs/contracts/device-model-depth-v1.md`](docs/contracts/device-model-depth-v1.md).
+
 ## 3.2 Sparse Circuit Core and Shared IR
 
 The native MNA engine now assembles its nodal equations as a sparse matrix and
@@ -272,7 +310,7 @@ The simulation layer is a **native Swift linear solver**:
 *   **Transient Analysis:** Backward-Euler time stepping with companion models for C and L, seeded by the operating point at the start time (a `.ic` card may override starting node voltages and inductor currents). Sources support `PULSE`, `SIN`, and `PWL` shapes.
 *   **DC Sweep:** `.dc <src> <start> <stop> <step>` sweeps an independent source (nested sweeps are supported); `.step param <name> list <v…>` / `.step param <name> <start> <stop> <step>` re-parses the netlist per value. Each operating point is returned with its sweep coordinates, plotted, and exported to CSV.
 *   **Fourier Analysis:** `.four <freq> <var…>` (e.g. `.four 1k v(2) i(V1)`) reports the DC component and the first nine harmonics of a transient signal over the last full period, with each harmonic's magnitude, phase, normalized magnitude/phase, and total harmonic distortion (THD). Because the transient trace is piecewise linear, every harmonic is integrated in closed form on each segment (no resampling grid), so there is no interpolation error. Results appear in the UI and in the CSV export.
-*   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance), NPN/PNP bipolar transistors (simplified Ebers-Moll transport model: saturation current, forward/reverse beta; no Early effect), and N-MOS/P-MOS field-effect transistors (Level 1 Shichman-Hodges: threshold voltage, transconductance parameter `KP`, channel-length modulation `LAMBDA`, body effect `GAMMA`, surface potential `PHI`), plus N-JFET/P-JFET junction field-effect transistors (Shichman-Hodges square law with a gate-junction Shockley current). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal). The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block (4×4 for the MOSFET, 3×3 for the JFET). Convergence is judged on both the terminal-voltage and device-current updates. Every model carries SPICE's temperature parameters (`XTI`, `EG` for diodes/transistors, `XTB` for transistor betas, `BEX`/`TCV` for MOSFETs and JFETs).
+*   **Nonlinear Devices:** A Shockley diode (saturation current, emission coefficient, optional series resistance, junction capacitance `CJO`/`VJ`/`M` and transit time `TT`), NPN/PNP bipolar transistors (simplified Ebers-Moll transport model with optional Early voltages `VAF`/`VAR` and junction/transit-time capacitances `CJE`/`CJC`/`VJE`/`VJC`/`MJE`/`MJC`/`TF`/`TR`), and N-MOS/P-MOS field-effect transistors (Level 1 Shichman-Hodges: threshold voltage, transconductance parameter `KP`, channel-length modulation `LAMBDA`, body effect `GAMMA`, surface potential `PHI`, overlap/bulk capacitances `CGSO`/`CGDO`/`CGBO`/`CBD`/`CBS`), plus N-JFET/P-JFET junction field-effect transistors (Shichman-Hodges square law with a gate-junction Shockley current and `CGS`/`CGD`). DC, operating-point, and transient solves run a damped Newton-Raphson iteration with junction-voltage limiting; AC analysis linearises once about the DC operating point (small-signal) and includes the reactive device capacitances. The Newton machinery is generic over N-terminal devices, stamping each device's terminal currents and Jacobian block (4×4 for the MOSFET, 3×3 for the JFET). Convergence is judged on both the terminal-voltage and device-current updates. Every model carries SPICE's temperature parameters (`XTI`, `EG` for diodes/transistors, `XTB` for transistor betas, `BEX`/`TCV` for MOSFETs and JFETs).
 *   **Solver Options & Temperature:** `.options reltol⏐abstol⏐vntol⏐gmin⏐itl1⏐temp⏐tnom` are honoured: the tolerances drive the Newton convergence test, `itl1` caps the iteration count, `gmin` is the junction/channel leakage conductance that keeps cutoff non-singular, and the operating temperature (`temp`, from a `.temp` card or `.options`) scales each device model. Temperature dependence follows SPICE: diode/BJT saturation current and thermal voltage (`IS(T)` from `IS`, `XTI`, `EG`), BJT betas (`XTB`), and MOSFET level-1 `KP(T)` (`BEX`) and `VTO(T)` (`TCV`). Non-physical values fall back to their defaults.
 *   **Domain Agnostic:** The solver knows nothing about GUI coordinates, symbols, or layout — it only consumes the projected circuit.
 
@@ -348,12 +386,13 @@ Beyond elements, the reader understands a useful subset of control cards:
 
 *   **`.param NAME=expr …`** — global parameters, substituted into `{…}` expressions, bare value tokens, and source specifications everywhere (including inside subcircuits). Caller-supplied overrides (used by `.step`) take precedence over a `.param` card.
 *   **`.ic V(node)=value …` / `.ic I(element)=value …`** — starting conditions for a transient run.
+*   **`.nodeset V(node)=value …`** — Newton starting hints for DC, operating-point, AC-bias, and the transient initial operating point. They seed the first linearisation but do not override the solved result.
 *   **`.dc <src> <start> <stop> <step> [<src2> …]`** — a (nested) DC sweep of independent sources.
 *   **`.step param <name> list <v…>` / `.step param <name> <start> <stop> <step>`** — repeat the DC analysis per parameter value by re-parsing. `.step temp <start> <stop> <step>` / `.step temp list <v…>` sweeps the operating temperature instead; other `.step` forms are reported and skipped.
 *   **`.include <file>` / `.lib <file> [<section>]`** — resolved at import time by `SpiceIncludePipeline`, which inlines nested includes relative to each including file and extracts `.lib` sections. The resolved netlist is persisted with the document and emitted on export; the editor keeps the original text. Missing, cyclic, or oversized includes are left in place with a note, and relative paths still resolve against the import directory at simulation time. Quoted paths (`"./models.lib"`) are unquoted.
 *   **`.options reltol=… abstol=… vntol=… gmin=… itl1=… temp=… tnom=…`** — honoured by the solver (unknown options are accepted and ignored). **`.temp <value>`** sets the operating temperature that drives the devices' temperature-dependent model parameters.
 *   **`.four <freq> <var…>`** — Fourier analysis of the transient result: the DC component and the first nine harmonics of a chosen fundamental frequency, taken over the last full period, with THD. Signals are `v(node)`, `i(element)`, or a bare node name; an unknown signal or a missing `.tran` is reported as a note.
-*   **KiCad/ngspice control cards** — `.title`, `.date`, `.rev`, `.company`, `.width`, `.plot`, `.print`, `.save`, `.probe`, and `.backanno` are tolerated silently so exported netlists round-trip; `.nodeset`, `.noise`, `.disto`, and `.sens` are accepted with a note, since they would change results in ways the engine does not model.
+*   **KiCad/ngspice control cards** — `.title`, `.date`, `.rev`, `.company`, `.width`, `.plot`, `.print`, `.save`, `.probe`, and `.backanno` are tolerated silently so exported netlists round-trip; `.noise`, `.disto`, and `.sens` are accepted with a note, since they would introduce result types the engine does not model.
 
 Non-fatal notes (skipped includes, ignored directives, aliased grounds) travel with the parsed netlist and are surfaced in the results panel.
 

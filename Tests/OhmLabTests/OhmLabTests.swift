@@ -2053,9 +2053,11 @@ R2 Net-_R2-Pad1_ 0 1k
     #expect(requested == ["models/divider.lib"])
 }
 
-@Test func nodesetCodeIsAcceptedWithWarning() throws {
+@Test func nodesetCodeSeedsTheNewtonStartWithoutAWarning() throws {
     let parsed = try SpiceNetlistParser.parse("V1 1 0 DC 1\nR1 1 0 1k\n.nodeset v(1)=0.5\n.end")
-    #expect(parsed.warnings.contains { $0.contains(".nodeset") })
+    #expect(!parsed.warnings.contains { $0.contains(".nodeset") })
+    #expect(parsed.nodeSet["1"] == 0.5)
+    #expect(parsed.circuit.nodeSet["1"] == 0.5)
 }
 
 @Test @MainActor func importNetlistSwitchesToNetlistMode() {
@@ -2135,8 +2137,8 @@ R2 Net-_R2-Pad1_ 0 1k
 
 @Test @MainActor func importNetlistCollectsParserWarnings() {
     let document = CircuitDocument()
-    document.importNetlist("V1 1 0 DC 1\nR1 1 0 1k\n.nodeset v(1)=0.5\n.end")
-    #expect(document.importWarnings.contains { $0.contains(".nodeset") })
+    document.importNetlist("V1 1 0 DC 1\nR1 1 0 1k\n.noise v(1) v1 1k\n.end")
+    #expect(document.importWarnings.contains { $0.contains(".noise") })
 }
 
 @Test @MainActor func importDesignRecordsSourceFileName() throws {

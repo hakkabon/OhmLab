@@ -39,14 +39,27 @@ qualification must publish and exercise the same limit. Mixed-scale solves,
 physical residual certification, singular failure, and pre-solve budget
 rejection are release-blocking evidence.
 
-For the 3.2 release, the product version is **3.2.0** everywhere:
+For the 3.3 release, the product version is **3.3.0** everywhere:
 `OhmLabRelease.version`, `ohm --version`, the Rust host's `PRODUCT_VERSION`,
 `scripts/release-check.sh`, `scripts/health-check.sh`, and the packaged
-`Info.plist` must agree. The production boundary remains **v8**; 3.2 changes the
-native solver implementation and the internal shared-IR path, not the published
-numerical or portable contract versions.
+`Info.plist` must agree. The production boundary remains **v8**; 3.3 adds
+optional device-model parameters and a Newton starting hint, not a new result,
+Circuit IR, or portable-protocol contract version.
 
-The 3.2 release gate additionally requires:
+The 3.3 release gate additionally requires:
+
+- diode `CJO`/`VJ`/`M`/`TT`, BJT `VAF`/`VAR`/`CJE`/`CJC`/`TF`/`TR`, MOSFET
+  overlap/bulk capacitances, and JFET `CGS`/`CGD` to be parsed, preserved
+  through Circuit IR, and exercised in DC, AC, and transient analyses;
+- circuits that omit those parameters to produce byte-stable Circuit IR and
+  unchanged published results;
+- `.nodeset` to parse without a warning, seed the native Newton iteration, and
+  never override the solved operating point;
+- repeated capacitive solves to be deterministic;
+- `docs/contracts/device-model-depth-v1.md` to describe the scope, evidence,
+  and explicit non-claims of the new model depth.
+
+The 3.2 release gate also requires:
 
 - sparse matrix assembly and sparse LU to agree with the dense solver on the
   existing DC/AC/transient corpus, including singular-matrix rejection;
@@ -95,13 +108,13 @@ architecture separately until the project adopts a universal-binary build.
 
 Compatibility rules for the 3.x line:
 
-- The current product version is **3.2.0**. Keep the version string in
+- The current product version is **3.3.0**. Keep the version string in
   `OhmLabRelease.version` and the release/health scripts in lockstep; the tag,
   CLI output, and packaged metadata must match.
-- 3.2 does not introduce a new production boundary. Production boundary v8
+- 3.3 does not introduce a new production boundary. Production boundary v8
   remains current until a later contract explicitly changes the numerical or
-  portable execution guarantees. The native sparse core and shared-IR routing
-  are implementation changes inside that boundary.
+  portable execution guarantees. Optional device parameters, device
+  capacitances, and `.nodeset` are additive changes inside that boundary.
 - Do not change production-boundary, Circuit IR, result, capability, or
   nonlinear-convergence, or portable-simulation versions in a patch release.
 - Production boundary v4 is required for 2.0 because the portable process

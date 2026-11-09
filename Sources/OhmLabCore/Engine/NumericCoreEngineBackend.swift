@@ -261,6 +261,11 @@ private extension NumericCoreEngineBackend {
                     guard let diode = element.diode else {
                         throw NumericCoreAdapterError.unsupportedElement(element.name)
                     }
+                    guard diode.junctionCapacitance == 0, diode.transitTime == 0 else {
+                        throw NumericCoreAdapterError.unsupportedElement(
+                            "\(element.name) (diode capacitance is native-only)"
+                        )
+                    }
                     try Self.requireNominalTemperature(element, in: circuit)
                     mapped.append(.diode(
                         name: element.name,
@@ -273,9 +278,14 @@ private extension NumericCoreEngineBackend {
                     guard let mosfet = element.mosfet,
                           mosfet.polarity == .nmos,
                           (element.nodeD ?? element.nodeB) == element.nodeB,
-                          mosfet.bodyEffect == 0 else {
+                          mosfet.bodyEffect == 0,
+                          mosfet.gateSourceOverlapCapacitance == 0,
+                          mosfet.gateDrainOverlapCapacitance == 0,
+                          mosfet.gateBulkOverlapCapacitance == 0,
+                          mosfet.bulkDrainCapacitance == 0,
+                          mosfet.bulkSourceCapacitance == 0 else {
                         throw NumericCoreAdapterError.unsupportedElement(
-                            "\(element.name) (only body-tied Level-1 NMOS is qualified)"
+                            "\(element.name) (only body-tied Level-1 NMOS without capacitances is qualified)"
                         )
                     }
                     try Self.requireNominalTemperature(element, in: circuit)
