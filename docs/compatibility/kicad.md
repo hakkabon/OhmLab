@@ -1,6 +1,6 @@
 # KiCad interoperability scope
 
-OhmLab 3.3.0 provides **KiCad Schematic Interop** for reading and writing,
+OhmLab 3.4.0 provides **KiCad Schematic Interop** for reading and writing,
 plus **KiCad Netlist Interop** for simulation. Writing is supported for the
 OhmLab-modelled subset of KiCad and preserves the identities and values that
 matter for editing and simulation. It is not a lossless reproduction of an
@@ -10,7 +10,7 @@ claim matches what CI proves.
 
 ## Compatibility tiers
 
-| Tier | Status in 3.3 | What it means |
+| Tier | Status in 3.4 | What it means |
 |---|---|---|
 | **KiCad Netlist Interop** | Supported | Import a SPICE netlist exported by KiCad, simulate it, and export a self-contained SPICE netlist KiCad/ngspice can read. |
 | **KiCad Project Import** | Supported | Import a `.kicad_pro`, its top `.kicad_sch`, or any child sheet by resolving the root and reading the hierarchy directly. |

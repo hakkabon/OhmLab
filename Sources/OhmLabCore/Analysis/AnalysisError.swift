@@ -11,6 +11,11 @@ public enum AnalysisError: LocalizedError, Equatable {
     case tooManyCorners(Int)
     case invalidObjective(String)
     case noVariables
+    case noObjective
+    case noYieldLimits
+    case invalidYieldSamples
+    case invalidMetric(String)
+    case metricOutOfRange(String)
 
     public var errorDescription: String? {
         switch self {
@@ -28,6 +33,16 @@ public enum AnalysisError: LocalizedError, Equatable {
             return "The objective \(name) is not a valid probe."
         case .noVariables:
             return "No optimisation variables were given."
+        case .noObjective:
+            return "Provide an objective probe or an analysis metric to optimise."
+        case .noYieldLimits:
+            return "Yield estimation needs at least one design limit (e.g. v(out)=min:max)."
+        case .invalidYieldSamples:
+            return "Yield estimation needs at least one Monte Carlo sample."
+        case .invalidMetric(let name):
+            return "The design metric \(name) is not supported."
+        case .metricOutOfRange(let name):
+            return "\(name)."
         }
     }
 }

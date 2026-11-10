@@ -69,26 +69,14 @@ public enum CornerAnalysis {
 
         let devices = NetlistValueRewriter.devices(in: request.netlist)
         let nominals = Dictionary(devices.map { ($0.designator, $0.value) }, uniquingKeysWith: { first, _ in first })
-        var warnings: [String] = []
 
-        var variables: [String: ComponentTolerance] = [:]
-        for tolerance in request.tolerances {
-            guard let designator = MonteCarloAnalysis.matchDesignator(tolerance.designator, in: devices) else {
-                warnings.append("No editable component named \(tolerance.designator); its tolerance was ignored.")
-                continue
-            }
-            variables[designator] = tolerance
-        }
-        if let fallback = request.defaultTolerance {
-            for device in devices where device.kind.isPassive && variables[device.designator] == nil {
-                variables[device.designator] = ComponentTolerance(
-                    designator: device.designator,
-                    relative: fallback.relative,
-                    absolute: fallback.absolute,
-                    distribution: fallback.distribution
-                )
-            }
-        }
+        let resolved = MonteCarloAnalysis.resolveVariables(
+            devices: devices,
+            tolerances: request.tolerances,
+            defaultTolerance: request.defaultTolerance
+        )
+        let variables = resolved.variables
+        let warnings = resolved.warnings
         let orderedVariables = variables.keys.sorted()
 
         // Each variable contributes a low/high corner; temperature adds two more.

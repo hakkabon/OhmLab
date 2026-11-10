@@ -82,28 +82,16 @@ public enum MonteCarloAnalysis {
 
         let devices = NetlistValueRewriter.devices(in: request.netlist)
         let nominals = Dictionary(devices.map { ($0.designator, $0.value) }, uniquingKeysWith: { first, _ in first })
-        var warnings: [String] = []
 
         // Resolve the effective tolerance for each variable, sorted by name so
         // the random draw order — and hence the run — is reproducible.
-        var variables: [String: ComponentTolerance] = [:]
-        for tolerance in request.tolerances {
-            guard let designator = matchDesignator(tolerance.designator, in: devices) else {
-                warnings.append("No editable component named \(tolerance.designator); its tolerance was ignored.")
-                continue
-            }
-            variables[designator] = tolerance
-        }
-        if let fallback = request.defaultTolerance {
-            for device in devices where device.kind.isPassive && variables[device.designator] == nil {
-                variables[device.designator] = ComponentTolerance(
-                    designator: device.designator,
-                    relative: fallback.relative,
-                    absolute: fallback.absolute,
-                    distribution: fallback.distribution
-                )
-            }
-        }
+        let resolved = resolveVariables(
+            devices: devices,
+            tolerances: request.tolerances,
+            defaultTolerance: request.defaultTolerance
+        )
+        let variables = resolved.variables
+        var warnings = resolved.warnings
         let orderedVariables = variables.keys.sorted()
         if orderedVariables.isEmpty {
             warnings.append("No components carry a tolerance; every trial is the nominal circuit.")
@@ -219,6 +207,36 @@ public enum MonteCarloAnalysis {
     /// The canonical designator for `name` in `devices` (case-insensitive).
     static func matchDesignator(_ name: String, in devices: [NetlistDevice]) -> String? {
         devices.first { $0.designator.caseInsensitiveCompare(name) == .orderedSame }?.designator
+    }
+
+    /// Resolves explicit and default tolerances onto the netlist's editable
+    /// devices. Unknown designators are reported and ignored; a default
+    /// tolerance covers every passive that has no explicit tolerance.
+    static func resolveVariables(
+        devices: [NetlistDevice],
+        tolerances: [ComponentTolerance],
+        defaultTolerance: ComponentTolerance?
+    ) -> (variables: [String: ComponentTolerance], warnings: [String]) {
+        var warnings: [String] = []
+        var variables: [String: ComponentTolerance] = [:]
+        for tolerance in tolerances {
+            guard let designator = matchDesignator(tolerance.designator, in: devices) else {
+                warnings.append("No editable component named \(tolerance.designator); its tolerance was ignored.")
+                continue
+            }
+            variables[designator] = tolerance
+        }
+        if let fallback = defaultTolerance {
+            for device in devices where device.kind.isPassive && variables[device.designator] == nil {
+                variables[device.designator] = ComponentTolerance(
+                    designator: device.designator,
+                    relative: fallback.relative,
+                    absolute: fallback.absolute,
+                    distribution: fallback.distribution
+                )
+            }
+        }
+        return (variables, warnings)
     }
 
     static func statisticsMean(_ values: [Double]) -> Double {

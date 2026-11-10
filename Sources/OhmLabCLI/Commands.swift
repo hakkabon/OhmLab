@@ -635,8 +635,17 @@ enum Subcommand {
         var stdin = false
         var variables: [OptimizeVariable] = []
         var objective: CircuitProbe?
+        var metric: OptimizeMetric?
         var goal: OptimizeGoal = .maximize
         var grid = 5
+        var tolerances: [ComponentTolerance] = []
+        var defaultTolerance: ComponentTolerance?
+        var temperature: Double?
+        var temperatureTolerance: Double?
+        var limits: [MetricLimit] = []
+        var yieldSamples = 64
+        var yieldSeed: UInt64 = 1
+        var refineYield = true
         var format = "text"
 
         var index = 0
@@ -653,8 +662,17 @@ enum Subcommand {
             case "-", "--stdin": stdin = true
             case "--var": variables.append(try parseVariable(try next(argument)))
             case "--probe": objective = try probe(try next(argument))
+            case "--metric": metric = try parseMetric(try next(argument))
             case "--goal": goal = try parseGoal(try next(argument))
             case "--grid": grid = try intValue(try next(argument), flag: "--grid")
+            case "--tol": tolerances.append(try parseTolerance(try next(argument)))
+            case "--default-tol": defaultTolerance = try parseTolerance("x=" + (try next(argument)))
+            case "--temp": temperature = try number(try next(argument), flag: "--temp")
+            case "--temp-tol": temperatureTolerance = try number(try next(argument), flag: "--temp-tol")
+            case "--limit": limits.append(try parseMetricLimit(try next(argument)))
+            case "--yield-samples": yieldSamples = try intValue(try next(argument), flag: "--yield-samples")
+            case "--yield-seed": yieldSeed = try uintValue(try next(argument), flag: "--yield-seed")
+            case "--no-yield-refine": refineYield = false
             case "-f", "--format": format = try next(argument).lowercased()
             default:
                 if argument.hasPrefix("-") && argument != "-" {
@@ -666,33 +684,102 @@ enum Subcommand {
             index += 1
         }
 
-        guard let objective else { throw CommandError.usage("--probe is required (e.g. --probe v(out))") }
+        guard metric != nil || objective != nil else {
+            throw CommandError.usage(
+                "an objective is required: --metric v(out), ac:v(out)@1k, "
+                + "acdb:v(out)@1k, acph:v(out)@1k, or tran:v(out)@1m"
+            )
+        }
         let input = try loadInput(path: path, netlistText: netlistText, stdin: stdin)
+        let specification = limits.isEmpty ? nil : YieldSpecification(
+            tolerances: tolerances,
+            defaultTolerance: defaultTolerance,
+            samples: yieldSamples,
+            seed: yieldSeed,
+            temperature: temperature,
+            temperatureTolerance: temperatureTolerance,
+            limits: limits,
+            refine: refineYield
+        )
         let result = try Optimization.run(OptimizeRequest(
             netlist: input.netlist,
             settings: input.settings,
             variables: variables,
             objective: objective,
+            metric: metric,
             goal: goal,
+            yield: specification,
             gridDivisions: grid,
             baseDirectory: input.baseDirectory
         ))
+        for warning in result.nominalYield?.warnings ?? [] {
+            writeStderr("ohm: warning: \(warning)\n")
+        }
 
         if format == "json" {
-            writeStdout(jsonString([
+            var object: [String: Any] = [
+                "metric": result.metric.description,
                 "bestObjective": result.bestObjective,
                 "bestValues": result.bestValues.mapKeys { $0 },
                 "evaluations": result.evaluations,
-                "failures": result.failures
-            ]) + "\n")
+                "failures": result.failures,
+                "nominalBestObjective": result.nominalBestObjective,
+                "nominalBestValues": result.nominalBestValues.mapKeys { $0 }
+            ]
+            if let nominalYield = result.nominalYield { object["nominalYield"] = jsonYield(nominalYield) }
+            if let yield = result.yield { object["yield"] = jsonYield(yield) }
+            writeStdout(jsonString(object) + "\n")
         } else {
-            writeStdout("Best \(objective.description) = \(number(result.bestObjective))"
+            writeStdout("Best \(result.metric.description) = \(number(result.bestObjective))"
                 + "  (\(result.evaluations) evaluations, \(result.failures) failures)\n")
             for (name, value) in result.bestValues.sorted(by: { $0.key < $1.key }) {
                 writeStdout("  \(name) = \(number(value))\n")
             }
+            if let nominalYield = result.nominalYield {
+                writeStdout("Nominal yield: \(percent(nominalYield.overallYield))\n")
+            }
+            if let yield = result.yield {
+                if result.nominalYield.map({ $0.overallYield != yield.overallYield }) == true {
+                    writeStdout("Centred yield: \(percent(yield.overallYield))  (seed \(yield.seed),"
+                        + " \(yield.trials) trials, \(yield.failures) failures)\n")
+                } else {
+                    writeStdout("Yield: \(percent(yield.overallYield))  (seed \(yield.seed),"
+                        + " \(yield.trials) trials, \(yield.failures) failures)\n")
+                }
+                for statistic in yield.statistics {
+                    writeStdout("  \(statistic.metric.description)  mean=\(number(statistic.mean))"
+                        + "  min=\(number(statistic.minimum))  max=\(number(statistic.maximum))"
+                        + "  yield=\(percent(statistic.yield))\n")
+                }
+            }
         }
         return 0
+    }
+
+    private static func jsonYield(_ report: YieldReport) -> [String: Any] {
+        func finite(_ value: Double) -> Any {
+            value.isFinite ? value : NSNull()
+        }
+        return [
+            "overallYield": report.overallYield,
+            "trials": report.trials,
+            "failures": report.failures,
+            "seed": report.seed,
+            "limits": report.statistics.map { statistic -> [String: Any] in
+                [
+                    "metric": statistic.metric.description,
+                    "mean": finite(statistic.mean),
+                    "min": finite(statistic.minimum),
+                    "max": finite(statistic.maximum),
+                    "yield": statistic.yield
+                ]
+            },
+            "warnings": report.warnings
+        ]
+    }
+
+    private static func percent(_ value: Double) -> String {
+        value.isFinite ? String(format: "%.1f%%", value * 100) : "—"
     }
 
     // MARK: - Shared input
@@ -852,6 +939,45 @@ enum Subcommand {
         return ProbeLimit(probe: probe, minimum: minimum, maximum: maximum)
     }
 
+    /// `v(out)`, `ac:v(out)@1k`, `acdb:v(out)@1k`, `acph:v(out)@1k`, or
+    /// `tran:v(out)@1m`.
+    static func parseMetric(_ token: String) throws -> OptimizeMetric {
+        guard let metric = OptimizeMetric.parse(token) else {
+            throw CommandError.usage(
+                "--metric expects v(out), ac:v(out)@1k, acdb:v(out)@1k, "
+                + "acph:v(out)@1k, or tran:v(out)@1m (got “\(token)”)"
+            )
+        }
+        return metric
+    }
+
+    /// `ac:v(out)@1k=0.4:0.6` — a metric and its allowed range.
+    static func parseMetricLimit(_ token: String) throws -> MetricLimit {
+        guard let equals = token.firstIndex(of: "=") else {
+            throw CommandError.usage("--limit expects METRIC=min:max (got “\(token)”)")
+        }
+        let metric = try parseMetric(String(token[token.startIndex..<equals]))
+        let range = token[token.index(after: equals)...]
+            .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            .map(String.init)
+        guard range.count == 2 else { throw CommandError.usage("--limit expects min:max") }
+        var minimum: Double?
+        var maximum: Double?
+        if !range[0].isEmpty {
+            guard let value = SpiceNumber.parse(range[0]) else {
+                throw CommandError.usage("--limit: “\(range[0])” is not a number")
+            }
+            minimum = value
+        }
+        if !range[1].isEmpty {
+            guard let value = SpiceNumber.parse(range[1]) else {
+                throw CommandError.usage("--limit: “\(range[1])” is not a number")
+            }
+            maximum = value
+        }
+        return MetricLimit(metric: metric, minimum: minimum, maximum: maximum)
+    }
+
     static func parseVariable(_ token: String) throws -> OptimizeVariable {
         guard let equals = token.firstIndex(of: "="),
               let colon = token[token.index(after: equals)...].firstIndex(of: ":") else {
@@ -964,12 +1090,24 @@ enum Subcommand {
 
     private static func printOptimizeUsage() {
         writeStdout("""
-        usage: ohm optimize <input> --var NAME=min:max --probe v(out) [options]
+        usage: ohm optimize <input> --var NAME=min:max --metric <m> [options]
 
           --var R1=1k:10k          a variable range (repeatable)
-          --probe v(out)           objective probe
+          --metric <m>             objective: v(out), ac:v(out)@1k,
+                                   acdb:v(out)@1k, acph:v(out)@1k, tran:v(out)@1m
+          --probe v(out)           DC objective probe (equivalent to --metric v(out))
           --goal max|min|target=V  optimisation goal (default max)
           --grid N                 coarse grid divisions per variable (default 5)
+
+          Yield centring (enabled by --limit):
+          --limit <m>=min:max      design specification for a metric (repeatable)
+          --tol NAME=5%[,normal]   tolerance for one component (repeatable)
+          --default-tol 5%         tolerance for every unlisted passive
+          --temp T / --temp-tol D  ambient temperature (and its ± tolerance)
+          --yield-samples N        trials per yield estimate (default 64)
+          --yield-seed N           deterministic seed (default 1)
+          --no-yield-refine        report yield without refining for it
+
           -f, --format text|json   output format (default text)
 
         """)

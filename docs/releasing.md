@@ -39,12 +39,27 @@ qualification must publish and exercise the same limit. Mixed-scale solves,
 physical residual certification, singular failure, and pre-solve budget
 rejection are release-blocking evidence.
 
-For the 3.3 release, the product version is **3.3.0** everywhere:
+For the 3.4 release, the product version is **3.4.0** everywhere:
 `OhmLabRelease.version`, `ohm --version`, the Rust host's `PRODUCT_VERSION`,
 `scripts/release-check.sh`, `scripts/health-check.sh`, and the packaged
-`Info.plist` must agree. The production boundary remains **v8**; 3.3 adds
-optional device-model parameters and a Newton starting hint, not a new result,
-Circuit IR, or portable-protocol contract version.
+`Info.plist` must agree. The production boundary remains **v8**; 3.4 adds
+analysis-aware optimization metrics and yield-aware design centring, not a new
+result, Circuit IR, or portable-protocol contract version.
+
+The 3.4 release gate additionally requires:
+
+- `OptimizeMetric` to parse and round-trip `v(out)`, `ac:v(out)@1k`,
+  `acdb:v(out)@1k`, `acph:v(out)@1k`, and `tran:v(out)@1m`;
+- AC and transient metrics to read the corresponding solved response, reject
+  `vi(...)` probes those result contracts cannot represent, and reject
+  coordinates outside the configured sweep;
+- the optimiser to reach an AC target and a transient target from a coarse
+  grid, with a DC `CircuitProbe` objective producing the same results as before;
+- yield estimation to be deterministic for a fixed seed, to count failed or
+  unreadable trials as yield loss, and to never return a refined design whose
+  yield is lower than the nominal optimum's yield;
+- `docs/contracts/design-optimization-yield-v1.md` to describe the metric
+  syntax, yield semantics, evidence, and explicit non-claims.
 
 The 3.3 release gate additionally requires:
 
@@ -108,9 +123,13 @@ architecture separately until the project adopts a universal-binary build.
 
 Compatibility rules for the 3.x line:
 
-- The current product version is **3.3.0**. Keep the version string in
+- The current product version is **3.4.0**. Keep the version string in
   `OhmLabRelease.version` and the release/health scripts in lockstep; the tag,
   CLI output, and packaged metadata must match.
+- 3.4 does not introduce a new production boundary. Production boundary v8
+  remains current until a later contract explicitly changes the numerical or
+  portable execution guarantees. Analysis-aware optimization metrics and yield
+  centring are additive front-end behaviour inside that boundary.
 - 3.3 does not introduce a new production boundary. Production boundary v8
   remains current until a later contract explicitly changes the numerical or
   portable execution guarantees. Optional device parameters, device

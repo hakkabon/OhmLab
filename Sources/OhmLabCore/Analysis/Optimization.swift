@@ -37,8 +37,16 @@ public struct OptimizeRequest: Sendable {
     public var netlist: String
     public var settings: AnalysisSettings
     public var variables: [OptimizeVariable]
-    public var objective: CircuitProbe
+    /// DC objective probe. Used when `metric` is absent; retained for callers
+    /// that optimise a plain operating-point probe.
+    public var objective: CircuitProbe?
+    /// Analysis-aware objective. Takes precedence over `objective`.
+    public var metric: OptimizeMetric?
     public var goal: OptimizeGoal
+    /// Optional yield reporting and centring. When present, the nominal
+    /// optimum is measured against the limits and optionally refined to
+    /// maximise the fraction of toleranced trials that satisfy them.
+    public var yield: YieldSpecification?
     /// Samples per variable in the coarse grid pass.
     public var gridDivisions: Int
     /// Maximum Nelder–Mead iterations after the grid pass.
@@ -51,8 +59,10 @@ public struct OptimizeRequest: Sendable {
         netlist: String,
         settings: AnalysisSettings = .default,
         variables: [OptimizeVariable],
-        objective: CircuitProbe,
+        objective: CircuitProbe? = nil,
+        metric: OptimizeMetric? = nil,
         goal: OptimizeGoal = .maximize,
+        yield: YieldSpecification? = nil,
         gridDivisions: Int = 5,
         maxIterations: Int = 200,
         libraries: [SpiceModelLibrary] = [],
@@ -62,7 +72,9 @@ public struct OptimizeRequest: Sendable {
         self.settings = settings
         self.variables = variables
         self.objective = objective
+        self.metric = metric
         self.goal = goal
+        self.yield = yield
         self.gridDivisions = gridDivisions
         self.maxIterations = maxIterations
         self.libraries = libraries
@@ -76,19 +88,36 @@ public struct OptimizeResult: Sendable, Equatable {
         public var objective: Double
     }
 
+    public let metric: OptimizeMetric
     public let bestValues: [String: Double]
     public let bestObjective: Double
     public let evaluations: Int
     public let failures: Int
     public let history: [Step]
+    /// The nominal optimum before yield refinement.
+    public let nominalBestValues: [String: Double]
+    public let nominalBestObjective: Double
+    /// Yield of the nominal optimum, when a yield specification was supplied.
+    public let nominalYield: YieldReport?
+    /// Yield of the returned design. Equal to `nominalYield` when refinement
+    /// was disabled or made no improvement.
+    public let yield: YieldReport?
 }
 
 public enum Optimization {
     /// Cap on the coarse grid's total point count.
     static let maxGridPoints = 1000
+    /// Cap on the seed points evaluated during yield refinement.
+    static let maxYieldSeedPoints = 32
 
     public static func run(_ request: OptimizeRequest) throws -> OptimizeResult {
         guard !request.variables.isEmpty else { throw AnalysisError.noVariables }
+        let metric = try resolvedMetric(request)
+        try metric.validate(settings: request.settings)
+        if let yield = request.yield {
+            for limit in yield.limits { try limit.metric.validate(settings: request.settings) }
+        }
+
         let devices = NetlistValueRewriter.devices(in: request.netlist)
 
         var bounds: [(designator: String, min: Double, max: Double)] = []
@@ -102,18 +131,23 @@ public enum Optimization {
             bounds.append((designator, variable.minimum, variable.maximum))
         }
         let dimension = bounds.count
-        let settings = request.settings.dcOnly()
+        let settings = YieldEvaluation.settingsFor(metrics: [metric], base: request.settings)
 
         var evaluations = 0
         var failures = 0
         var history: [OptimizeResult.Step] = []
 
+        func values(for x: [Double]) -> [String: Double] {
+            var result: [String: Double] = [:]
+            for (index, bound) in bounds.enumerated() {
+                result[bound.designator] = x[index]
+            }
+            return result
+        }
+
         func evaluate(_ x: [Double]) throws -> (values: [String: Double], objective: Double, cost: Double) {
             try SimulationExecutionDeadline.check()
-            var values: [String: Double] = [:]
-            for (index, bound) in bounds.enumerated() {
-                values[bound.designator] = x[index]
-            }
+            let values = values(for: x)
             let text = NetlistValueRewriter.rewrite(request.netlist, values: values)
             evaluations += 1
             let result: CircuitSimResult
@@ -130,8 +164,7 @@ public enum Optimization {
                 failures += 1
                 return (values, .nan, .infinity)
             }
-            guard let dc = result.dc,
-                  let objective = request.objective.value(in: dc) else {
+            guard let objective = metric.value(in: result) else {
                 failures += 1
                 return (values, .nan, .infinity)
             }
@@ -141,20 +174,23 @@ public enum Optimization {
 
         // Coarse grid.
         var divisions = max(2, request.gridDivisions)
-        while Int(pow(Double(divisions), Double(dimension))) > maxGridPoints && divisions > 2 {
+        while pointCount(divisions: divisions, dimension: dimension, cap: maxGridPoints) > maxGridPoints
+            && divisions > 2 {
             divisions -= 1
         }
         var bestX: [Double] = bounds.map { ($0.min + $0.max) / 2 }
         var bestCost = Double.infinity
         var bestObjective = Double.nan
 
-        for point in grid(bounds: bounds, divisions: divisions) {
-            try SimulationExecutionDeadline.check()
-            let outcome = try evaluate(point)
-            if outcome.cost < bestCost {
-                bestCost = outcome.cost
-                bestObjective = outcome.objective
-                bestX = point
+        if pointCount(divisions: divisions, dimension: dimension, cap: maxGridPoints) <= maxGridPoints {
+            for point in grid(bounds: bounds, divisions: divisions) {
+                try SimulationExecutionDeadline.check()
+                let outcome = try evaluate(point)
+                if outcome.cost < bestCost {
+                    bestCost = outcome.cost
+                    bestObjective = outcome.objective
+                    bestX = point
+                }
             }
         }
 
@@ -177,17 +213,144 @@ public enum Optimization {
             bestX = refined
         }
 
-        var bestValues: [String: Double] = [:]
-        for (index, bound) in bounds.enumerated() {
-            bestValues[bound.designator] = bestX[index]
+        let nominalBestValues = values(for: bestX)
+        var finalValues = nominalBestValues
+        var finalObjective = bestObjective
+        var nominalYield: YieldReport?
+        var finalYield: YieldReport?
+
+        if let specification = request.yield {
+            let baseline = try YieldEvaluation.estimate(
+                netlist: request.netlist,
+                values: nominalBestValues,
+                specification: specification,
+                baseSettings: request.settings,
+                libraries: request.libraries,
+                baseDirectory: request.baseDirectory
+            )
+            nominalYield = baseline
+            finalYield = baseline
+
+            if specification.refine, baseline.overallYield < 1 {
+                func yieldEstimate(_ x: [Double]) throws -> YieldReport {
+                    try YieldEvaluation.estimate(
+                        netlist: request.netlist,
+                        values: values(for: x),
+                        specification: specification,
+                        baseSettings: request.settings,
+                        libraries: request.libraries,
+                        baseDirectory: request.baseDirectory
+                    )
+                }
+                let centred = try refineForYield(
+                    start: bestX,
+                    bounds: bounds,
+                    divisions: specification.gridDivisions,
+                    maxPasses: specification.maxPasses,
+                    report: yieldEstimate
+                )
+                if centred.x != bestX {
+                    let outcome = try evaluate(centred.x)
+                    finalValues = outcome.values
+                    finalObjective = outcome.objective
+                    finalYield = centred.report
+                }
+            }
         }
+
         return OptimizeResult(
-            bestValues: bestValues,
-            bestObjective: bestObjective,
+            metric: metric,
+            bestValues: finalValues,
+            bestObjective: finalObjective,
             evaluations: evaluations,
             failures: failures,
-            history: history
+            history: history,
+            nominalBestValues: nominalBestValues,
+            nominalBestObjective: bestObjective,
+            nominalYield: nominalYield,
+            yield: finalYield
         )
+    }
+
+    private static func resolvedMetric(_ request: OptimizeRequest) throws -> OptimizeMetric {
+        if let metric = request.metric { return metric }
+        if let objective = request.objective { return .dc(objective) }
+        throw AnalysisError.noObjective
+    }
+
+    /// Seeds a yield search with the nominal optimum, the range midpoint, and
+    /// a bounded coarse grid, then runs a deterministic pattern search with
+    /// halving steps. Every candidate is scored with the same random seed, so
+    /// yield comparisons use common random numbers.
+    private static func refineForYield(
+        start: [Double],
+        bounds: [(designator: String, min: Double, max: Double)],
+        divisions: Int,
+        maxPasses: Int,
+        report: ([Double]) throws -> YieldReport
+    ) throws -> (x: [Double], report: YieldReport) {
+        let dimension = bounds.count
+        guard dimension > 0 else { return (start, try report(start)) }
+
+        var bestX = start
+        var best = try report(start)
+        guard best.overallYield < 1 else { return (bestX, best) }
+
+        var seeds: [[Double]] = [start, bounds.map { ($0.min + $0.max) / 2 }]
+        var seedDivisions = max(2, divisions)
+        while seedDivisions > 2
+            && pointCount(divisions: seedDivisions, dimension: dimension, cap: maxYieldSeedPoints) > maxYieldSeedPoints {
+            seedDivisions -= 1
+        }
+        if pointCount(divisions: seedDivisions, dimension: dimension, cap: maxYieldSeedPoints) <= maxYieldSeedPoints {
+            seeds.append(contentsOf: grid(bounds: bounds, divisions: seedDivisions))
+        }
+
+        var seen = Set<[Double]>([start])
+        for seed in seeds {
+            guard seen.insert(seed).inserted else { continue }
+            try SimulationExecutionDeadline.check()
+            let candidate = try report(seed)
+            if candidate.overallYield > best.overallYield {
+                bestX = seed
+                best = candidate
+            }
+            if best.overallYield >= 1 { return (bestX, best) }
+        }
+
+        var steps = bounds.map { ($0.max - $0.min) / 8 }
+        let minimumSteps = bounds.map { ($0.max - $0.min) * 1e-4 }
+        for _ in 0..<max(0, maxPasses) {
+            for index in bounds.indices {
+                for direction in [1.0, -1.0] {
+                    var candidate = bestX
+                    let moved = candidate[index] + direction * steps[index]
+                    candidate[index] = min(max(moved, bounds[index].min), bounds[index].max)
+                    guard candidate[index] != bestX[index] else { continue }
+                    try SimulationExecutionDeadline.check()
+                    let estimate = try report(candidate)
+                    if estimate.overallYield > best.overallYield {
+                        bestX = candidate
+                        best = estimate
+                    }
+                    if best.overallYield >= 1 { return (bestX, best) }
+                }
+            }
+            steps = zip(steps, minimumSteps).map { max($0 * 0.5, $1) }
+            if zip(steps, minimumSteps).allSatisfy({ $0 <= $1 }) { break }
+        }
+        return (bestX, best)
+    }
+
+    /// The number of points a full-factorial grid would produce, capped so the
+    /// count cannot overflow for high-dimensional searches.
+    private static func pointCount(divisions: Int, dimension: Int, cap: Int) -> Int {
+        var count = 1
+        for _ in 0..<dimension {
+            if count > cap / max(divisions, 1) { return cap + 1 }
+            count *= divisions
+        }
+        return count
     }
 
     /// A full-factorial grid over the variable ranges.

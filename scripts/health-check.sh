@@ -47,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 3.3.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 3.3.0"'
+run "OhmLab 3.4.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 3.4.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
@@ -84,6 +84,14 @@ section "Analyses (on the bundle)"
 run "monte-carlo" "$ohm" monte-carlo "$bundle" --probe 'v(2)' --samples 100 --seed 1 --default-tol 5% -f json
 run "corner"      "$ohm" corner "$bundle" --probe 'v(2)' --default-tol 5% -f json
 run "optimize"    "$ohm" optimize "$bundle" --var R2=500:2k --probe 'v(2)' --goal target=1.5 -f json
+run "optimize (yield centring)" "$ohm" optimize "$bundle" --var R2=500:2k --probe 'v(2)' --goal target=3.33 --limit 'v(2)=3.2:3.5' --default-tol 5% --yield-samples 16 --yield-seed 1 -f json
+
+cat >"$work/rc-ac.cir" <<'EOF'
+V1 in 0 DC 0 AC 1
+R1 in out 1k
+C1 out 0 1u
+EOF
+run "optimize (AC metric)" "$ohm" optimize "$work/rc-ac.cir" --var R1=100:10k --metric 'ac:v(out)@1k' --goal target=0.5 -f json
 
 section "Interchange"
 run "kicad export" "$ohm" kicad export "$bundle" "$work/kicad-export"

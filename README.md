@@ -4,15 +4,15 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 3.3.0 Release Status
+## 3.4.0 Release Status
 
-OhmLab **3.3.0** is the current release. `OhmLabRelease.version`, the
+OhmLab **3.4.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
 the packaging metadata all report the same version. The production boundary
-remains **v8**: 3.3 adds optional device-model parameters and a Newton starting
-hint, not a new result or portable-protocol contract.
+remains **v8**: 3.4 adds analysis-aware optimization metrics and yield-aware
+design centring, not a new result or portable-protocol contract.
 
-The 2.5–3.3 line hardened the path between real designs and the simulator:
+The 2.5–3.4 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -45,6 +45,12 @@ The 2.5–3.3 line hardened the path between real designs and the simulator:
   parts exhibit. It also accepts `.nodeset` as a Newton starting hint. The new
   parameters are optional and default to zero (or the historical model), so
   existing netlists and results are unchanged.
+* **3.4** makes the optimiser analysis-aware: it can drive a DC probe, an AC
+  magnitude/dB/phase at a frequency, or a transient value at a time, and it can
+  centre a design on a set of metric limits by estimating yield under component
+  and temperature tolerances. Yield estimates use common random numbers, and
+  the refinement is deterministic. Existing DC-only optimizer calls keep their
+  results.
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
@@ -225,6 +231,37 @@ rejection, and the dense budget. See
 [`docs/contracts/scale-and-numerical-robustness-v1.md`](docs/contracts/scale-and-numerical-robustness-v1.md)
 and
 [`docs/contracts/native-rust-portability-v3.md`](docs/contracts/native-rust-portability-v3.md).
+
+## 3.4 Design Optimization and Yield
+
+The optimiser now accepts analysis-aware metrics in addition to DC probes:
+
+* `v(out)` reads a DC operating point.
+* `ac:v(out)@1k`, `acdb:v(out)@1k`, and `acph:v(out)@1k` read linear magnitude,
+  magnitude in dB, or phase in degrees at a frequency. AC interpolation is
+  linear in log-frequency, and phase interpolates across the shortest angular
+  arc.
+* `tran:v(out)@1m` reads a transient value at a time, interpolating linearly
+  between the solver's time points.
+
+AC and transient metrics reject `vi(...)` probes because those result contracts
+carry element current only, and a metric outside the configured sweep is
+rejected before solving. A DC-only optimiser call that passes a `CircuitProbe`
+keeps its previous results.
+
+Metric limits turn those scalars into design specifications, and a yield
+specification estimates what fraction of toleranced trials satisfies every
+limit. `Optimization.run` first finds the nominal optimum and reports its
+yield, then optionally performs a deterministic coordinate pattern search
+seeded from the nominal optimum, the range midpoint, and a bounded coarse grid.
+Every candidate uses the same seed, so common random numbers make yield
+comparisons meaningful, and the returned design never reports a lower yield
+than the nominal one.
+
+`ohm optimize` exposes the same surface with `--metric`, `--limit
+<metric>=min:max`, `--tol`, `--default-tol`, `--temp`, `--temp-tol`,
+`--yield-samples`, `--yield-seed`, and `--no-yield-refine`. See
+[`docs/contracts/design-optimization-yield-v1.md`](docs/contracts/design-optimization-yield-v1.md).
 
 ## 3.3 Device Model Depth and Nodeset
 
@@ -552,7 +589,7 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 *   `ohm sync <localDir> <remoteDir>` — two-way folder sync (`ProjectSync`), persisting the state file in the local folder.
 *   `ohm monte-carlo <input> --probe v(out) [--tol R1=5%,normal] [--default-tol 5%] [--samples N] [--seed N] [--temp T] [--temp-tol D] [--limit v(out)=lo:hi] [-f text|json]`.
 *   `ohm corner <input> --probe v(out) [--tol …] [--temp T --temp-tol D] [-f text|json]`.
-*   `ohm optimize <input> --var R1=1k:10k --probe v(out) [--goal max|min|target=V] [--grid N] [-f text|json]`.
+*   `ohm optimize <input> --var R1=1k:10k --metric v(out) [--goal max|min|target=V] [--grid N] [--limit METRIC=lo:hi] [--tol R1=5%] [--yield-samples N] [--yield-seed N] [--no-yield-refine] [-f text|json]`.
 *   `ohm platform manifest|run [--pretty]` — discover or execute portable simulation protocol v1.
 *   `ohm qualify-platform [--json]` — run the portable-platform release contract.
 
@@ -590,11 +627,12 @@ Two sample plugins ship as reference: `SamplePartsPlugin` (a Net Tie component, 
 
 ## Optimisation & Worst-Case
 
-Three trial-based analyses build on one primitive: rewriting component values by reference designator (`NetlistValueRewriter`) and reading scalar probes (`CircuitProbe`, written `v(out)`, `i(R1)`, or `vi(R1)`). Each trial solves a DC operating point, and only literal-valued R/L/C and DC-valued V/I devices are varied (parameterised values stay the job of `.step`/`.param`).
+Three trial-based analyses build on one primitive: rewriting component values by reference designator (`NetlistValueRewriter`) and reading scalar probes. Monte Carlo and corner analysis read DC probes (`CircuitProbe`, written `v(out)`, `i(R1)`, or `vi(R1)`); the optimiser reads either a DC probe or an analysis-aware `OptimizeMetric` (AC magnitude/dB/phase or a transient value). Monte Carlo and corner trials solve a DC operating point; the optimiser enables only the analyses its metric needs. Only literal-valued R/L/C and DC-valued V/I devices are varied (parameterised values stay the job of `.step`/`.param`).
 
 *   **Monte Carlo** (`MonteCarloAnalysis`) — draws every toleranced component (relative ± and/or absolute ±, `uniform` or `normal`) and optionally ambient temperature from a seeded generator (`SeededGenerator`, so runs are reproducible), then reports per-probe mean, standard deviation, min, max, and yield against optional limits.
 *   **Worst-case corners** (`CornerAnalysis`) — pushes every toleranced component (and temperature) to its minimum and maximum, evaluates the full factorial (guarded by a corner-count limit), and reports each probe's extreme together with the corner that produced it.
-*   **Optimiser** (`Optimization`) — a coarse grid search refined by Nelder–Mead over named designator ranges, minimising, maximising, or driving a probe to a target value.
+*   **Optimiser** (`Optimization`) — a coarse grid search refined by Nelder–Mead over named designator ranges, minimising, maximising, or driving a metric to a target value.
+*   **Yield-aware centring** (`YieldEvaluation`) — estimates each candidate's yield by drawing component and temperature tolerances with a shared seed, then refines the nominal optimum with a deterministic coordinate pattern search over the same variable ranges.
 
 ## Document format
 

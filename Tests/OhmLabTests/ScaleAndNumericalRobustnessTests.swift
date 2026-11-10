@@ -7,7 +7,7 @@ struct ScaleAndNumericalRobustnessTests {
     @Test func qualificationCorpusPasses() {
         let report = ScaleAndNumericalRobustness.evaluate()
         #expect(report.ready)
-        #expect(report.productVersion == "3.3.0")
+        #expect(report.productVersion == "3.4.0")
         #expect(report.contractVersion == 1)
         #expect(report.maximumDenseUnknowns == 512)
         #expect(report.cases.count >= ScaleAndNumericalRobustness.minimumCaseCount)

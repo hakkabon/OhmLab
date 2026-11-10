@@ -25,3 +25,10 @@ junction/overlap/transit-time capacitances) and `.nodeset` Newton hints without
 changing any contract version. Defaults preserve the historical model, and the
 additive Circuit IR fields are documented in
 [`device-model-depth-v1.md`](device-model-depth-v1.md).
+
+OhmLab 3.4 adds analysis-aware optimisation metrics (AC magnitude, magnitude in
+dB, phase, and transient values) and yield-aware design centring without
+changing any contract version. The metrics and yield semantics are documented
+in
+[`design-optimization-yield-v1.md`](design-optimization-yield-v1.md); they are
+an analysis/front-end behaviour on top of the unchanged result contract.
