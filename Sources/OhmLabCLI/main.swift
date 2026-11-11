@@ -61,10 +61,14 @@ PROJECTS & ANALYSES:
   ohm project unpack <zip> <dir>            Unpack an archive.
   ohm kicad import <file> -o <bundle>       Import a KiCad project.
   ohm kicad export <bundle> <dir>           Export a bundle + netlists.
+  ohm kicad companion [--json]              Describe the KiCad companion contract.
+  ohm kicad status <kicad> <bundle>         Compare KiCad and OhmLab changes.
+  ohm kicad sync <kicad> <bundle>           Sync the two (auto/import/export).
   ohm sync <localDir> <remoteDir>           Two-way folder sync.
   ohm monte-carlo <input> --probe v(out)    Tolerance Monte Carlo.
   ohm corner <input> --probe v(out)         Worst-case corner sweep.
   ohm optimize <input> --var R1=1k:10k --probe v(out)
+  ohm thermal <input> --rja R1=50           Steady-state electro-thermal analysis.
   (run `ohm <command> --help` for that command's options)
 
 EXAMPLES:

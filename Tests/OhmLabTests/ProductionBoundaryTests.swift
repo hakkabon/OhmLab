@@ -43,9 +43,9 @@ struct ProductionBoundaryTests {
         }
     }
 
-    @Test func releaseAndContractsRemainCompatibleAtTwoDotNine() {
-        #expect(OhmLabRelease.version == "3.4.0")
-        #expect(OhmLabRelease.productionBoundaryVersion == 8)
+    @Test func releaseAndContractsRemainCompatibleAtFour() {
+        #expect(OhmLabRelease.version == "4.0.0")
+        #expect(OhmLabRelease.productionBoundaryVersion == 9)
         #expect(CircuitIR.currentSchemaVersion == 1)
         #expect(SimulationResultContract.currentVersion == 1)
         #expect(SimulationBackendCapabilities.currentContractVersion == 1)
@@ -57,17 +57,22 @@ struct ProductionBoundaryTests {
         #expect(NativeRustPortabilityContract.currentVersion == 3)
         #expect(NativeRustPortabilityContract.rustNumericCoreVersion == "0.34.0")
         #expect(ScaleAndNumericalRobustnessContract.currentVersion == 1)
+        #expect(ThermalResult.currentContractVersion == 1)
+        #expect(KiCadCompanionManifest.currentContractVersion == 1)
+        #expect(KiCadCompanionState.currentContractVersion == 1)
     }
 
     @Test func readinessReportQualifiesOnlyTheNativeReference() {
         SimulationEngine.resetToDefaultBackend()
         let report = ProductionBoundary.report()
         #expect(report.ready)
-        #expect(report.productVersion == "3.4.0")
+        #expect(report.productVersion == "4.0.0")
         #expect(report.contracts.simulationHost == 1)
         #expect(report.contracts.nativeRustPortability == 3)
         #expect(report.contracts.numericCoreFeatureCompletion == 1)
         #expect(report.contracts.scaleAndNumericalRobustness == 1)
+        #expect(report.contracts.thermalAnalysis == 1)
+        #expect(report.contracts.kicadCompanion == 1)
         #expect(report.defaultBackend == "native-mna")
         #expect(report.backends.filter(\.isProductionReady).map(\.identifier) == ["native-mna"])
         #expect(report.backends.filter(\.isLinearProductionReady).map(\.identifier) == ["numeric-core"])

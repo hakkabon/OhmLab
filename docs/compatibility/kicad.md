@@ -1,21 +1,22 @@
 # KiCad interoperability scope
 
-OhmLab 3.4.0 provides **KiCad Schematic Interop** for reading and writing,
-plus **KiCad Netlist Interop** for simulation. Writing is supported for the
-OhmLab-modelled subset of KiCad and preserves the identities and values that
-matter for editing and simulation. It is not a lossless reproduction of an
-arbitrary KiCad project: wire geometry, page settings, and unsupported symbols
-are not carried through. The promise is deliberately tiered so the documented
-claim matches what CI proves.
+OhmLab 4.0.0 provides **KiCad Schematic Interop** for reading and writing,
+plus **KiCad Netlist Interop** for simulation and **KiCad Companion** sync.
+Writing is supported for the OhmLab-modelled subset of KiCad and preserves the
+identities and values that matter for editing and simulation. It is not a
+lossless reproduction of an arbitrary KiCad project: wire geometry, page
+settings, and unsupported symbols are not carried through. The promise is
+deliberately tiered so the documented claim matches what CI proves.
 
 ## Compatibility tiers
 
-| Tier | Status in 3.4 | What it means |
+| Tier | Status in 4.0 | What it means |
 |---|---|---|
 | **KiCad Netlist Interop** | Supported | Import a SPICE netlist exported by KiCad, simulate it, and export a self-contained SPICE netlist KiCad/ngspice can read. |
 | **KiCad Project Import** | Supported | Import a `.kicad_pro`, its top `.kicad_sch`, or any child sheet by resolving the root and reading the hierarchy directly. |
 | **KiCad Schematic Read** | Supported | Parse `.kicad_sch` natively, preserving UUIDs, references, values, hierarchy, sheet pins, and model-library references, and derive connectivity from KiCad wires, junctions, labels, and pins. |
 | **KiCad Schematic Write** | Supported | Emit a complete `.kicad_sch` project (per-sheet schematics, symbol library, model library, `sym-lib-table`, and `.kicad_pro`) for the OhmLab-modelled subset, preserving UUIDs, references, values, hierarchy, ports, rotations, and model parameters. |
+| **KiCad Companion** | Supported | Detect which side of a KiCad hierarchy and an `.ohmlabproj` bundle changed, import or export accordingly, and refuse conflicting edits unless a preference is given. |
 
 ## Supported today
 
@@ -154,7 +155,37 @@ These tests do **not** require `kicad-cli`, so the compatibility claim is
 exercised in CI on every run. The `kicad-cli` check is skipped when the tool is
 not installed.
 
-## Not promised by 3.1
+## Companion sync
+
+OhmLab 4.0 keeps a KiCad project hierarchy and an OhmLab bundle aligned:
+
+```sh
+ohm kicad status <kicadPath> <bundle>
+ohm kicad sync <kicadPath> <bundle> [--direction import|export|auto] \
+    [--prefer kicad|ohmlab] [--force]
+```
+
+The companion stores the digests observed at the last sync in
+`.ohmlab-companion.json` inside the bundle. `auto` imports when only KiCad
+changed, exports when only the bundle changed, and reports `up-to-date` when
+neither changed. If both changed, the sync fails closed until `--prefer kicad`
+or `--prefer ohmlab` selects a winner. With no companion state, an existing
+bundle requires an explicit direction; a new bundle is imported from KiCad.
+
+Both digests are deterministic. The KiCad digest covers the project files with
+the `kicad_pro`, `kicad_sch`, `kicad_sym`, `kicad_mod`, and `lib` extensions,
+sorted by relative path. The bundle digest covers sheet names, canonical
+netlists, and analysis settings, and ignores volatile import metadata. Import
+preserves the bundle's saved analysis settings and non-volatile metadata;
+export requires a schematic-backed document and writes under the original KiCad
+project stem.
+
+The companion does not watch the filesystem, merge edits, or make an arbitrary
+KiCad project round-trip losslessly. See
+[`docs/contracts/kicad-companion-v1.md`](../contracts/kicad-companion-v1.md) for
+the full contract and non-claims.
+
+## Not promised by the KiCad tiers
 
 - A lossless round-trip of an arbitrary KiCad project. Only the
   OhmLab-modelled subset is written back.

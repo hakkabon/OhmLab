@@ -1,4 +1,4 @@
-# Releasing OhmLab 3.x
+# Releasing OhmLab 4.x
 
 Every release candidate must pass `scripts/release-check.sh`. The gate tests the
 standard Swift product, exercises application workflows, and validates frozen
@@ -39,14 +39,39 @@ qualification must publish and exercise the same limit. Mixed-scale solves,
 physical residual certification, singular failure, and pre-solve budget
 rejection are release-blocking evidence.
 
-For the 3.4 release, the product version is **3.4.0** everywhere:
+For the 4.0 release, the product version is **4.0.0** everywhere:
 `OhmLabRelease.version`, `ohm --version`, the Rust host's `PRODUCT_VERSION`,
 `scripts/release-check.sh`, `scripts/health-check.sh`, and the packaged
-`Info.plist` must agree. The production boundary remains **v8**; 3.4 adds
-analysis-aware optimization metrics and yield-aware design centring, not a new
-result, Circuit IR, or portable-protocol contract version.
+`Info.plist` must agree. The production boundary advances to **v9**; 4.0 adds
+the KiCad companion contract v1, thermal-analysis contract v1, and their
+companion/host JSON surface.
 
-The 3.4 release gate additionally requires:
+The 4.0 release gate additionally requires:
+
+- `ohm kicad companion --json` to publish contract v1 with the project and
+  schematic extensions, digest extension set, directions, preferences, state
+  file name, and bidirectional/conflict capabilities;
+- KiCad and bundle digests to be deterministic and content-addressed, to cover
+  the declared project-file extensions and canonical sheet/netlist/analysis
+  content, and to ignore `importedAt`, `resolvedNetlistText`, and
+  `importBaseDirectory`;
+- `ohm kicad status` and `ohm kicad sync` to implement `auto`, explicit
+  `import`/`export`, conflict refusal, `--prefer kicad|ohmlab`, `--force`, and
+  the "no state + existing bundle requires a direction" rule;
+- import sync to preserve existing bundle analysis settings and non-volatile
+  metadata, and export sync to require a schematic-backed document and use the
+  original KiCad project stem;
+- `ohm thermal` and `ThermalResult` to derive power from the converged DC
+  operating point as `abs(v * i)` unless `--power` overrides it, to support
+  independent junction-to-ambient paths, shared heatsinks, and a default
+  resistance, to report junction limits, and to fail closed on missing thermal
+  paths or unknown components;
+- thermal results to be deterministic and round-trip through JSON;
+- `docs/contracts/kicad-companion-v1.md`, `docs/contracts/thermal-analysis-v1.md`,
+  and `docs/contracts/production-boundary-v9.md` to describe the new contracts,
+  evidence, and explicit non-claims.
+
+The 3.4 release gate required:
 
 - `OptimizeMetric` to parse and round-trip `v(out)`, `ac:v(out)@1k`,
   `acdb:v(out)@1k`, `acph:v(out)@1k`, and `tran:v(out)@1m`;
@@ -121,19 +146,19 @@ never be committed.
 The archive is architecture-specific. Build and test every intended
 architecture separately until the project adopts a universal-binary build.
 
-Compatibility rules for the 3.x line:
+Compatibility rules for the 4.x line:
 
-- The current product version is **3.4.0**. Keep the version string in
+- The current product version is **4.0.0**. Keep the version string in
   `OhmLabRelease.version` and the release/health scripts in lockstep; the tag,
   CLI output, and packaged metadata must match.
-- 3.4 does not introduce a new production boundary. Production boundary v8
-  remains current until a later contract explicitly changes the numerical or
-  portable execution guarantees. Analysis-aware optimization metrics and yield
-  centring are additive front-end behaviour inside that boundary.
-- 3.3 does not introduce a new production boundary. Production boundary v8
-  remains current until a later contract explicitly changes the numerical or
-  portable execution guarantees. Optional device parameters, device
-  capacitances, and `.nodeset` are additive changes inside that boundary.
+- 4.0 advances the production boundary to **v9** because the KiCad companion
+  and thermal-analysis results are new public compatibility boundaries. Their
+  contract versions are published in `ohm doctor --json`.
+- 3.4 did not introduce a new production boundary. Production boundary v8
+  remains documented for the 3.4 line; analysis-aware optimization metrics and
+  yield centring were additive front-end behaviour inside that boundary.
+- 3.3 did not introduce a new production boundary. Optional device parameters,
+  device capacitances, and `.nodeset` were additive changes inside boundary v8.
 - Do not change production-boundary, Circuit IR, result, capability, or
   nonlinear-convergence, or portable-simulation versions in a patch release.
 - Production boundary v4 is required for 2.0 because the portable process

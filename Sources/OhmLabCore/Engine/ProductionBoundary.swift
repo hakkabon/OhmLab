@@ -3,8 +3,8 @@ import OhmLabSimulationProtocol
 
 /// Product version shipped on the stable production boundary.
 public enum OhmLabRelease {
-    public static let version = "3.4.0"
-    public static let productionBoundaryVersion = 8
+    public static let version = "4.0.0"
+    public static let productionBoundaryVersion = 9
 }
 
 /// Whether a backend is covered by OhmLab's production compatibility promise.
@@ -195,6 +195,8 @@ public struct ProductionContractVersions: Codable, Equatable, Sendable {
     public let nativeRustPortability: Int
     public let numericCoreFeatureCompletion: Int
     public let scaleAndNumericalRobustness: Int
+    public let thermalAnalysis: Int
+    public let kicadCompanion: Int
 }
 
 /// Machine-readable answer to “is this build safe to ship on the stable boundary?”.
@@ -268,7 +270,9 @@ public enum ProductionBoundary {
                 simulationHost: SimulationHostContract.currentVersion,
                 nativeRustPortability: NativeRustPortabilityContract.currentVersion,
                 numericCoreFeatureCompletion: NumericCoreFeatureCompletionContract.currentVersion,
-                scaleAndNumericalRobustness: ScaleAndNumericalRobustnessContract.currentVersion
+                scaleAndNumericalRobustness: ScaleAndNumericalRobustnessContract.currentVersion,
+                thermalAnalysis: ThermalResult.currentContractVersion,
+                kicadCompanion: KiCadCompanionManifest.currentContractVersion
             ),
             defaultBackend: SimulationEngine.defaultBackendIdentifier,
             backends: descriptors,

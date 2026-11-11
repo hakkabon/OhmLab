@@ -4,15 +4,16 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 3.4.0 Release Status
+## 4.0.0 Release Status
 
-OhmLab **3.4.0** is the current release. `OhmLabRelease.version`, the
+OhmLab **4.0.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
-the packaging metadata all report the same version. The production boundary
-remains **v8**: 3.4 adds analysis-aware optimization metrics and yield-aware
-design centring, not a new result or portable-protocol contract.
+the packaging metadata all report the same version. The production boundary is
+**v9**: 4.0 adds a KiCad-native companion contract and steady-state
+electro-thermal analysis, plus the companion/host JSON surface, without changing
+Circuit IR or the result contract.
 
-The 2.5–3.4 line hardened the path between real designs and the simulator:
+The 2.5–4.0 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -51,6 +52,20 @@ The 2.5–3.4 line hardened the path between real designs and the simulator:
   and temperature tolerances. Yield estimates use common random numbers, and
   the refinement is deterministic. Existing DC-only optimizer calls keep their
   results.
+* **4.0** adds a KiCad-native companion: `ohm kicad sync` detects which side of
+  a `.kicad_pro` hierarchy and an `.ohmlabproj` bundle changed since the last
+  sync, imports or exports accordingly, and refuses conflicting edits unless
+  `--prefer kicad|ohmlab` resolves them. `ohm kicad companion --json` publishes
+  the companion contract. It also adds `ohm thermal`, a steady-state
+  electro-thermal analysis that derives each component's power from the DC
+  operating point (or an explicit `--power` override), solves a linear thermal
+  resistance network with optional shared heatsinks, and reports junction
+  temperatures and limits. Existing analyses and defaults are unchanged.
+
+The 4.0 contracts are documented in
+[`docs/contracts/kicad-companion-v1.md`](docs/contracts/kicad-companion-v1.md),
+[`docs/contracts/thermal-analysis-v1.md`](docs/contracts/thermal-analysis-v1.md),
+and [`docs/contracts/production-boundary-v9.md`](docs/contracts/production-boundary-v9.md).
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
@@ -586,10 +601,14 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 
 *   `ohm project info|pack|unpack` — inspect a `.ohmlabproj` manifest, or pack/unpack a `.ohmlabzip`.
 *   `ohm kicad import <file> -o <bundle>` / `ohm kicad export <bundle> <dir>` — project-level KiCad interchange.
+*   `ohm kicad companion [--json]` — publish the KiCad companion contract manifest.
+*   `ohm kicad status <kicadPath> <bundle> [--json]` — compare both sides against the last sync.
+*   `ohm kicad sync <kicadPath> <bundle> [--direction import|export|auto] [--prefer kicad|ohmlab] [--force] [--json]` — bidirectional companion sync. `auto` imports when only KiCad changed, exports when only OhmLab changed, and requires a preference on conflicting edits.
 *   `ohm sync <localDir> <remoteDir>` — two-way folder sync (`ProjectSync`), persisting the state file in the local folder.
 *   `ohm monte-carlo <input> --probe v(out) [--tol R1=5%,normal] [--default-tol 5%] [--samples N] [--seed N] [--temp T] [--temp-tol D] [--limit v(out)=lo:hi] [-f text|json]`.
 *   `ohm corner <input> --probe v(out) [--tol …] [--temp T --temp-tol D] [-f text|json]`.
 *   `ohm optimize <input> --var R1=1k:10k --metric v(out) [--goal max|min|target=V] [--grid N] [--limit METRIC=lo:hi] [--tol R1=5%] [--yield-samples N] [--yield-seed N] [--no-yield-refine] [-f text|json]`.
+*   `ohm thermal <input> [--ambient T] [--default-rja K/W] [--rja NAME=K/W] [--power NAME=W] [--max-temp NAME=C] [--heatsink NAME=K/W] [--mount NAME=HS:K/W] [-f text|json]` — steady-state electro-thermal analysis. Power defaults to `abs(v * i)` from the DC operating point.
 *   `ohm platform manifest|run [--pretty]` — discover or execute portable simulation protocol v1.
 *   `ohm qualify-platform [--json]` — run the portable-platform release contract.
 

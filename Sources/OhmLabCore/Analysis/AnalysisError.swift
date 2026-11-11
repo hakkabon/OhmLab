@@ -16,6 +16,12 @@ public enum AnalysisError: LocalizedError, Equatable {
     case invalidYieldSamples
     case invalidMetric(String)
     case metricOutOfRange(String)
+    case noDCOperatingPoint
+    case noThermalComponents
+    case unknownThermalComponent(String)
+    case invalidThermalSpecification(String)
+    case missingThermalResistance(String)
+    case thermalSolveFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -43,6 +49,18 @@ public enum AnalysisError: LocalizedError, Equatable {
             return "The design metric \(name) is not supported."
         case .metricOutOfRange(let name):
             return "\(name)."
+        case .noDCOperatingPoint:
+            return "Thermal analysis needs a converged DC operating point."
+        case .noThermalComponents:
+            return "Thermal analysis needs at least one component thermal model."
+        case .unknownThermalComponent(let name):
+            return "No DC operating-point component is named \(name)."
+        case .invalidThermalSpecification(let reason):
+            return "The thermal specification is invalid: \(reason)."
+        case .missingThermalResistance(let name):
+            return "\(name) has no thermal resistance to ambient; set a junctionToAmbient or defaultJunctionToAmbient."
+        case .thermalSolveFailed(let reason):
+            return "The thermal network could not be solved: \(reason)"
         }
     }
 }

@@ -47,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 3.4.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 3.4.0"'
+run "OhmLab 4.0.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 4.0.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
@@ -93,8 +93,20 @@ C1 out 0 1u
 EOF
 run "optimize (AC metric)" "$ohm" optimize "$work/rc-ac.cir" --var R1=100:10k --metric 'ac:v(out)@1k' --goal target=0.5 -f json
 
+section "Thermal"
+cat >"$work/thermal.cir" <<'EOF'
+V1 in 0 DC 10
+R1 in out 1k
+R2 out 0 1k
+EOF
+run "thermal analysis" "$ohm" thermal "$work/thermal.cir" --rja R1=100 --rja R2=50 --ambient 25 -f json
+
 section "Interchange"
 run "kicad export" "$ohm" kicad export "$bundle" "$work/kicad-export"
+run "kicad companion manifest" "$ohm" kicad companion --json
+cp -R Tests/OhmLabTests/Fixtures/KiCad/RC_Filter "$work/companion-kicad"
+run "kicad companion sync (import)" "$ohm" kicad sync "$work/companion-kicad" "$work/companion.ohmlabproj"
+run "kicad companion status (in sync)" "$ohm" kicad status "$work/companion-kicad" "$work/companion.ohmlabproj"
 
 section "Sync"
 mkdir -p "$work/local"

@@ -27,7 +27,7 @@ enum CommandError: LocalizedError {
 
 enum Subcommand {
     static let names: Set<String> = [
-        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "qualify-scale", "qualify-platform", "qualify-host", "platform", "project", "kicad", "sync", "monte-carlo", "corner", "optimize",
+        "engines", "doctor", "verify", "qualify-linear", "qualify-nonlinear", "qualify-scale", "qualify-platform", "qualify-host", "platform", "project", "kicad", "sync", "monte-carlo", "corner", "optimize", "thermal",
     ]
 
     static func isCommand(_ token: String) -> Bool { names.contains(token) }
@@ -61,6 +61,7 @@ enum Subcommand {
         case "monte-carlo": return try runMonteCarlo(Array(arguments.dropFirst()))
         case "corner": return try runCorner(Array(arguments.dropFirst()))
         case "optimize": return try runOptimize(Array(arguments.dropFirst()))
+        case "thermal": return try runThermal(Array(arguments.dropFirst()))
         default:
             throw CommandError.usage("unknown command \(arguments[0])")
         }
@@ -401,7 +402,7 @@ enum Subcommand {
 
     private static func runKicad(_ arguments: [String]) throws -> Int32 {
         guard let action = arguments.first else {
-            throw CommandError.usage("usage: ohm kicad <import|export> …")
+            throw CommandError.usage("usage: ohm kicad <import|export|companion|status|sync> …")
         }
         let rest = Array(arguments.dropFirst())
         switch action {
@@ -422,10 +423,168 @@ enum Subcommand {
             let bundle = try ProjectBundleStore.read(from: URL(fileURLWithPath: rest[0]))
             let written = try KiCadProjectInterchange.exportProject(bundle, to: URL(fileURLWithPath: rest[1]))
             for url in written { writeStdout("\(url.path)\n") }
+        case "companion":
+            guard rest.isEmpty || rest == ["--json"] else {
+                throw CommandError.usage("usage: ohm kicad companion [--json]")
+            }
+            let manifest = KiCadCompanion.manifest()
+            if rest == ["--json"] {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(manifest)
+                guard let text = String(data: data, encoding: .utf8) else {
+                    throw CommandError.runtime("could not encode the KiCad companion manifest")
+                }
+                writeStdout(text + "\n")
+            } else {
+                writeStdout("OhmLab \(manifest.productVersion) KiCad companion v\(manifest.contractVersion)\n")
+                writeStdout("  production boundary: v\(manifest.productionBoundary)\n")
+                writeStdout("  project: \(manifest.projectExtensions.joined(separator: ", "))\n")
+                writeStdout("  schematic: \(manifest.schematicExtensions.joined(separator: ", "))\n")
+                writeStdout("  directions: \(manifest.directions.joined(separator: ", "))\n")
+                writeStdout("  preferences: \(manifest.preferences.joined(separator: ", "))\n")
+                writeStdout("  state: \(manifest.stateFileName)\n")
+            }
+        case "status":
+            let (positionals, json) = try kicadPositionals(rest, flags: ["--json"])
+            guard positionals.count == 2 else {
+                throw CommandError.usage("usage: ohm kicad status <kicadPath> <bundle> [--json]")
+            }
+            let status = try KiCadCompanion.status(
+                kicad: URL(fileURLWithPath: positionals[0]),
+                bundle: URL(fileURLWithPath: positionals[1])
+            )
+            if json {
+                writeStdout(try encodeJSON(status) + "\n")
+            } else {
+                writeStdout("KiCad  \(shortDigest(status.kicadDigest))  \(status.kicadPath)\n")
+                writeStdout("OhmLab \(shortDigest(status.bundleDigest))  \(status.bundlePath)\n")
+                if let state = status.state {
+                    writeStdout("State  \(state.direction) at \(state.syncedAt)\n")
+                } else {
+                    writeStdout("State  none\n")
+                }
+                writeStdout("Changes  KiCad \(status.kicadChanged ? "changed" : "unchanged"), OhmLab \(status.bundleChanged ? "changed" : "unchanged")\n")
+                writeStdout("Recommendation  \(status.recommendation.rawValue)\n")
+            }
+        case "sync":
+            let (positionals, options) = try kicadSyncOptions(rest)
+            guard positionals.count == 2 else {
+                throw CommandError.usage("usage: ohm kicad sync <kicadPath> <bundle> [--direction import|export|auto] [--prefer kicad|ohmlab] [--force] [--json]")
+            }
+            let direction: KiCadSyncDirection
+            if let raw = options.direction {
+                guard let parsed = KiCadSyncDirection(rawValue: raw) else {
+                    throw CommandError.usage("--direction expects import, export, or auto (got “\(raw)”)")
+                }
+                direction = parsed
+            } else {
+                direction = .auto
+            }
+            let prefer: KiCadSyncPreference?
+            if let raw = options.prefer {
+                guard let parsed = KiCadSyncPreference(rawValue: raw) else {
+                    throw CommandError.usage("--prefer expects kicad or ohmlab (got “\(raw)”)")
+                }
+                prefer = parsed
+            } else {
+                prefer = nil
+            }
+            let result = try KiCadCompanion.sync(
+                kicad: URL(fileURLWithPath: positionals[0]),
+                bundle: URL(fileURLWithPath: positionals[1]),
+                direction: direction,
+                prefer: prefer,
+                force: options.force
+            )
+            if options.json {
+                writeStdout(try encodeJSON(result) + "\n")
+            } else if result.direction == "none" {
+                writeStdout("Already in sync; companion state refreshed.\n")
+            } else {
+                writeStdout("Synced \(result.direction)  \(positionals[0]) ↔ \(positionals[1])\n")
+                writeStdout("  KiCad  \(shortDigest(result.kicadDigest))\n")
+                writeStdout("  OhmLab \(shortDigest(result.bundleDigest))\n")
+                writeStdout("  wrote \(result.writtenFiles.count) file(s)\n")
+            }
+            for warning in result.warnings { writeStderr("ohm: warning: \(warning)\n") }
         default:
             throw CommandError.usage("unknown kicad action \(action)")
         }
         return 0
+    }
+
+    private struct KiCadSyncOptions {
+        var direction: String?
+        var prefer: String?
+        var force = false
+        var json = false
+    }
+
+    private static func kicadPositionals(
+        _ arguments: [String],
+        flags: Set<String>
+    ) throws -> ([String], Bool) {
+        var positionals: [String] = []
+        var json = false
+        for argument in arguments {
+            if flags.contains(argument) {
+                json = argument == "--json" || json
+            } else if argument.hasPrefix("-") {
+                throw CommandError.usage("unknown option \(argument)")
+            } else {
+                positionals.append(argument)
+            }
+        }
+        return (positionals, json)
+    }
+
+    private static func kicadSyncOptions(
+        _ arguments: [String]
+    ) throws -> ([String], KiCadSyncOptions) {
+        var positionals: [String] = []
+        var options = KiCadSyncOptions()
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            switch argument {
+            case "--json":
+                options.json = true
+            case "--force":
+                options.force = true
+            case "--direction", "--prefer":
+                index += 1
+                guard index < arguments.count else {
+                    throw CommandError.usage("missing value for \(argument)")
+                }
+                if argument == "--direction" {
+                    options.direction = arguments[index]
+                } else {
+                    options.prefer = arguments[index]
+                }
+            default:
+                if argument.hasPrefix("-") {
+                    throw CommandError.usage("unknown option \(argument)")
+                }
+                positionals.append(argument)
+            }
+            index += 1
+        }
+        return (positionals, options)
+    }
+
+    private static func encodeJSON<T: Encodable>(_ value: T) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(value)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CommandError.runtime("could not encode the JSON result")
+        }
+        return text
+    }
+
+    private static func shortDigest(_ digest: String) -> String {
+        String(digest.prefix(12))
     }
 
     // MARK: - sync
@@ -782,6 +941,138 @@ enum Subcommand {
         value.isFinite ? String(format: "%.1f%%", value * 100) : "—"
     }
 
+    // MARK: - thermal
+
+    private static func runThermal(_ arguments: [String]) throws -> Int32 {
+        var path: String?
+        var netlistText: String?
+        var stdin = false
+        var ambient = ThermalSpecification.defaultAmbientCelsius
+        var defaultRja: Double?
+        var format = "text"
+        var componentOrder: [String] = []
+        var componentMap: [String: ThermalComponent] = [:]
+        var heatsinkOrder: [String] = []
+        var heatsinkMap: [String: ThermalHeatsink] = [:]
+
+        func updateComponent(_ designator: String, _ body: (inout ThermalComponent) -> Void) {
+            let key = designator.uppercased()
+            if componentMap[key] == nil { componentOrder.append(key) }
+            var component = componentMap[key] ?? ThermalComponent(designator: designator)
+            body(&component)
+            componentMap[key] = component
+        }
+
+        var index = 0
+        func next(_ flag: String) throws -> String {
+            index += 1
+            guard index < arguments.count else { throw CommandError.usage("missing value for \(flag)") }
+            return arguments[index]
+        }
+        while index < arguments.count {
+            let argument = arguments[index]
+            switch argument {
+            case "-h", "--help":
+                printThermalUsage()
+                return 0
+            case "--netlist":
+                netlistText = try next(argument)
+            case "-", "--stdin":
+                stdin = true
+            case "--ambient":
+                ambient = try number(try next(argument), flag: "--ambient")
+            case "--default-rja":
+                defaultRja = try number(try next(argument), flag: "--default-rja")
+            case "--rja":
+                let (name, value) = try namedNumber(try next(argument), flag: "--rja")
+                updateComponent(name) { $0.junctionToAmbient = value }
+            case "--power":
+                let (name, value) = try namedNumber(try next(argument), flag: "--power")
+                updateComponent(name) { $0.powerWatts = value }
+            case "--max-temp":
+                let (name, value) = try namedNumber(try next(argument), flag: "--max-temp")
+                updateComponent(name) { $0.maxTemperatureCelsius = value }
+            case "--heatsink":
+                let (name, value) = try namedNumber(try next(argument), flag: "--heatsink")
+                let key = name.uppercased()
+                if heatsinkMap[key] == nil { heatsinkOrder.append(key) }
+                heatsinkMap[key] = ThermalHeatsink(name: name, thermalResistance: value)
+            case "--mount":
+                let (designator, heatsink, resistance) = try mountSpec(try next(argument))
+                updateComponent(designator) {
+                    $0.heatsink = heatsink
+                    $0.junctionToCase = resistance
+                }
+            case "-f", "--format":
+                format = try next(argument).lowercased()
+            default:
+                if argument.hasPrefix("-") && argument != "-" {
+                    throw CommandError.usage("unknown option \(argument)")
+                }
+                guard path == nil else { throw CommandError.usage("more than one input was provided") }
+                path = argument
+            }
+            index += 1
+        }
+
+        guard format == "text" || format == "json" else {
+            throw CommandError.usage("--format expects text or json")
+        }
+        let components = componentOrder.compactMap { componentMap[$0] }
+        guard !components.isEmpty else {
+            throw CommandError.usage(
+                "thermal analysis needs at least one --rja, --power, --max-temp, or --mount component"
+            )
+        }
+        let specification = ThermalSpecification(
+            ambientCelsius: ambient,
+            defaultJunctionToAmbient: defaultRja,
+            components: components,
+            heatsinks: heatsinkOrder.compactMap { heatsinkMap[$0] }
+        )
+        let input = try loadInput(path: path, netlistText: netlistText, stdin: stdin)
+        let result = try ThermalAnalysis.run(ThermalRequest(
+            netlist: input.netlist,
+            settings: input.settings,
+            specification: specification,
+            baseDirectory: input.baseDirectory
+        ))
+        if format == "json" {
+            writeStdout(try encodeJSON(result) + "\n")
+        } else {
+            printThermalReport(result)
+        }
+        for warning in result.warnings { writeStderr("ohm: warning: \(warning)\n") }
+        return 0
+    }
+
+    private static func printThermalReport(_ result: ThermalResult) {
+        writeStdout("Thermal analysis (ambient \(number(result.ambientCelsius)) °C)\n")
+        writeStdout("  designator\tpower(W)\ttemp(C)\trise(C)\trth(K/W)\tlimit\n")
+        for component in result.components {
+            let limit: String
+            if let maximum = component.maxTemperatureCelsius {
+                limit = number(maximum) + (component.exceedsLimit ? " EXCEEDED" : "")
+            } else {
+                limit = "—"
+            }
+            writeStdout("  \(component.designator)\t\(number(component.powerWatts))"
+                + "\t\(number(component.temperatureCelsius))"
+                + "\t\(number(component.temperatureRiseCelsius))"
+                + "\t\(number(component.thermalResistance))"
+                + "\t\(limit)\n")
+        }
+        for heatsink in result.heatsinks {
+            writeStdout("  heatsink \(heatsink.name)\t\(number(heatsink.powerWatts)) W"
+                + "\t\(number(heatsink.temperatureCelsius)) °C"
+                + "\t\(number(heatsink.thermalResistance)) K/W\n")
+        }
+        writeStdout("Total power: \(number(result.totalPowerWatts)) W\n")
+        if !result.components.contains(where: \.exceedsLimit) {
+            writeStdout("All junction temperatures are within their limits.\n")
+        }
+    }
+
     // MARK: - Shared input
 
     private static func loadInput(
@@ -880,6 +1171,31 @@ enum Subcommand {
             throw CommandError.usage("\(flag): “\(token)” is not a number")
         }
         return value
+    }
+
+    /// `NAME=VALUE` where value accepts SPICE numeric suffixes.
+    private static func namedNumber(_ token: String, flag: String) throws -> (String, Double) {
+        let parts = token.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2, !parts[0].isEmpty else {
+            throw CommandError.usage("\(flag) expects NAME=VALUE (got “\(token)”)")
+        }
+        guard let value = SpiceNumber.parse(parts[1]) else {
+            throw CommandError.usage("\(flag): “\(parts[1])” is not a number")
+        }
+        return (parts[0], value)
+    }
+
+    /// `DESIGNATOR=HEATSINK:RESISTANCE` for `--mount`.
+    private static func mountSpec(_ token: String) throws -> (String, String, Double) {
+        let parts = token.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2, !parts[0].isEmpty else {
+            throw CommandError.usage("--mount expects DESIGNATOR=HEATSINK:K/W (got “\(token)”)")
+        }
+        let mount = parts[1].split(separator: ":", maxSplits: 1).map(String.init)
+        guard mount.count == 2, !mount[0].isEmpty, let resistance = SpiceNumber.parse(mount[1]) else {
+            throw CommandError.usage("--mount expects DESIGNATOR=HEATSINK:K/W (got “\(token)”)")
+        }
+        return (parts[0], mount[0], resistance)
     }
 
     private static func intValue(_ token: String, flag: String) throws -> Int {
@@ -1109,6 +1425,26 @@ enum Subcommand {
           --no-yield-refine        report yield without refining for it
 
           -f, --format text|json   output format (default text)
+
+        """)
+    }
+
+    private static func printThermalUsage() {
+        writeStdout("""
+        usage: ohm thermal <input> [options]
+
+          --ambient T              ambient temperature in °C (default 25)
+          --default-rja K/W        junction-to-ambient for unlisted components
+          --rja NAME=K/W           junction-to-ambient for one component (repeatable)
+          --power NAME=W           explicit dissipated power (repeatable)
+          --max-temp NAME=C        junction-temperature limit (repeatable)
+          --heatsink NAME=K/W      shared heatsink resistance to ambient (repeatable)
+          --mount NAME=HS:K/W      mount a component on a heatsink (repeatable)
+          -f, --format text|json   output format (default text)
+
+        Without --power, each component's power is abs(v * i) from the DC
+        operating point. Every listed component needs a thermal path to ambient,
+        either directly (--rja/--default-rja) or through --mount.
 
         """)
     }

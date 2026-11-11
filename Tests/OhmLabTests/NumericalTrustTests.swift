@@ -7,7 +7,7 @@ struct NumericalTrustTests {
     @Test func analyticalCorpusQualifiesEveryRequiredBackend() {
         let report = NumericalTrust.evaluate()
         #expect(report.contractVersion == 1)
-        #expect(report.productVersion == "3.4.0")
+        #expect(report.productVersion == "4.0.0")
         #expect(report.caseCount == 32)
         #expect(report.ready)
         #expect(report.issues.isEmpty)

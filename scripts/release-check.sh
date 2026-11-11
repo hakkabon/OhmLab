@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 3.4.0" ]]; then
+if [[ "$version" != "ohm 4.0.0" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
@@ -20,9 +20,12 @@ nonlinear_report="$(mktemp)"
 scale_report="$(mktemp)"
 platform_report="$(mktemp)"
 host_report="$(mktemp)"
+companion_report="$(mktemp)"
+thermal_report="$(mktemp)"
+thermal_netlist="$(mktemp)"
 report="$(mktemp)"
 artifacts="$(mktemp -d)"
-trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report" "$scale_report" "$platform_report" "$host_report"; rm -rf "$artifacts"' EXIT
+trap 'rm -f "$report" "$trust_report" "$graduation_report" "$nonlinear_report" "$scale_report" "$platform_report" "$host_report" "$companion_report" "$thermal_report" "$thermal_netlist"; rm -rf "$artifacts"' EXIT
 .build/debug/ohm verify --json >"$trust_report"
 if ! grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$trust_report"; then
     printf 'numerical trust report is not ready\n' >&2
@@ -73,9 +76,30 @@ if ! grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$scale_report" \
 fi
 
 .build/debug/ohm doctor --json >"$report"
-if ! grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$report"; then
+if ! grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$report" \
+    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*9' "$report" \
+    || ! grep -Eq '"thermalAnalysis"[[:space:]]*:[[:space:]]*1' "$report" \
+    || ! grep -Eq '"kicadCompanion"[[:space:]]*:[[:space:]]*1' "$report"; then
     printf 'production readiness report is not ready\n' >&2
     cat "$report" >&2
+    exit 1
+fi
+
+.build/debug/ohm kicad companion --json >"$companion_report"
+if ! grep -Eq '"contractVersion"[[:space:]]*:[[:space:]]*1' "$companion_report" \
+    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*9' "$companion_report" \
+    || ! grep -Eq '"bidirectionalSync"[[:space:]]*:[[:space:]]*true' "$companion_report"; then
+    printf 'KiCad companion manifest is not ready\n' >&2
+    cat "$companion_report" >&2
+    exit 1
+fi
+
+printf 'V1 in 0 DC 10\nR1 in out 1k\nR2 out 0 1k\n' >"$thermal_netlist"
+.build/debug/ohm thermal "$thermal_netlist" --rja R1=100 --rja R2=50 -f json >"$thermal_report"
+if ! grep -Eq '"converged"[[:space:]]*:[[:space:]]*true' "$thermal_report" \
+    || ! grep -Eq '"contractVersion"[[:space:]]*:[[:space:]]*1' "$thermal_report"; then
+    printf 'thermal analysis contract is not ready\n' >&2
+    cat "$thermal_report" >&2
     exit 1
 fi
 
