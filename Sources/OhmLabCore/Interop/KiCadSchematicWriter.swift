@@ -27,7 +27,40 @@ public enum KiCadSchematicWriter {
     public static let projectExtension = KiCadProjectInterchange.projectExtension
 
     /// Writes a complete KiCad project for `snapshot` into `directory`.
+    ///
+    /// When `preserving` names an existing KiCad project (or schematic), the
+    /// writer starts from its files and replaces only the objects OhmLab owns;
+    /// untouched drawings are copied byte-for-byte. Without it, a fresh project
+    /// is generated.
     public static func writeProject(
+        snapshot: SchematicSnapshot,
+        name: String,
+        to directory: URL,
+        preserving source: URL? = nil
+    ) throws -> KiCadSchematicWriteResult {
+        if let source {
+            do {
+                let loaded = try KiCadPreservingWriter.load(from: source)
+                return try KiCadPreservingWriter.write(
+                    snapshot: snapshot,
+                    name: name,
+                    to: directory,
+                    source: loaded
+                )
+            } catch {
+                var result = try generateProject(snapshot: snapshot, name: name, to: directory)
+                result.warnings.insert(
+                    "Could not preserve \(source.lastPathComponent): \(error.localizedDescription). Wrote a fresh project instead.",
+                    at: 0
+                )
+                return result
+            }
+        }
+        return try generateProject(snapshot: snapshot, name: name, to: directory)
+    }
+
+    /// Generates a fresh KiCad project without a preservation source.
+    private static func generateProject(
         snapshot: SchematicSnapshot,
         name: String,
         to directory: URL
@@ -630,6 +663,43 @@ public enum KiCadSchematicWriter {
         return nil
     }
 
+    /// The grid point at which a KiCad label represents `pin` on `symbol`.
+    /// Subcircuit instances use the unrotated OhmLab layout; regular symbols
+    /// use the generated KiCad pin geometry, which differs from the OhmLab grid
+    /// for sources, diodes, and transistors.
+    static func kicadLabelPoint(
+        for pin: PinDescriptor,
+        descriptor: ComponentDescriptor,
+        symbol: SymbolInstance
+    ) -> GridPoint {
+        if symbol.isSubcircuitInstance {
+            let unrotated = SymbolInstance(
+                id: symbol.id,
+                descriptorId: symbol.descriptorId,
+                refDes: symbol.refDes,
+                position: symbol.position,
+                rotation: 0,
+                parameters: symbol.parameters,
+                sheetRef: symbol.sheetRef
+            )
+            return PinGeometry.location(of: pin, on: unrotated)
+        }
+        guard let spec = kicadPinSpec(for: pin, descriptor: descriptor) else {
+            return PinGeometry.location(of: pin, on: symbol)
+        }
+        let radians = Double(symbol.rotation) * Double.pi / 180
+        let cosine = cos(radians)
+        let sine = sin(radians)
+        let rotatedX = spec.x * cosine - spec.y * sine
+        let rotatedY = spec.x * sine + spec.y * cosine
+        let xMillimetres = Double(symbol.position.x) * 1.27 - rotatedX
+        let yMillimetres = Double(symbol.position.y) * 1.27 - rotatedY
+        return GridPoint(
+            Int((xMillimetres / 1.27).rounded()),
+            Int((yMillimetres / 1.27).rounded())
+        )
+    }
+
     static func wireNodeText(_ wire: WireSegment) -> String {
         let points = wire.points
             .map { "(xy \(KiCadRoundTrip.millimetres(grid: $0.x)) \(KiCadRoundTrip.millimetres(grid: $0.y)))" }
@@ -665,38 +735,7 @@ public enum KiCadSchematicWriter {
                   let descriptorPin = descriptor.pins.first(where: { $0.id == pin.pinId }) else {
                 return nil
             }
-            // Subcircuit instances are drawn as KiCad sheet symbols, whose pins
-            // are laid out from the unrotated OhmLab geometry.
-            if symbol.isSubcircuitInstance {
-                let unrotated = SymbolInstance(
-                    id: symbol.id,
-                    descriptorId: symbol.descriptorId,
-                    refDes: symbol.refDes,
-                    position: symbol.position,
-                    rotation: 0,
-                    parameters: symbol.parameters,
-                    sheetRef: symbol.sheetRef
-                )
-                return PinGeometry.location(of: descriptorPin, on: unrotated)
-            }
-            // Regular symbols must place labels on the actual KiCad pins.
-            // Sources and diodes deliberately use a different pin layout from
-            // the OhmLab grid geometry, so derive the location from the
-            // generated library pin specs rather than from `PinGeometry`.
-            guard let spec = kicadPinSpec(for: descriptorPin, descriptor: descriptor) else {
-                return PinGeometry.location(of: descriptorPin, on: symbol)
-            }
-            let radians = Double(symbol.rotation) * Double.pi / 180
-            let cosine = cos(radians)
-            let sine = sin(radians)
-            let rotatedX = spec.x * cosine - spec.y * sine
-            let rotatedY = spec.x * sine + spec.y * cosine
-            let xMillimetres = Double(symbol.position.x) * 1.27 - rotatedX
-            let yMillimetres = Double(symbol.position.y) * 1.27 - rotatedY
-            return GridPoint(
-                Int((xMillimetres / 1.27).rounded()),
-                Int((yMillimetres / 1.27).rounded())
-            )
+            return kicadLabelPoint(for: descriptorPin, descriptor: descriptor, symbol: symbol)
         }
 
         let orderedNets = nets.sorted { $0.id < $1.id }

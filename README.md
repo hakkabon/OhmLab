@@ -4,16 +4,15 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 4.0.0 Release Status
+## 4.1.0 Release Status
 
-OhmLab **4.0.0** is the current release. `OhmLabRelease.version`, the
+OhmLab **4.1.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
 the packaging metadata all report the same version. The production boundary is
-**v9**: 4.0 adds a KiCad-native companion contract and steady-state
-electro-thermal analysis, plus the companion/host JSON surface, without changing
-Circuit IR or the result contract.
+**v10**: 4.1 adds non-destructive KiCad write-back without changing Circuit IR,
+the simulation result, or any analysis default.
 
-The 2.5–4.0 line hardened the path between real designs and the simulator:
+The 2.5–4.1 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -61,11 +60,17 @@ The 2.5–4.0 line hardened the path between real designs and the simulator:
   operating point (or an explicit `--power` override), solves a linear thermal
   resistance network with optional shared heatsinks, and reports junction
   temperatures and limits. Existing analyses and defaults are unchanged.
+* **4.1** makes KiCad write-back non-destructive. Exporting or syncing into an
+  existing project preserves untouched sheets byte-for-byte, keeps every wire,
+  junction, label, graphic, title block, custom field, and unsupported symbol,
+  and patches only the symbols OhmLab owns. A no-op round trip is byte-identical;
+  a value edit changes only that value while the drawing stays intact.
 
-The 4.0 contracts are documented in
+The 4.0 and 4.1 contracts are documented in
 [`docs/contracts/kicad-companion-v1.md`](docs/contracts/kicad-companion-v1.md),
 [`docs/contracts/thermal-analysis-v1.md`](docs/contracts/thermal-analysis-v1.md),
-and [`docs/contracts/production-boundary-v9.md`](docs/contracts/production-boundary-v9.md).
+[`docs/contracts/kicad-write-fidelity-v1.md`](docs/contracts/kicad-write-fidelity-v1.md),
+and [`docs/contracts/production-boundary-v10.md`](docs/contracts/production-boundary-v10.md).
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
@@ -461,9 +466,17 @@ OhmLab reads `.kicad_sch` directly. It parses the S-expression format itself, wa
 
 The reader maps common KiCad device libraries (`Device:R`, `C`, `L`, `D`, voltage/current sources, transistors, and ground symbols) and reads simulation model references from the schematic. It preserves component positions and attaches net labels directly to OhmLab pins rather than copying KiCad wire geometry, which guarantees connectivity while keeping the imported schematic editable. Unsupported symbols are skipped with a warning naming the affected reference.
 
-The writer emits the inverse mapping and round-trips component UUIDs, references, values, parameters, hierarchy, and sheet ports. It places labels directly on KiCad pins so connectivity does not depend on reproducing wire routing, uses KiCad's own diode and source pin conventions so exported netlists agree on anode/cathode and positive/negative node order, and produces deterministic output.
+The writer has two modes. Generation emits the inverse mapping and round-trips
+component UUIDs, references, values, parameters, hierarchy, and sheet ports,
+placing labels directly on KiCad pins so connectivity does not depend on
+reproducing wire routing. Preservation writes back into an existing project: it
+patches only the symbols OhmLab owns and keeps every wire, junction, label,
+graphic, title block, custom field, and unsupported symbol byte-for-byte. An
+unchanged project round-trips byte-identically. Both modes use KiCad's own diode
+and source pin conventions so exported netlists agree on anode/cathode and
+positive/negative node order, and both produce deterministic output.
 
-Known limits: KiCad symbols with no OhmLab equivalent (connectors, mechanical parts, custom devices) are reported and skipped rather than simulated. Writing `.kicad_sch` is not a lossless reproduction of an arbitrary KiCad project: wire geometry, page settings, annotations, unsupported symbols, and subcircuit-instance rotation are not carried through, and output net names remain sheet-local rather than hierarchical. The committed `RC_Filter` fixture proves direct hierarchy traversal, UUID/reference/value preservation, model-library inlining, connectivity from KiCad geometry, deterministic writing, and DC equivalence with the golden `kicad-cli` netlist without requiring KiCad in CI.
+Known limits: KiCad symbols with no OhmLab equivalent (connectors, mechanical parts, custom devices) are reported and skipped rather than simulated; preservation keeps them in the drawing. Preservation does not merge simultaneous KiCad and OhmLab edits (the companion still requires `--prefer`), does not delete wires that referred to a symbol removed in OhmLab, and regenerates a child-sheet node when its name or ports change. Output net names remain sheet-local rather than hierarchical. The committed `RC_Filter` fixture proves direct hierarchy traversal, UUID/reference/value preservation, model-library inlining, connectivity from KiCad geometry, deterministic writing, byte-identical preservation, and DC equivalence with the golden `kicad-cli` netlist without requiring KiCad in CI.
 
 ## Projects & Collaboration
 

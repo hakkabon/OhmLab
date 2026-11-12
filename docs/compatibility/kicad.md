@@ -1,12 +1,12 @@
 # KiCad interoperability scope
 
-OhmLab 4.0.0 provides **KiCad Schematic Interop** for reading and writing,
+OhmLab 4.1.0 provides **KiCad Schematic Interop** for reading and writing,
 plus **KiCad Netlist Interop** for simulation and **KiCad Companion** sync.
-Writing is supported for the OhmLab-modelled subset of KiCad and preserves the
-identities and values that matter for editing and simulation. It is not a
-lossless reproduction of an arbitrary KiCad project: wire geometry, page
-settings, and unsupported symbols are not carried through. The promise is
-deliberately tiered so the documented claim matches what CI proves.
+Writing has two modes: generation draws a fresh project for the OhmLab-modelled
+subset, and preservation patches an existing project in place, keeping every
+KiCad object OhmLab does not own. Preservation is not a merge of simultaneous
+edits, and only the modelled subset is simulated. The promise is deliberately
+tiered so the documented claim matches what CI proves.
 
 ## Compatibility tiers
 
@@ -16,6 +16,7 @@ deliberately tiered so the documented claim matches what CI proves.
 | **KiCad Project Import** | Supported | Import a `.kicad_pro`, its top `.kicad_sch`, or any child sheet by resolving the root and reading the hierarchy directly. |
 | **KiCad Schematic Read** | Supported | Parse `.kicad_sch` natively, preserving UUIDs, references, values, hierarchy, sheet pins, and model-library references, and derive connectivity from KiCad wires, junctions, labels, and pins. |
 | **KiCad Schematic Write** | Supported | Emit a complete `.kicad_sch` project (per-sheet schematics, symbol library, model library, `sym-lib-table`, and `.kicad_pro`) for the OhmLab-modelled subset, preserving UUIDs, references, values, hierarchy, ports, rotations, and model parameters. |
+| **KiCad Write Fidelity** | Supported | Patch an existing project in place: untouched sheets are byte-identical, untouched symbols and all non-modelled objects keep their source bytes, and only OhmLab-owned fields change. |
 | **KiCad Companion** | Supported | Detect which side of a KiCad hierarchy and an `.ohmlabproj` bundle changed, import or export accordingly, and refuse conflicting edits unless a preference is given. |
 
 ## Supported today
@@ -67,6 +68,7 @@ deliberately tiered so the documented claim matches what CI proves.
 | Read KiCad `.kicad_pro`/`.kicad_sch` | Yes, native | Yes, native |
 | macOS `kicad-cli` fallback | Yes | n/a |
 | Write `.kicad_sch` | Yes | Yes |
+| Preserve an existing drawing on write-back | Yes | Yes |
 
 ## Symbol mapping
 
@@ -107,22 +109,47 @@ document. The output directory contains:
 - `sym-lib-table` pointing at the project-local symbol library;
 - `<project>.kicad_pro`, a minimal project wrapper.
 
-Symbols are placed at their OhmLab positions with KiCad's 1 grid cell =
-1.27 mm scale, and each sheet becomes a KiCad `sheet` node with its ports as
-sheet pins. Connectivity is emitted as a label on every pin plus a ground
-symbol on every ground net, so the generated project does not depend on
-reproducing KiCad wire routing. Ground nets are labelled `"0"` and carry a
-power symbol. Subcircuit instances are normalised to rotation 0 and their
-original OhmLab position is stored in `OhmLab.Position`.
+There are two write modes. **Generation** is used for a new project: symbols
+are placed at their OhmLab positions with KiCad's 1 grid cell = 1.27 mm scale,
+each sheet becomes a KiCad `sheet` node with its ports as sheet pins, and
+connectivity is emitted as a label on every pin plus a ground symbol on every
+ground net.
 
-The writer emits `OhmLab.Descriptor`, `OhmLab.Parameters`,
-`OhmLab.Reference`, `OhmLab.Rotation`, `OhmLab.Position`, and
-`OhmLab.SheetRef` properties so a subsequent read reconstructs the exact
-OhmLab model. Library symbols also carry `Sim.Device`, `Sim.Type`, and
-`Sim.Pins` for KiCad's simulator. The diode symbol follows KiCad's convention
-(pin 1 = `K`, pin 2 = `A`), and voltage/current sources use KiCad's vertical
-orientation (pin 1 = `+` at the top, pin 2 = `-` at the bottom). These choices
-make `kicad-cli sch export netlist` emit the same node order as OhmLab.
+**Preservation** is used when writing back into an existing project (the
+`ohm kicad export` source or the project targeted by `ohm kicad sync`). It
+starts from the existing `.kicad_sch` files instead of redrawing them:
+
+- a sheet that still matches what OhmLab imported is copied byte-for-byte;
+- an unchanged symbol keeps its original node, including footprint, datasheet,
+  custom fields, mirroring, pin UUIDs, and property layout;
+- a changed symbol is patched in place (reference, value, model binding,
+  `OhmLab.*` properties, and `at` only when it moved or rotated);
+- new symbols, wires, and child-sheet instances are appended; deleted symbols
+  are removed;
+- wires, junctions, labels, graphics, text, title blocks, paper settings, and
+  unsupported symbols keep their exact source bytes;
+- the source project's model and symbol libraries are copied alongside when
+  exporting to a new directory.
+
+Preservation keeps the source's own library symbol (`Device:R`, for example)
+unless the component type changes, and it only rewrites a semiconductor's
+KiCad simulation binding when the device parameters actually changed. An
+untouched project round-trips byte-identically; a value edit changes only that
+value.
+
+Subcircuit instances are normalised to rotation 0 and their original OhmLab
+position is stored in `OhmLab.Position`. The writer emits
+`OhmLab.Descriptor`, `OhmLab.Parameters`, `OhmLab.Reference`,
+`OhmLab.Rotation`, `OhmLab.Position`, and `OhmLab.SheetRef` properties so a
+subsequent read reconstructs the exact OhmLab model. Library symbols also
+carry `Sim.Device`, `Sim.Type`, and `Sim.Pins` for KiCad's simulator. The
+diode symbol follows KiCad's convention (pin 1 = `K`, pin 2 = `A`), and
+voltage/current sources use KiCad's vertical orientation (pin 1 = `+` at the
+top, pin 2 = `-` at the bottom). These choices make
+`kicad-cli sch export netlist` emit the same node order as OhmLab.
+
+The full contract is in
+[`docs/contracts/kicad-write-fidelity-v1.md`](../contracts/kicad-write-fidelity-v1.md).
 
 ## Fixture evidence
 
@@ -187,12 +214,17 @@ the full contract and non-claims.
 
 ## Not promised by the KiCad tiers
 
-- A lossless round-trip of an arbitrary KiCad project. Only the
-  OhmLab-modelled subset is written back.
-- Preservation of KiCad wire geometry, page settings, annotations, or PCB
-  associations. Connectivity is re-emitted as labels on pins.
-- Preservation of subcircuit-instance rotation; instances are written
-  unrotated and their original position is kept in `OhmLab.Position`.
+- A lossless round-trip of an arbitrary KiCad project. Preservation mode keeps
+  every node OhmLab does not own, but the OhmLab-modelled subset is what gets
+  simulated and rewritten.
+- Merging simultaneous KiCad and OhmLab edits. The companion still resolves
+  conflicts by whole-side preference.
+- Removing wires or sheet-box graphics that referred to a symbol or instance
+  deleted in OhmLab; those are left for the user to tidy in KiCad.
+- Preservation of subcircuit-instance rotation when that instance is
+  regenerated; an unchanged instance keeps its source node.
+- Preservation of custom graphics on a child-sheet instance that was renamed or
+  whose ports changed, because that sheet node is regenerated.
 - Simulation of connectors, mechanical symbols, or unsupported SPICE devices.
 - Every KiCad version. The supported claim is KiCad 9+ with 10.0.7 exercised by
   the committed fixture; older or newer versions must be added to the fixture

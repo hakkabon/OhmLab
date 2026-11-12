@@ -163,9 +163,39 @@ struct KiCadCompanionTests {
 
         let result = try KiCadCompanion.sync(kicad: workspace.kicad, bundle: workspace.bundle)
         #expect(result.direction == "export")
-        #expect(result.writtenFiles.contains { $0.hasSuffix("RC_Filter.kicad_pro") })
+        #expect(result.writtenFiles.contains { $0.hasSuffix("RC_Filter.kicad_sch") })
+        #expect(FileManager.default.fileExists(
+            atPath: workspace.kicad.appendingPathComponent("RC_Filter.kicad_pro").path
+        ))
         let after = try KiCadCompanion.status(kicad: workspace.kicad, bundle: workspace.bundle)
         #expect(after.inSync)
+    }
+
+    @Test func exportSyncPreservesTheDrawing() throws {
+        let workspace = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: workspace.root) }
+
+        _ = try KiCadCompanion.sync(kicad: workspace.kicad, bundle: workspace.bundle)
+        let schematic = workspace.kicad.appendingPathComponent("RC_Filter.kicad_sch")
+        let before = try String(contentsOf: schematic, encoding: .utf8)
+        let beforeDocument = try KiCadSchematicSourceDocument(text: before)
+
+        try mutateActiveDocument(at: workspace.bundle) { document in
+            guard let index = document.schematic.symbols.firstIndex(where: {
+                $0.refDes == "R1"
+            }) else { return }
+            document.schematic.symbols[index].parameters["resistance"] = 2_200
+        }
+
+        let result = try KiCadCompanion.sync(kicad: workspace.kicad, bundle: workspace.bundle)
+        #expect(result.direction == "export")
+
+        let after = try String(contentsOf: schematic, encoding: .utf8)
+        for node in beforeDocument.nodes where node.kind == "wire" {
+            #expect(after.contains(node.raw), "Companion export rewrote wire geometry")
+        }
+        #expect(after.contains("\"Value\" \"2200\""))
+        #expect(after.contains("(paper \"A4\")"))
     }
 
     @Test func conflictingChangesRequireAPreference() throws {

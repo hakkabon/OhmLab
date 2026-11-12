@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 4.0.0" ]]; then
+if [[ "$version" != "ohm 4.1.0" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
@@ -77,9 +77,10 @@ fi
 
 .build/debug/ohm doctor --json >"$report"
 if ! grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$report" \
-    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*9' "$report" \
+    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*10' "$report" \
     || ! grep -Eq '"thermalAnalysis"[[:space:]]*:[[:space:]]*1' "$report" \
-    || ! grep -Eq '"kicadCompanion"[[:space:]]*:[[:space:]]*1' "$report"; then
+    || ! grep -Eq '"kicadCompanion"[[:space:]]*:[[:space:]]*1' "$report" \
+    || ! grep -Eq '"kicadWriteFidelity"[[:space:]]*:[[:space:]]*1' "$report"; then
     printf 'production readiness report is not ready\n' >&2
     cat "$report" >&2
     exit 1
@@ -87,7 +88,7 @@ fi
 
 .build/debug/ohm kicad companion --json >"$companion_report"
 if ! grep -Eq '"contractVersion"[[:space:]]*:[[:space:]]*1' "$companion_report" \
-    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*9' "$companion_report" \
+    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*10' "$companion_report" \
     || ! grep -Eq '"bidirectionalSync"[[:space:]]*:[[:space:]]*true' "$companion_report"; then
     printf 'KiCad companion manifest is not ready\n' >&2
     cat "$companion_report" >&2

@@ -307,10 +307,14 @@ public enum KiCadProjectInterchange {
             if active.usesSchematic == true,
                !active.schematic.symbols.isEmpty || !active.schematic.sheets.isEmpty {
                 let kicadDirectory = directory.appendingPathComponent("KiCad", isDirectory: true)
+                let source = bundle.manifest.kicadSource?.topSchematic
+                    .map { URL(fileURLWithPath: $0) }
+                    .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
                 let result = try KiCadSchematicWriter.writeProject(
                     snapshot: active.schematic,
                     name: bundle.manifest.name,
-                    to: kicadDirectory
+                    to: kicadDirectory,
+                    preserving: source
                 )
                 written.append(contentsOf: result.files)
             }

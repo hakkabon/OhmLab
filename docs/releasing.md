@@ -39,12 +39,30 @@ qualification must publish and exercise the same limit. Mixed-scale solves,
 physical residual certification, singular failure, and pre-solve budget
 rejection are release-blocking evidence.
 
-For the 4.0 release, the product version is **4.0.0** everywhere:
+For the 4.1 release, the product version is **4.1.0** everywhere:
 `OhmLabRelease.version`, `ohm --version`, the Rust host's `PRODUCT_VERSION`,
 `scripts/release-check.sh`, `scripts/health-check.sh`, and the packaged
-`Info.plist` must agree. The production boundary advances to **v9**; 4.0 adds
-the KiCad companion contract v1, thermal-analysis contract v1, and their
-companion/host JSON surface.
+`Info.plist` must agree. The production boundary advances to **v10**; 4.1 adds
+the KiCad write-fidelity contract v1. The 4.0 contracts — KiCad companion v1,
+thermal-analysis v1, and their companion/host JSON surface — remain at v1.
+
+The 4.1 release gate additionally requires:
+
+- `ohm kicad export` and `ohm kicad sync --direction export` to preserve an
+  existing KiCad project instead of redrawing it;
+- an untouched `RC_Filter` round trip to be byte-identical across all three
+  schematic files;
+- a value edit to keep every wire node and every unchanged symbol node, and to
+  patch only the edited symbol's owned fields;
+- repeated preservation writes to be byte-identical, and a source that cannot
+  be loaded to fall back to generation with an explicit warning;
+- a read-back DC solution after a preservation write to match OhmLab's, and a
+  local `kicad-cli` to accept the preserved project when it is available;
+- `ohm doctor --json` to publish `contracts.kicadWriteFidelity = 1` with
+  `ready: true`;
+- `docs/contracts/kicad-write-fidelity-v1.md` and
+  `docs/contracts/production-boundary-v10.md` to describe the new contract,
+  evidence, and explicit non-claims.
 
 The 4.0 release gate additionally requires:
 
@@ -148,12 +166,15 @@ architecture separately until the project adopts a universal-binary build.
 
 Compatibility rules for the 4.x line:
 
-- The current product version is **4.0.0**. Keep the version string in
+- The current product version is **4.1.0**. Keep the version string in
   `OhmLabRelease.version` and the release/health scripts in lockstep; the tag,
   CLI output, and packaged metadata must match.
-- 4.0 advances the production boundary to **v9** because the KiCad companion
-  and thermal-analysis results are new public compatibility boundaries. Their
-  contract versions are published in `ohm doctor --json`.
+- 4.1 advances the production boundary to **v10** because non-destructive KiCad
+  write-back is a new public compatibility boundary. Its contract version is
+  published in `ohm doctor --json` as `contracts.kicadWriteFidelity`.
+- 4.0 advanced the production boundary to **v9** because the KiCad companion
+  and thermal-analysis results were new public compatibility boundaries. Their
+  contract versions remain published in `ohm doctor --json`.
 - 3.4 did not introduce a new production boundary. Production boundary v8
   remains documented for the 3.4 line; analysis-aware optimization metrics and
   yield centring were additive front-end behaviour inside that boundary.

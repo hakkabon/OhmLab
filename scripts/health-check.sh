@@ -47,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 4.0.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 4.0.0"'
+run "OhmLab 4.1.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 4.1.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"

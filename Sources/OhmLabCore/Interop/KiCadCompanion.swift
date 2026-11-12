@@ -464,10 +464,13 @@ public enum KiCadCompanion {
             let directory = projectDirectory(for: kicad)
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             let name = exportProjectName(bundle: bundleValue, kicad: kicad)
+            let resolved = resolvedProjectURL(kicad)
+            let preserveFrom = fileManager.fileExists(atPath: resolved.path) ? resolved : nil
             let result = try KiCadSchematicWriter.writeProject(
                 snapshot: document.schematic,
                 name: name,
-                to: directory
+                to: directory,
+                preserving: preserveFrom
             )
             writtenFiles = result.files.map(\.path)
             warnings = result.warnings
