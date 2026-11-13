@@ -23,6 +23,7 @@ public enum KiCadCompanionError: LocalizedError, Equatable {
     case invalidDirection(String)
     case invalidPreference(String)
     case exportRequiresSchematic
+    case mergeConflicts([String])
     case invalidState(String)
 
     public var errorDescription: String? {
@@ -41,6 +42,10 @@ public enum KiCadCompanionError: LocalizedError, Equatable {
             return "Unknown sync preference \(value); expected kicad or ohmlab."
         case .exportRequiresSchematic:
             return "Export sync needs a schematic-backed OhmLab document; this bundle has no writable KiCad schematic."
+        case .mergeConflicts(let conflicts):
+            let detail = conflicts.prefix(5).joined(separator: "; ")
+            let more = conflicts.count > 5 ? " (and \(conflicts.count - 5) more)" : ""
+            return "Both sides changed the same object; resolve with --prefer kicad|ohmlab or edit the collision: \(detail)\(more)."
         case .invalidState(let reason):
             return "The KiCad companion state is invalid: \(reason)"
         }
@@ -53,24 +58,31 @@ public struct KiCadCompanionCapabilities: Codable, Equatable, Sendable {
     public let nativeWrite: Bool
     public let bidirectionalSync: Bool
     public let conflictDetection: Bool
+    public let threeWayMerge: Bool
+    public let dryRun: Bool
 
     public init(
         nativeRead: Bool = true,
         nativeWrite: Bool = true,
         bidirectionalSync: Bool = true,
-        conflictDetection: Bool = true
+        conflictDetection: Bool = true,
+        threeWayMerge: Bool = true,
+        dryRun: Bool = true
     ) {
         self.nativeRead = nativeRead
         self.nativeWrite = nativeWrite
         self.bidirectionalSync = bidirectionalSync
         self.conflictDetection = conflictDetection
+        self.threeWayMerge = threeWayMerge
+        self.dryRun = dryRun
     }
 }
 
 /// The companion contract manifest.
 public struct KiCadCompanionManifest: Codable, Equatable, Sendable {
-    public static let currentContractVersion = 1
+    public static let currentContractVersion = 2
     public static let stateFileName = ".ohmlab-companion.json"
+    public static let baseFileName = KiCadCompanionBase.fileName
 
     public let contractVersion: Int
     public let productVersion: String
@@ -81,6 +93,7 @@ public struct KiCadCompanionManifest: Codable, Equatable, Sendable {
     public let directions: [String]
     public let preferences: [String]
     public let stateFileName: String
+    public let baseFileName: String
     public let capabilities: KiCadCompanionCapabilities
 
     public init(
@@ -93,6 +106,7 @@ public struct KiCadCompanionManifest: Codable, Equatable, Sendable {
         directions: [String],
         preferences: [String],
         stateFileName: String,
+        baseFileName: String,
         capabilities: KiCadCompanionCapabilities
     ) {
         self.contractVersion = contractVersion
@@ -104,6 +118,7 @@ public struct KiCadCompanionManifest: Codable, Equatable, Sendable {
         self.directions = directions
         self.preferences = preferences
         self.stateFileName = stateFileName
+        self.baseFileName = baseFileName
         self.capabilities = capabilities
     }
 }
@@ -147,6 +162,7 @@ public enum KiCadSyncPreference: String, Codable, Sendable, CaseIterable {
 public enum KiCadCompanionRecommendation: String, Codable, Sendable {
     case importKiCad = "import"
     case exportOhmLab = "export"
+    case merge
     case conflict
     case upToDate = "up-to-date"
     case unknown
@@ -227,6 +243,7 @@ public enum KiCadCompanion {
             directions: KiCadSyncDirection.allCases.map(\.rawValue),
             preferences: KiCadSyncPreference.allCases.map(\.rawValue),
             stateFileName: KiCadCompanionManifest.stateFileName,
+            baseFileName: KiCadCompanionManifest.baseFileName,
             capabilities: KiCadCompanionCapabilities()
         )
     }
@@ -319,7 +336,13 @@ public enum KiCadCompanion {
         let bundleChanged = bundleDigest != state.bundleDigest
         let recommendation: KiCadCompanionRecommendation
         if kicadChanged && bundleChanged {
-            recommendation = .conflict
+            // A base snapshot means the next sync can attempt a three-way
+            // merge. Without one, the companion fails closed and the user must
+            // choose a side once.
+            let base = bundle.appendingPathComponent(KiCadCompanionBase.fileName)
+            recommendation = FileManager.default.fileExists(atPath: base.path)
+                ? .merge
+                : .conflict
         } else if kicadChanged {
             recommendation = .importKiCad
         } else if bundleChanged {
@@ -345,9 +368,11 @@ public enum KiCadCompanion {
     /// Synchronises a KiCad project hierarchy and an OhmLab bundle.
     ///
     /// `auto` imports when only KiCad changed, exports when only OhmLab
-    /// changed, and refuses when both changed unless `prefer` is given. With no
-    /// state, an existing bundle requires an explicit direction; a fresh bundle
-    /// is imported from KiCad.
+    /// changed, and three-way merges when both changed. A merge takes each
+    /// side's non-conflicting changes; a same-field collision is reported
+    /// unless `--prefer kicad|ohmlab` or `--force` resolves it. With no state,
+    /// an existing bundle requires an explicit direction; a fresh bundle is
+    /// imported from KiCad.
     public static func sync(
         kicad: URL,
         bundle: URL,
@@ -357,95 +382,38 @@ public enum KiCadCompanion {
         now: Date = Date()
     ) throws -> KiCadSyncResult {
         let fileManager = FileManager.default
-        let kicadExists = fileManager.fileExists(atPath: kicad.path)
-        let bundleExists = fileManager.fileExists(atPath: bundle.path)
+        let decision = try resolveAction(
+            kicad: kicad,
+            bundle: bundle,
+            direction: direction,
+            prefer: prefer,
+            force: force
+        )
 
-        if !kicadExists && direction != .exportOhmLab {
-            throw KiCadCompanionError.missingProject(kicad.lastPathComponent)
-        }
-        if !bundleExists && direction == .exportOhmLab {
-            throw KiCadCompanionError.missingBundle(bundle.lastPathComponent)
-        }
-
-        let kicadDigest = kicadExists
-            ? try digest(ofKiCadProjectAt: kicad)
-            : ""
-        let bundleDigest = bundleExists
-            ? try digest(ofBundleAt: bundle)
-            : ""
-        let state = bundleExists ? try readState(from: bundle) : nil
-
-        let kicadChanged: Bool
-        let bundleChanged: Bool
-        if let state {
-            kicadChanged = kicadDigest != state.kicadDigest
-            bundleChanged = bundleDigest != state.bundleDigest
-        } else {
-            kicadChanged = true
-            bundleChanged = bundleExists
-        }
-
-        let actual: KiCadSyncDirection?
-        switch direction {
-        case .importKiCad, .exportOhmLab:
-            actual = direction
-        case .auto:
-            if state == nil {
-                if bundleExists {
-                    throw KiCadCompanionError.directionRequired
-                }
-                actual = .importKiCad
-            } else if kicadChanged && bundleChanged {
-                guard let prefer else { throw KiCadCompanionError.conflictingChanges }
-                actual = prefer == .kicad ? .importKiCad : .exportOhmLab
-            } else if kicadChanged {
-                actual = .importKiCad
-            } else if bundleChanged {
-                actual = .exportOhmLab
-            } else {
-                actual = nil
-            }
-        }
-
-        guard let actual else {
+        guard let action = decision.action else {
             // Already in sync: leave the recorded state (and its timestamp)
             // untouched so repeated runs are byte-idempotent.
-            let current = state ?? KiCadCompanionState(
-                kicadDigest: kicadDigest,
-                bundleDigest: bundleDigest,
+            let current = decision.state ?? KiCadCompanionState(
+                kicadDigest: decision.kicadDigest,
+                bundleDigest: decision.bundleDigest,
                 syncedAt: ISO8601DateFormatter().string(from: now),
                 direction: "none"
             )
             return KiCadSyncResult(
                 direction: "none",
-                kicadDigest: kicadDigest,
-                bundleDigest: bundleDigest,
+                kicadDigest: decision.kicadDigest,
+                bundleDigest: decision.bundleDigest,
                 writtenFiles: [],
                 state: current,
                 warnings: []
             )
         }
 
-        // Conflict protection only applies once a baseline exists. Without
-        // state, an explicit direction is the user's decision to overwrite.
-        if state != nil {
-            switch actual {
-            case .importKiCad:
-                if bundleChanged && !force && prefer != .kicad {
-                    throw KiCadCompanionError.conflictingChanges
-                }
-            case .exportOhmLab:
-                if kicadChanged && !force && prefer != .ohmlab {
-                    throw KiCadCompanionError.conflictingChanges
-                }
-            case .auto:
-                break
-            }
-        }
-
         var writtenFiles: [String] = []
         var warnings: [String] = []
-        switch actual {
+        var baseSnapshot: SchematicSnapshot?
+
+        switch action {
         case .importKiCad:
             let imported = try KiCadProjectInterchange.importProject(
                 at: resolvedProjectURL(kicad),
@@ -454,6 +422,8 @@ public enum KiCadCompanion {
             let merged = try merge(imported: imported, intoExistingBundleAt: bundle)
             try ProjectBundleStore.write(merged, to: bundle)
             writtenFiles.append(bundle.path)
+            baseSnapshot = merged.activeDocument?.schematic
+
         case .exportOhmLab:
             let bundleValue = try ProjectBundleStore.read(from: bundle)
             guard let document = bundleValue.activeDocument,
@@ -474,7 +444,61 @@ public enum KiCadCompanion {
             )
             writtenFiles = result.files.map(\.path)
             warnings = result.warnings
-        case .auto:
+            baseSnapshot = document.schematic
+
+        case .merge:
+            let bundleValue = try ProjectBundleStore.read(from: bundle)
+            guard let base = try KiCadCompanionMerge.readBase(from: bundle) else {
+                // A legacy state without a recorded base cannot be merged
+                // safely; the caller must choose a side once.
+                throw KiCadCompanionError.conflictingChanges
+            }
+            guard let document = bundleValue.activeDocument, document.usesSchematic == true else {
+                throw KiCadCompanionError.exportRequiresSchematic
+            }
+            let imported = try KiCadProjectInterchange.importProject(
+                at: resolvedProjectURL(kicad),
+                now: now
+            )
+            guard let kicadSnapshot = imported.activeDocument?.schematic else {
+                throw KiCadCompanionError.exportRequiresSchematic
+            }
+            let output = KiCadCompanionMerge.merge(
+                base: base.snapshot,
+                kicad: kicadSnapshot,
+                bundle: document.schematic,
+                rootName: bundleValue.manifest.name
+            )
+            guard output.conflicts.isEmpty else {
+                throw KiCadCompanionError.mergeConflicts(
+                    output.conflicts.map(\.description)
+                )
+            }
+
+            let mergedBundle = try apply(
+                output.snapshot,
+                to: bundleValue,
+                source: imported
+            )
+            try ProjectBundleStore.write(mergedBundle, to: bundle)
+            writtenFiles.append(bundle.path)
+
+            let directory = projectDirectory(for: kicad)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let name = exportProjectName(bundle: mergedBundle, kicad: kicad)
+            let resolved = resolvedProjectURL(kicad)
+            let preserveFrom = fileManager.fileExists(atPath: resolved.path) ? resolved : nil
+            let result = try KiCadSchematicWriter.writeProject(
+                snapshot: output.snapshot,
+                name: name,
+                to: directory,
+                preserving: preserveFrom
+            )
+            writtenFiles.append(contentsOf: result.files.map(\.path))
+            warnings = result.warnings
+            baseSnapshot = output.snapshot
+
+        case .none:
             break
         }
 
@@ -484,17 +508,267 @@ public enum KiCadCompanion {
             kicadDigest: newKicadDigest,
             bundleDigest: newBundleDigest,
             syncedAt: ISO8601DateFormatter().string(from: now),
-            direction: actual.rawValue
+            direction: action.rawValue
         )
         try writeState(newState, to: bundle)
+        if let baseSnapshot {
+            try KiCadCompanionMerge.writeBase(
+                KiCadCompanionBase(
+                    syncedAt: newState.syncedAt,
+                    snapshot: baseSnapshot
+                ),
+                to: bundle
+            )
+        }
         return KiCadSyncResult(
-            direction: actual.rawValue,
+            direction: action.rawValue,
             kicadDigest: newKicadDigest,
             bundleDigest: newBundleDigest,
             writtenFiles: writtenFiles,
             state: newState,
             warnings: warnings
         )
+    }
+
+    /// Describes what a sync would do without writing anything.
+    public static func plan(
+        kicad: URL,
+        bundle: URL,
+        direction: KiCadSyncDirection = .auto,
+        prefer: KiCadSyncPreference? = nil,
+        force: Bool = false,
+        now: Date = Date()
+    ) throws -> KiCadSyncPlan {
+        let decision = try resolveAction(
+            kicad: kicad,
+            bundle: bundle,
+            direction: direction,
+            prefer: prefer,
+            force: force
+        )
+        let base = try KiCadCompanionMerge.readBase(from: bundle)
+
+        guard let action = decision.action else {
+            return KiCadSyncPlan(
+                direction: "none",
+                kicadChanged: decision.kicadChanged,
+                bundleChanged: decision.bundleChanged,
+                changes: [],
+                conflicts: [],
+                warnings: [],
+                applicable: true
+            )
+        }
+
+        switch action {
+        case .importKiCad:
+            let imported = try KiCadProjectInterchange.importProject(
+                at: resolvedProjectURL(kicad),
+                now: now
+            )
+            let snapshot = imported.activeDocument?.schematic ?? SchematicSnapshot()
+            return KiCadSyncPlan(
+                direction: action.rawValue,
+                kicadChanged: decision.kicadChanged,
+                bundleChanged: decision.bundleChanged,
+                changes: KiCadCompanionMerge.diff(
+                    from: base?.snapshot,
+                    to: snapshot,
+                    rootName: imported.manifest.name,
+                    source: "kicad"
+                ),
+                conflicts: [],
+                warnings: [],
+                applicable: true
+            )
+
+        case .exportOhmLab:
+            let bundleValue = try ProjectBundleStore.read(from: bundle)
+            let snapshot = bundleValue.activeDocument?.schematic ?? SchematicSnapshot()
+            return KiCadSyncPlan(
+                direction: action.rawValue,
+                kicadChanged: decision.kicadChanged,
+                bundleChanged: decision.bundleChanged,
+                changes: KiCadCompanionMerge.diff(
+                    from: base?.snapshot,
+                    to: snapshot,
+                    rootName: bundleValue.manifest.name,
+                    source: "ohmlab"
+                ),
+                conflicts: [],
+                warnings: [],
+                applicable: true
+            )
+
+        case .merge:
+            guard let base else {
+                return KiCadSyncPlan(
+                    direction: "merge",
+                    kicadChanged: decision.kicadChanged,
+                    bundleChanged: decision.bundleChanged,
+                    changes: [],
+                    conflicts: [],
+                    warnings: ["No merge base was recorded; rerun with --prefer kicad|ohmlab."],
+                    applicable: false
+                )
+            }
+            let bundleValue = try ProjectBundleStore.read(from: bundle)
+            let imported = try KiCadProjectInterchange.importProject(
+                at: resolvedProjectURL(kicad),
+                now: now
+            )
+            let output = KiCadCompanionMerge.merge(
+                base: base.snapshot,
+                kicad: imported.activeDocument?.schematic ?? SchematicSnapshot(),
+                bundle: bundleValue.activeDocument?.schematic ?? SchematicSnapshot(),
+                rootName: bundleValue.manifest.name
+            )
+            return KiCadSyncPlan(
+                direction: "merge",
+                kicadChanged: decision.kicadChanged,
+                bundleChanged: decision.bundleChanged,
+                changes: output.changes,
+                conflicts: output.conflicts,
+                warnings: [],
+                applicable: output.conflicts.isEmpty
+            )
+
+        case .none:
+            return KiCadSyncPlan(
+                direction: "none",
+                kicadChanged: decision.kicadChanged,
+                bundleChanged: decision.bundleChanged,
+                changes: [],
+                conflicts: [],
+                warnings: [],
+                applicable: true
+            )
+        }
+    }
+
+    private enum SyncAction: String {
+        case importKiCad = "import"
+        case exportOhmLab = "export"
+        case merge
+        case none
+    }
+
+    private struct SyncDecision {
+        var action: SyncAction?
+        var kicadDigest: String
+        var bundleDigest: String
+        var kicadChanged: Bool
+        var bundleChanged: Bool
+        var state: KiCadCompanionState?
+    }
+
+    private static func resolveAction(
+        kicad: URL,
+        bundle: URL,
+        direction: KiCadSyncDirection,
+        prefer: KiCadSyncPreference?,
+        force: Bool
+    ) throws -> SyncDecision {
+        let fileManager = FileManager.default
+        let kicadExists = fileManager.fileExists(atPath: kicad.path)
+        let bundleExists = fileManager.fileExists(atPath: bundle.path)
+
+        if !kicadExists && direction != .exportOhmLab {
+            throw KiCadCompanionError.missingProject(kicad.lastPathComponent)
+        }
+        if !bundleExists && direction == .exportOhmLab {
+            throw KiCadCompanionError.missingBundle(bundle.lastPathComponent)
+        }
+
+        let kicadDigest = kicadExists ? try digest(ofKiCadProjectAt: kicad) : ""
+        let bundleDigest = bundleExists ? try digest(ofBundleAt: bundle) : ""
+        let state = bundleExists ? try readState(from: bundle) : nil
+
+        let kicadChanged: Bool
+        let bundleChanged: Bool
+        if let state {
+            kicadChanged = kicadDigest != state.kicadDigest
+            bundleChanged = bundleDigest != state.bundleDigest
+        } else {
+            kicadChanged = true
+            bundleChanged = bundleExists
+        }
+
+        let action: SyncAction?
+        switch direction {
+        case .importKiCad:
+            action = .importKiCad
+        case .exportOhmLab:
+            action = .exportOhmLab
+        case .auto:
+            if state == nil {
+                if bundleExists {
+                    throw KiCadCompanionError.directionRequired
+                }
+                action = .importKiCad
+            } else if kicadChanged && bundleChanged {
+                if let prefer {
+                    action = prefer == .kicad ? .importKiCad : .exportOhmLab
+                } else {
+                    action = .merge
+                }
+            } else if kicadChanged {
+                action = .importKiCad
+            } else if bundleChanged {
+                action = .exportOhmLab
+            } else {
+                action = nil
+            }
+        }
+
+        // Conflict protection only applies once a baseline exists. Without
+        // state, an explicit direction is the user's decision to overwrite.
+        if state != nil {
+            switch action {
+            case .importKiCad:
+                if bundleChanged && !force && prefer != .kicad {
+                    throw KiCadCompanionError.conflictingChanges
+                }
+            case .exportOhmLab:
+                if kicadChanged && !force && prefer != .ohmlab {
+                    throw KiCadCompanionError.conflictingChanges
+                }
+            default:
+                break
+            }
+        }
+
+        return SyncDecision(
+            action: action,
+            kicadDigest: kicadDigest,
+            bundleDigest: bundleDigest,
+            kicadChanged: kicadChanged,
+            bundleChanged: bundleChanged,
+            state: state
+        )
+    }
+
+    private static func apply(
+        _ snapshot: SchematicSnapshot,
+        to bundle: ProjectBundle,
+        source: ProjectBundle
+    ) throws -> ProjectBundle {
+        guard let sheet = bundle.manifest.sheets.first(where: {
+            $0.id == bundle.manifest.activeSheetID
+        }) ?? bundle.manifest.sheets.first else {
+            throw KiCadCompanionError.exportRequiresSchematic
+        }
+        guard var document = bundle.documents[sheet.id] else {
+            throw KiCadCompanionError.exportRequiresSchematic
+        }
+        var merged = bundle
+        document.schematic = snapshot
+        document.usesSchematic = true
+        merged.documents[sheet.id] = document
+        if merged.manifest.kicadSource == nil {
+            merged.manifest.kicadSource = source.manifest.kicadSource
+        }
+        return merged
     }
 
     // MARK: - State sidecar

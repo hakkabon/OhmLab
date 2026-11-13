@@ -1,0 +1,9 @@
+.title KiCad schematic
+.include "models/rc_models.lib"
+V1 /IN 0 DC 5 
+R1 /MID /IN 1k
+C1 /MID 0 1u
+R2 /MID /Filter/OUT 1k
+D1 /Filter/OUT 0 DMOD
+R3 /Filter/OUT 0 2k
+.end

@@ -25,13 +25,15 @@ archive="$output/$product.zip"
 checksum="$archive.sha256"
 trap 'rm -rf "$work"' EXIT
 
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$stage/bin" "$stage/docs/contracts" "$output"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$stage/bin" "$stage/docs/contracts" "$stage/integrations" "$output"
 cp "$bin_path/OhmLab" "$app/Contents/MacOS/OhmLab"
 cp "$bin_path/ohm" "$stage/bin/ohm"
 cp "$rust_bin" "$stage/bin/ohmlab-rust-host"
 cp LICENSE README.md "$stage/"
 cp docs/contracts/*.md "$stage/docs/contracts/"
 cp -R docs/contracts/schemas "$stage/docs/contracts/"
+cp -R integrations/kicad "$stage/integrations/kicad"
+test -x "$stage/integrations/kicad/ohmlab_sync.py"
 sed "s/@VERSION@/$version/g" Packaging/Info.plist.in >"$app/Contents/Info.plist"
 printf '{\n  "product": "OhmLab",\n  "version": "%s",\n  "platform": "macOS",\n  "architecture": "%s",\n  "minimumSystemVersion": "14.0"\n}\n' \
     "$version" "$architecture" >"$stage/release.json"

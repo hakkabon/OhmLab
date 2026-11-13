@@ -1,0 +1,8 @@
+{
+  "kicad": "path/to/your-project.kicad_pro",
+  "bundle": "path/to/your-project.ohmlabproj",
+  "direction": "auto",
+  "prefer": null,
+  "force": false,
+  "ohm": "ohm"
+}

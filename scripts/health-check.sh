@@ -47,7 +47,7 @@ section "Convergence contract"
 run "engine capability matrix" "$ohm" engines --json
 
 section "Production boundary"
-run "OhmLab 4.1.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 4.1.0"'
+run "OhmLab 4.2.0 version" bash -c 'test "$(.build/debug/ohm --version)" = "ohm 4.2.0"'
 run "production readiness" "$ohm" doctor --json
 
 section "Numerical trust"
@@ -107,6 +107,8 @@ run "kicad companion manifest" "$ohm" kicad companion --json
 cp -R Tests/OhmLabTests/Fixtures/KiCad/RC_Filter "$work/companion-kicad"
 run "kicad companion sync (import)" "$ohm" kicad sync "$work/companion-kicad" "$work/companion.ohmlabproj"
 run "kicad companion status (in sync)" "$ohm" kicad status "$work/companion-kicad" "$work/companion.ohmlabproj"
+run "kicad companion dry-run" "$ohm" kicad sync "$work/companion-kicad" "$work/companion.ohmlabproj" --dry-run
+run "kicad action plugin" ./scripts/check-kicad-plugin.sh
 
 section "Sync"
 mkdir -p "$work/local"

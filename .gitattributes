@@ -1,0 +1,5 @@
+# KiCad writes schematic indentation as a mix of spaces and tabs, and its SPICE
+# exports keep a trailing space on the title card. Preserve both verbatim so
+# fixture round-trips and golden comparisons remain byte-identical.
+*.kicad_sch whitespace=-space-before-tab
+Tests/OhmLabTests/Fixtures/KiCad/*/expected.cir whitespace=-blank-at-eol

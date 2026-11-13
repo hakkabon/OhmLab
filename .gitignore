@@ -11,3 +11,10 @@ DerivedData/
 
 # Rust build artefacts
 /rust/*/target/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Per-install KiCad plugin configuration (copy ohmlab.example.json)
+/integrations/kicad/ohmlab.json

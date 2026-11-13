@@ -1,0 +1,42 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "com.ohmlab.kicad-sync",
+  "name": "OhmLab Sync",
+  "description": "Keep a KiCad schematic project and an OhmLab .ohmlabproj bundle aligned with `ohm kicad sync`. Configure the project and bundle paths once in ohmlab.json.",
+  "runtime": {
+    "type": "exec"
+  },
+  "actions": [
+    {
+      "identifier": "sync",
+      "name": "OhmLab: Sync",
+      "description": "Merge KiCad and OhmLab changes using the companion three-way merge, then write both sides.",
+      "show-button": true,
+      "scopes": [
+        "schematic",
+        "project_manager"
+      ],
+      "entrypoint": "ohmlab_sync.py",
+      "args": [
+        "--config",
+        "ohmlab.json"
+      ]
+    },
+    {
+      "identifier": "preview",
+      "name": "OhmLab: Preview Sync",
+      "description": "Show the companion plan, including additions, edits, removals, sources, and conflicts, without writing anything.",
+      "show-button": true,
+      "scopes": [
+        "schematic",
+        "project_manager"
+      ],
+      "entrypoint": "ohmlab_sync.py",
+      "args": [
+        "--config",
+        "ohmlab.json",
+        "--dry-run"
+      ]
+    }
+  ]
+}

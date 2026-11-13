@@ -470,7 +470,7 @@ enum Subcommand {
         case "sync":
             let (positionals, options) = try kicadSyncOptions(rest)
             guard positionals.count == 2 else {
-                throw CommandError.usage("usage: ohm kicad sync <kicadPath> <bundle> [--direction import|export|auto] [--prefer kicad|ohmlab] [--force] [--json]")
+                throw CommandError.usage("usage: ohm kicad sync <kicadPath> <bundle> [--direction import|export|auto] [--prefer kicad|ohmlab] [--force] [--dry-run] [--json]")
             }
             let direction: KiCadSyncDirection
             if let raw = options.direction {
@@ -490,6 +490,31 @@ enum Subcommand {
             } else {
                 prefer = nil
             }
+            if options.dryRun {
+                let plan = try KiCadCompanion.plan(
+                    kicad: URL(fileURLWithPath: positionals[0]),
+                    bundle: URL(fileURLWithPath: positionals[1]),
+                    direction: direction,
+                    prefer: prefer,
+                    force: options.force
+                )
+                if options.json {
+                    writeStdout(try encodeJSON(plan) + "\n")
+                } else {
+                    writeStdout("Plan  \(plan.direction)\n")
+                    writeStdout("  KiCad \(plan.kicadChanged ? "changed" : "unchanged"), OhmLab \(plan.bundleChanged ? "changed" : "unchanged")\n")
+                    for change in plan.changes {
+                        writeStdout("  \(planSymbol(change)) \(change.kind) \(change.identifier) [\(change.sheet)]\(planFields(change)) — \(change.source)\n")
+                    }
+                    for conflict in plan.conflicts {
+                        writeStdout("  ! \(conflict.description)\n")
+                    }
+                    writeStdout(plan.applicable ? "Applicable\n" : "Not applicable\n")
+                }
+                for warning in plan.warnings { writeStderr("ohm: warning: \(warning)\n") }
+                return plan.applicable ? 0 : 2
+            }
+
             let result = try KiCadCompanion.sync(
                 kicad: URL(fileURLWithPath: positionals[0]),
                 bundle: URL(fileURLWithPath: positionals[1]),
@@ -518,7 +543,20 @@ enum Subcommand {
         var direction: String?
         var prefer: String?
         var force = false
+        var dryRun = false
         var json = false
+    }
+
+    private static func planSymbol(_ change: KiCadObjectChange) -> String {
+        switch change.change {
+        case .added: return "+"
+        case .updated: return "~"
+        case .removed: return "-"
+        }
+    }
+
+    private static func planFields(_ change: KiCadObjectChange) -> String {
+        change.fields.isEmpty ? "" : " (\(change.fields.joined(separator: ", ")))"
     }
 
     private static func kicadPositionals(
@@ -552,6 +590,8 @@ enum Subcommand {
                 options.json = true
             case "--force":
                 options.force = true
+            case "--dry-run":
+                options.dryRun = true
             case "--direction", "--prefer":
                 index += 1
                 guard index < arguments.count else {

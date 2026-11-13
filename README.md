@@ -4,15 +4,15 @@
 
 The Swift package requires no local Rust toolchain. Simulation goes through a pluggable **engine façade**: the built-in engine remains the default and reference, while `NumericCoreEngineBackend` provides an independent DC/AC/transient/DC-sweep implementation through Swift-NumericCore and its bundled Rust-NumericCore binary. The same core also powers a headless **`ohm`** command-line front end for scripted and batch use.
 
-## 4.1.0 Release Status
+## 4.2.0 Release Status
 
-OhmLab **4.1.0** is the current release. `OhmLabRelease.version`, the
+OhmLab **4.2.0** is the current release. `OhmLabRelease.version`, the
 `ohm --version` output, the extracted Rust host manifest, the release gate, and
 the packaging metadata all report the same version. The production boundary is
-**v10**: 4.1 adds non-destructive KiCad write-back without changing Circuit IR,
-the simulation result, or any analysis default.
+**v11**: 4.2 adds three-way KiCad companion merge and non-mutating sync plans,
+without changing Circuit IR, the simulation result, or any analysis default.
 
-The 2.5–4.1 line hardened the path between real designs and the simulator:
+The 2.5–4.2 line hardened the path between real designs and the simulator:
 
 * **2.5** fixed P0 crash/data-loss/export defects and added SPICE continuation,
   `.tran` `UIC`/`tmax`, and `.lib` section support.
@@ -65,12 +65,19 @@ The 2.5–4.1 line hardened the path between real designs and the simulator:
   junction, label, graphic, title block, custom field, and unsupported symbol,
   and patches only the symbols OhmLab owns. A no-op round trip is byte-identical;
   a value edit changes only that value while the drawing stays intact.
+* **4.2** resolves simultaneous edits instead of discarding a side. The
+  companion records a base snapshot at every sync, merges changes made on
+  different objects, and reports same-field collisions. `ohm kicad sync
+  --dry-run` prints the planned additions, edits, removals, sources, and
+  conflicts without writing anything. A KiCad 11+ IPC action plugin under
+  [`integrations/kicad/`](integrations/kicad/README.md) exposes **Sync** and
+  **Preview Sync** from the Schematic Editor and Project Manager.
 
-The 4.0 and 4.1 contracts are documented in
-[`docs/contracts/kicad-companion-v1.md`](docs/contracts/kicad-companion-v1.md),
+The 4.0–4.2 contracts are documented in
+[`docs/contracts/kicad-companion-v2.md`](docs/contracts/kicad-companion-v2.md),
 [`docs/contracts/thermal-analysis-v1.md`](docs/contracts/thermal-analysis-v1.md),
 [`docs/contracts/kicad-write-fidelity-v1.md`](docs/contracts/kicad-write-fidelity-v1.md),
-and [`docs/contracts/production-boundary-v10.md`](docs/contracts/production-boundary-v10.md).
+and [`docs/contracts/production-boundary-v11.md`](docs/contracts/production-boundary-v11.md).
 
 The KiCad fixture corpus under
 `Tests/OhmLabTests/Fixtures/KiCad/RC_Filter` is a real KiCad 10 project with a
@@ -78,6 +85,11 @@ root/child/grandchild hierarchy, a simulation model library, and a golden
 `kicad-cli` netlist. The direct-reader tests assert that its DC solution matches
 that golden export, the writer tests assert a deterministic round-trip with the
 same DC solution, and they run in CI without requiring KiCad to be installed.
+`RC_Filter_KiCad7`, `RC_Filter_KiCad8`, and `RC_Filter_KiCad9` carry the same
+hierarchy with those releases' format headers and generator conventions,
+including KiCad 7's unquoted UUIDs. They prove format tolerance and preservation
+for reading and value patching; they are derived from the KiCad 10 project and
+are not a full byte-level reproduction of each release.
 
 ## 0.8 Convergence Contract
 
@@ -616,7 +628,7 @@ The `ohm` executable runs the same engine without the UI, so simulations can liv
 *   `ohm kicad import <file> -o <bundle>` / `ohm kicad export <bundle> <dir>` — project-level KiCad interchange.
 *   `ohm kicad companion [--json]` — publish the KiCad companion contract manifest.
 *   `ohm kicad status <kicadPath> <bundle> [--json]` — compare both sides against the last sync.
-*   `ohm kicad sync <kicadPath> <bundle> [--direction import|export|auto] [--prefer kicad|ohmlab] [--force] [--json]` — bidirectional companion sync. `auto` imports when only KiCad changed, exports when only OhmLab changed, and requires a preference on conflicting edits.
+*   `ohm kicad sync <kicadPath> <bundle> [--direction import|export|auto] [--prefer kicad|ohmlab] [--force] [--dry-run] [--json]` — bidirectional companion sync. `auto` imports when only KiCad changed, exports when only OhmLab changed, three-way merges when both changed, and requires a preference only for a same-field collision. `--dry-run` prints the plan without writing.
 *   `ohm sync <localDir> <remoteDir>` — two-way folder sync (`ProjectSync`), persisting the state file in the local folder.
 *   `ohm monte-carlo <input> --probe v(out) [--tol R1=5%,normal] [--default-tol 5%] [--samples N] [--seed N] [--temp T] [--temp-tol D] [--limit v(out)=lo:hi] [-f text|json]`.
 *   `ohm corner <input> --probe v(out) [--tol …] [--temp T --temp-tol D] [-f text|json]`.

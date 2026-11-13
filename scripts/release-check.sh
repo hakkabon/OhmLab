@@ -9,7 +9,7 @@ cd "$root"
 ./scripts/health-check.sh
 
 version="$(.build/debug/ohm --version)"
-if [[ "$version" != "ohm 4.1.0" ]]; then
+if [[ "$version" != "ohm 4.2.0" ]]; then
     printf 'release version mismatch: %s\n' "$version" >&2
     exit 1
 fi
@@ -77,9 +77,9 @@ fi
 
 .build/debug/ohm doctor --json >"$report"
 if ! grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$report" \
-    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*10' "$report" \
+    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*11' "$report" \
     || ! grep -Eq '"thermalAnalysis"[[:space:]]*:[[:space:]]*1' "$report" \
-    || ! grep -Eq '"kicadCompanion"[[:space:]]*:[[:space:]]*1' "$report" \
+    || ! grep -Eq '"kicadCompanion"[[:space:]]*:[[:space:]]*2' "$report" \
     || ! grep -Eq '"kicadWriteFidelity"[[:space:]]*:[[:space:]]*1' "$report"; then
     printf 'production readiness report is not ready\n' >&2
     cat "$report" >&2
@@ -87,13 +87,18 @@ if ! grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$report" \
 fi
 
 .build/debug/ohm kicad companion --json >"$companion_report"
-if ! grep -Eq '"contractVersion"[[:space:]]*:[[:space:]]*1' "$companion_report" \
-    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*10' "$companion_report" \
+if ! grep -Eq '"contractVersion"[[:space:]]*:[[:space:]]*2' "$companion_report" \
+    || ! grep -Eq '"productionBoundary"[[:space:]]*:[[:space:]]*11' "$companion_report" \
+    || ! grep -Eq '"threeWayMerge"[[:space:]]*:[[:space:]]*true' "$companion_report" \
+    || ! grep -Eq '"dryRun"[[:space:]]*:[[:space:]]*true' "$companion_report" \
+    || ! grep -Eq '"baseFileName"[[:space:]]*:[[:space:]]*"\.ohmlab-companion-base\.json"' "$companion_report" \
     || ! grep -Eq '"bidirectionalSync"[[:space:]]*:[[:space:]]*true' "$companion_report"; then
     printf 'KiCad companion manifest is not ready\n' >&2
     cat "$companion_report" >&2
     exit 1
 fi
+
+./scripts/check-kicad-plugin.sh
 
 printf 'V1 in 0 DC 10\nR1 in out 1k\nR2 out 0 1k\n' >"$thermal_netlist"
 .build/debug/ohm thermal "$thermal_netlist" --rja R1=100 --rja R2=50 -f json >"$thermal_report"
